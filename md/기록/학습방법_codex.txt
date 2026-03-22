@@ -1,0 +1,170 @@
+C:\Users\SORO2\Desktop\skin_ws\acc_v2\logs\p7_com_113701
+  C:\Users\SORO2\Desktop\skin_ws\acc_v2\logs\p1_com_154123
+
+  여기 있는 merge_data.csv 파일들을 가지고.
+  ( C:\Users\SORO2\Desktop\skin_ws\acc_v2 여기에 들어있는 motor_con_gui.py랑 merge_data2.py를 통해서
+  외부 자극으로 인해, polymer가 변하면서 측정되는 센서값을 통해 센싱포인트 p에서의 fx,fy,fz를 학습 시
+  키고 싶은거야.
+
+  그런데 polymer가 부드럽다보니, fx,fy값은 상대적으로 fz에 비해 낮게 측정돼.
+  당연히 외부자극(인덴터)형상에 따라 변하는 양상이 달라질 수 있겠지만 p1,p3,p7,p9를 물리적으로 분리했음.
+
+
+• 가능합니다. p1/p3/p7/p9를 물리적으로 분리해 개별 데이터로 학습하면, 각 블록별(경계조건·응력 분포가
+  상이) 3축 힘 회귀 모델을 안정적으로 만들 수 있습니다. fz가 크고 fx,fy가 상대적으로 작아도 손실가중·
+  정규화로 충분히 보정 가능합니다.
+
+  무엇을 확인했는지
+
+  - 문서: md/Explain Sensor_251004.md:1, md/soft barometric tactile sensor.md:1, md/Study Sensing
+    Technology based on Learning.md:1, md/vensor_calibration_analysis.md:1
+      - 4x4 taxel, P_i별 2x2 센서 매핑, 보정 행렬 아이디어, collinearity/정규화 이슈 요약.
+  - 데이터 스키마: acc_v2/logs/p7_com_113701/merged_data.csv:1, acc_v2/logs/p1_com_154123/
+    merged_data.csv:1
+      - 컬럼: s1..s16, x_c,y_c, z_displacement_mm_laser, fx_afd50,fy_afd50,fz_afd50, 그리고 파생
+        fx,fy,fz(토크 기반 역산), tz_pred,tz_resid 등.
+  - 생성 스크립트: acc_v2/merge_data2.py:1
+      - AFD50 토크와 x_c,y_c(모터 기준)로 fx,fy 재구성해 fx,fy,fz 컬럼을 생성.
+
+  권장 학습 구조(블록별 모델)
+
+  - 입력
+      - 기본: s1..s16 z-score 정규화(센서별).
+      - 보조(선택): x_c,y_c, z_displacement_mm_laser(접촉 강도/범위 힌트), 품질필터로 tz_resid 사용.
+  - 출력
+      - fx, fy, fz(merge_data2가 만든 컬럼 권장; *_afd50 직접 사용 지양).
+  - 모델
+      - 베이스라인 1: 선형(Ridge) + 물리기반 특성
+          - u = s1+s2+s5+s6, v = (s2+s6)-(s1+s5), w = (s5+s6)-(s1+s2) 등(sum/diff)으로 collinearity 저
+            감 후 3×3 Ridge 회귀.
+      - 베이스라인 2: 다층퍼셉트론(공유 trunk + 3출력)
+          - 예) [128,64] ReLU, Dropout 0.1, L2, 다중출력 회귀.
+          - 손실 가중: fz 크기 보정 위해 per-axis 가중(MSE) 또는 타깃 표준화(축별 z-score) 후 균
+            등 MSE.
+  - 학습 단위
+      - p1·p3·p7·p9 각각 독립 모델 권장(데이터 충분 시). 나중에 통합이 필요하면 point one-hot/임베딩으
+        로 단일 모델도 가능.
+  - 시간정보
+      - 우선 프레임 단위 정적 매핑으로 시작. 드리프트/히스테리시스가 크면 4×4×T 윈도우(CNN+LSTM)나 과
+        거-현재 차분 특징 추가.
+  - 전처리/필터링
+      - 초기 all-zero 구간 제거, NaN 제거.
+      - tz_resid 큰 프레임 제외(품질 보증).
+      - shear 데이터(동일 fz에서 x/y 스윕) 포함해 fx/fy SNR 보강.
+  - 평가
+      - 축별 R²/MAE 추적. fx,fy 목표 R²≥0.9를 타겟으로 수집/가중/정규화 조정.
+
+  간단한 학습 예시(sklearn)
+
+  - 대상: p7 단일 러그
+  - 특성: s1..s16(+x_c,y_c), 타깃: fx,fy,fz
+  - 축별 표준화 기반 다중출력 MLP + 균등 MSE
+  - 파이썬 스니펫 개요
+      - pandas로 CSV 로드 → 유효 행 필터링 → 입력/타깃 분리
+      - StandardScaler로 X, y(축별) 정규화
+      - MLPRegressor(hidden_layer_sizes=(128,64), alpha=1e-4) 학습
+      - 역정규화 후 R²/MAE 계산, 축별 성능 확인
+        원하시면 acc_v2/learning_based/train_fx_fy_fz.py로 스크립트를 만들어 p1/p7 로그 모두 학습·검증
+        하도록 구성해 드릴게요.
+
+  왜 블록별 학습이 유효한가
+
+  - 각 블록은 기하/경계조건이 달라 동일 입력에도 전단/법선 분해 비율이 상이. 독립 모델이 collinearity/
+    교차 조건 변동을 줄여 더 높은 fx/fy 예측 안정성을 줍니다.
+  - fz가 지배적이라도
+      - 타깃 축별 표준화 또는 손실 가중으로 축간 중요도 균형,
+      - sum/diff 특성으로 물리적 축 분리,
+      - Ridge/Dropout으로 과적합·부호 뒤집힘 완화
+        로 충분히 보정됩니다.
+
+  다음 단계 제안
+
+  - p1,p7 각각에 대해:
+      - 베이스라인 Ridge(u,v,w)와 MLP(raw s1..s16)를 비교 학습
+      - tz_resid 임계치로 품질 필터링 실험
+      - 손실가중 또는 타깃 표준화 방식 A/B 테스트
+  - 원하시면 바로 학습 스크립트를 추가해 실행까지 돕겠습니다. 어떤 포인트(p1,p7,p3,p9)부터 진행할까요?
+
+----------------------------------------------------------------------------------------------------------------------------------------
+
+• 좋아요. “ven 센서 들어오는 즉시 p7 기준으로 fx, fy, fz를 실시간 산출”하는 흐름으로 붙였습니다.
+  plot2.py 느낌의 시각화는 추후 연동 가능하도록 경량 구조로 두었고, 먼저 예측 파이프라인부터 안정화했
+  습니다.
+
+  추가/수정 사항
+
+  - 런타임 모델 로더
+      - acc_v2/learning_based/runtime_model.py:1
+      - 저장된 JSON 모델을 로드하고, s1..s16(+선택 x_c,y_c)로 fx,fy,fz를 즉시 산출하는
+        predict_from_sensors() 제공.
+  - 실시간 예측 리더
+      - acc_v2/ven_reader_predict.py:1
+      - ven_reader.py와 동일한 시리얼 프로토콜로 s1..s16을 수신해, 지정 포인트(기본 p7) 모델로 즉시
+        fx,fy,fz를 계산하여 한 줄 CSV로 출력: s1..s16,fx,fy,fz
+      - 모델 경로는 기본 acc_v2/learning_based/models/<point>_sumdiff_latest.json을 찾고, 없으면
+        <point>_all16_latest.json 사용
+
+  사용 방법
+
+  1. 모델 학습 및 저장
+
+  - acc_v2/learning_based/train_fx_fy_fz.py:20에서 학습 포인트와 모드 설정:
+      - TARGET_POINT="p7"
+      - FEATURES_MODE="sumdiff"(기본) 또는 "all16"
+  - 실행: python acc_v2/learning_based/train_fx_fy_fz.py
+  - 저장 위치:
+      - acc_v2/learning_based/models/p7_sumdiff_latest.json (또는 p7_all16_latest.json)
+
+  2. 실시간 예측 실행
+
+  - 포인트/모델 설정은 상단 전역변수로:
+      - acc_v2/ven_reader_predict.py:20 TARGET_POINT='p7'
+      - 모델 경로 직접 지정 시 MODEL_PATH에 파일 경로 입력(비워두면 latest 자동 선택)
+  - 실행: python acc_v2/ven_reader_predict.py
+  - 출력: 각 프레임마다 16개 raw + fx,fy,fz가 CSV로 터미널에 출력됩니다.
+      - 예: ..., 7123456, 7012345, ..., 0.12, -0.05, 3.41
+
+  포인트/특징 모드 선택 가이드
+
+  - ven_reader_predict는 실시간 x_c,y_c를 모릅니다(0으로 처리). 따라서:
+      - sumdiff 모드: 2×2 센서 + (x_c,y_c)을 학습했더라도 실시간에선 (0,0)으로 예측 → shear 정확도가
+        다소 낮아질 수 있음
+      - all16 모드: s1..s16만으로도 예측이 잘되도록 학습 → 실시간 파이프라인과 궁합이 좋음
+  - 결론: 실시간 전용 모델은 FEATURES_MODE="all16"로 학습해서 쓰는 것을 권장합니다.
+
+  시각화(폴리머 변형 감지)
+
+  - 지금 구조는 실시간 fx,fy,fz를 안정적으로 출력하는 뼈대입니다.
+  - 시각화는 두 가지 옵션이 있어요:
+      - 간단: ven_reader_predict.py 출력 스트림을 읽어 matplotlib로 fz 히트맵/벡터를 업데이트하는 미니
+        뷰어 추가
+      - 고급(plot2.py 스타일): pyqtgraph 기반 UI로 히트맵 + 전단 벡터 + 포인트 라벨 등 표시
+  - 원하시면 plot2.py를 참고해 ven_reader_predict.py를 데이터 소스로 사용하는 PyQtGraph 뷰어(acc_v2/
+    learning_based/plot_live.py)를 만들어 드릴게요.
+
+  다음 제안
+
+  - p7 전용 all16 모델로 재학습 후 실시간 예측 정확도 확인하시겠어요?
+      - 필요 시 TARGET_POINT="p7", FEATURES_MODE="all16"로 학습
+      - 결과 모델: acc_v2/learning_based/models/p7_all16_latest.json
+  - 원하면 motor_con_gui_v2.py에 “모델 로드 + 실시간 fx,fy,fz 표시” 버튼을 붙여 GUI 내에서 바로 시각화
+    하도록 연동 가능합니다.
+
+
+----------------------------------------------------------------------------------------------------------------------------------------
+
+› 각 p1,p3,p7,p9가 polymer 물리적으로 분리되어 있음. 연관 센서들 4개와 직육면체의 폴리머로 구성됨.
+  외부접촉(인덴터)으로 인해 폴리머가 변형되고 이로 인해 센서들의 값이 변함.
+  이때 가해지는 힘들(fx,fy,fz)과 모터에 의한 폴리머 변형(x,y,z) 중심이 기록되었다고 보면 됨.
+
+  즉 결과적으로 원하는 것은 폴리머에 가해지는 변형으로 인해서 생기는 생신 변화를 통해 특정 포인트에서
+  의 fx,fy,fz 결과와
+  폴리머가 어느정도로 변형되었다는 정보를 원함.
+
+  폴리머는 가정으로 7x7x5mm 직육면체라고 가정
+
+  이런 맥락이니까, p1,p3,p7,p9에 대해서 각각 학습한 결과를 가지고 마지막에 전체 센서값들을 통해 독립적
+  으로 포인트별로 센싱하게 하는 목적이야.
+
+  너가 말하는 x_c,y_c가 입력이 0이라는게 이해가 안돼. 왜냐면 내가 원하는건 p에서 변하는 것을 통해 폴리
+  머가 xc,yc,z이것 만큼 변형된건고 fx,fy,fz 만큼 힘이 가해졌다고 센싱하고 싶은건데

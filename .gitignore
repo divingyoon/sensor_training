@@ -1,0 +1,10 @@
+pytorch/
+
+preprocessing/preprocessing_data/
+preprocessing/raw_data/
+
+# Local env and artifacts
+skin/
+training/runs/
+**/__pycache__/
+*.pyc
