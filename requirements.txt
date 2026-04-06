@@ -1,2 +1,17 @@
-pytorch==2.9.0+cu128
-# Add any other necessary dependencies here
+# Core
+torch==2.9.0+cu128
+torchvision==0.24.0+cu128
+torchaudio==2.9.0+cu128
+
+# Common scientific stack
+numpy
+scipy
+matplotlib
+pyyaml
+colorama
+
+# RL/vision deps used by downstream scripts
+stable-baselines3>=1.6.0
+timm
+
+# Optional: imitation/d3rlpy depend on the above; keep here so resolver stays clean.
