@@ -31,7 +31,46 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+try:
+    import zarr
+
+    ZARR_AVAILABLE = True
+except Exception:
+    ZARR_AVAILABLE = False
+
 from .sensor_layout import DEAD_CHANNEL_INDICES, LIVE_CHANNEL_INDICES
+
+
+def _load_samples_from_indices(data_dir: Path) -> List[Dict]:
+    """
+    data_dir 아래 dataset_index.json을 로드한다.
+
+    우선순위:
+    1) data_dir/dataset_index.json (통합 인덱스)
+    2) data_dir/**/dataset_index.json (trial별 인덱스 집계)
+    """
+    root_index = data_dir / "dataset_index.json"
+    if root_index.exists():
+        with open(root_index, encoding="utf-8") as f:
+            index = json.load(f)
+        return list(index.get("samples", []))
+
+    index_paths = sorted(data_dir.glob("**/dataset_index.json"))
+    if not index_paths:
+        raise FileNotFoundError(f"No dataset_index.json found under: {data_dir}")
+
+    all_samples: List[Dict] = []
+    for ip in index_paths:
+        with open(ip, encoding="utf-8") as f:
+            idx = json.load(f)
+        samples = idx.get("samples", [])
+        if not isinstance(samples, list):
+            continue
+        all_samples.extend(samples)
+
+    if not all_samples:
+        raise RuntimeError(f"dataset_index.json files found but no samples under: {data_dir}")
+    return all_samples
 
 
 class SkinDataset(Dataset):
@@ -63,14 +102,7 @@ class SkinDataset(Dataset):
         self.split = split
         self.phase_filter = phase
 
-        index_path = self.data_dir / "dataset_index.json"
-        if not index_path.exists():
-            raise FileNotFoundError(f"dataset_index.json not found: {index_path}")
-
-        with open(index_path, encoding="utf-8") as f:
-            index = json.load(f)
-
-        all_samples: List[Dict] = index["samples"]
+        all_samples: List[Dict] = _load_samples_from_indices(self.data_dir)
 
         # depth 필터
         if min_depth_mm > 0.0:
@@ -123,37 +155,69 @@ class SkinDataset(Dataset):
 
         self.samples: List[Dict] = [s for s in all_samples if s["trial_id"] in keep]
         self.live_idx = list(LIVE_CHANNEL_INDICES)
+        self._zarr_cache: Dict[str, object] = {}
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         info = self.samples[idx]
-        sample_dir = Path(info["sample_dir"])
 
-        tactile_raw = np.load(sample_dir / "tactile_lr_norm.npy").astype(np.float32)
-        aux = np.load(sample_dir / "aux_feat.npy").astype(np.float32)
-        hr_map = np.load(sample_dir / "hr_contact_map.npy").astype(np.float32)
+        if "zarr_index" in info:
+            if not ZARR_AVAILABLE:
+                raise RuntimeError("Sample references zarr data, but zarr is not installed")
+            zarr_path = str(info.get("zarr_path", ""))
+            if not zarr_path:
+                raise KeyError("zarr_index exists but zarr_path missing in sample record")
+            if zarr_path not in self._zarr_cache:
+                self._zarr_cache[zarr_path] = zarr.open_group(zarr_path, mode="r")
+            zg = self._zarr_cache[zarr_path]
+            zi = int(info["zarr_index"])
 
-        with open(sample_dir / "meta.json", encoding="utf-8") as f:
-            meta = json.load(f)
+            tactile_raw = np.asarray(zg["tactile_lr_norm"][zi], dtype=np.float32)
+            aux = np.asarray(zg["aux_feat"][zi], dtype=np.float32)
+            fz = float(zg["fz"][zi])
+            if "x_mm" in zg and "y_mm" in zg:
+                cx = float(zg["x_mm"][zi])
+                cy = float(zg["y_mm"][zi])
+            else:
+                cx = float(zg["cx"][zi])
+                cy = float(zg["cy"][zi])
+            depth_mm = float(zg["depth_mm"][zi])
+            if "z_command_mm" in zg:
+                z_cmd_mm = float(zg["z_command_mm"][zi])
+            else:
+                z_cmd_mm = depth_mm
+            x_bounds = np.asarray(zg["x_bounds"][zi], dtype=np.float32)
+            y_bounds = np.asarray(zg["y_bounds"][zi], dtype=np.float32)
+        else:
+            sample_dir = Path(info["sample_dir"])
+            tactile_raw = np.load(sample_dir / "tactile_lr_norm.npy").astype(np.float32)
+            aux = np.load(sample_dir / "aux_feat.npy").astype(np.float32)
+
+            with open(sample_dir / "meta.json", encoding="utf-8") as f:
+                meta = json.load(f)
+            fz = float(meta["fz_N"])
+            cx = float(meta["contact_center_x_mm"])
+            cy = float(meta["contact_center_y_mm"])
+            depth_mm = float(meta["depth_mm"])
+            z_cmd_mm = float(meta.get("z_command_mm", depth_mm))
+            x_bounds = np.array(meta["map_x_bounds_mm"], dtype=np.float32)
+            y_bounds = np.array(meta["map_y_bounds_mm"], dtype=np.float32)
 
         tactile_live = tactile_raw[self.live_idx]
 
-        x_bounds = np.array(meta["map_x_bounds_mm"], dtype=np.float32)
-        y_bounds = np.array(meta["map_y_bounds_mm"], dtype=np.float32)
-
         return {
-            "tactile": torch.from_numpy(tactile_live),
+            "tactile":     torch.from_numpy(tactile_live),
             "tactile_raw": torch.from_numpy(tactile_raw),
-            "aux": torch.from_numpy(aux),
-            "hr_map": torch.from_numpy(hr_map).unsqueeze(0),
-            "fz": torch.tensor(meta["fz_N"], dtype=torch.float32),
-            "cx": torch.tensor(meta["contact_center_x_mm"], dtype=torch.float32),
-            "cy": torch.tensor(meta["contact_center_y_mm"], dtype=torch.float32),
-            "depth_mm": torch.tensor(meta["depth_mm"], dtype=torch.float32),
-            "x_bounds": torch.from_numpy(x_bounds),
-            "y_bounds": torch.from_numpy(y_bounds),
+            "aux":         torch.from_numpy(aux),
+            "fz":          torch.tensor(fz,       dtype=torch.float32),
+            "cx":          torch.tensor(cx,       dtype=torch.float32),
+            "cy":          torch.tensor(cy,       dtype=torch.float32),
+            "depth_mm":    torch.tensor(depth_mm, dtype=torch.float32),
+            "z_cmd":       torch.tensor(z_cmd_mm, dtype=torch.float32),
+            "x_bounds":    torch.from_numpy(x_bounds),
+            "y_bounds":    torch.from_numpy(y_bounds),
         }
 
     def __repr__(self) -> str:
@@ -177,6 +241,9 @@ def build_loaders(
     val_ratio: float = 0.15,
     test_trials: Optional[List[str]] = None,
     val_trials: Optional[List[str]] = None,
+    pin_memory: bool = True,
+    prefetch_factor: int = 4,
+    persistent_workers: bool = True,
 ) -> Tuple["torch.utils.data.DataLoader", "torch.utils.data.DataLoader", "torch.utils.data.DataLoader"]:
     """train / val / test DataLoader 반환."""
     from torch.utils.data import DataLoader
@@ -195,8 +262,17 @@ def build_loaders(
     val_ds = SkinDataset(split="val", **common)
     test_ds = SkinDataset(split="test", **common)
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    loader_kwargs = {
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+    }
+    if num_workers > 0:
+        loader_kwargs["prefetch_factor"] = prefetch_factor
+        loader_kwargs["persistent_workers"] = persistent_workers
+
+    train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
+    val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
+    test_loader = DataLoader(test_ds, shuffle=False, **loader_kwargs)
 
     return train_loader, val_loader, test_loader

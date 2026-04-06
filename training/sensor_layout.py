@@ -29,32 +29,32 @@ SENSOR_GRID_ROWS: int = 4
 SENSOR_GRID_COLS: int = 4
 N_SENSORS: int = SENSOR_GRID_ROWS * SENSOR_GRID_COLS  # 16
 
-# Dead channel indices (0-indexed): Skin2→1, Skin9→8
-DEAD_CHANNEL_INDICES: Tuple[int, ...] = (1, 8)
-LIVE_CHANNEL_INDICES: Tuple[int, ...] = tuple(
-    i for i in range(N_SENSORS) if i not in DEAD_CHANNEL_INDICES
-)  # 14 channels
+# Dead channel indices (0-indexed): No dead channels for current experiment
+DEAD_CHANNEL_INDICES: Tuple[int, ...] = ()
+LIVE_CHANNEL_INDICES: Tuple[int, ...] = tuple(range(N_SENSORS))  # All 16 channels
 
 
 def build_sensor_positions(
-    spacing_mm: float = SENSOR_SPACING_MM,
-    origin_x_mm: float = 0.0,
-    origin_y_mm: float = 0.0,
-    n_rows: int = SENSOR_GRID_ROWS,
-    n_cols: int = SENSOR_GRID_COLS,
+    spacing_mm: float = 6.5,
+    n_rows: int = 4,
+    n_cols: int = 4,
 ) -> torch.Tensor:
     """
-    센서 절대 위치 반환 (센서 프레임 기준, mm).
-
-    Returns:
-        positions: (N, 2) float32 tensor — columns: [x_mm, y_mm]
-                   row-major order (Skin1 먼저, row 순서)
+    사용자 제공 4x4 센서 레이아웃 (26.04 기준)
+    S1~S4 (Y: -9.75), S5~S8 (Y: -3.25), S9~S12 (Y: 3.25), S13~S16 (Y: 9.75)
+    X축은 S1(9.75)에서 S4(-9.75)로 감소하는 방향.
     """
-    xs = origin_x_mm + torch.arange(n_cols, dtype=torch.float32) * spacing_mm
-    ys = origin_y_mm + torch.arange(n_rows, dtype=torch.float32) * spacing_mm
-    grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")
-    positions = torch.stack([grid_x.reshape(-1), grid_y.reshape(-1)], dim=1)
-    return positions  # (16, 2)
+    # X coordinates: S1(9.75), S2(3.25), S3(-3.25), S4(-9.75)
+    xs = torch.tensor([9.75, 3.25, -3.25, -9.75], dtype=torch.float32)
+    # Y coordinates for each row
+    ys = torch.tensor([-9.75, -3.25, 3.25, 9.75], dtype=torch.float32)
+    
+    positions = []
+    for y in ys:
+        for x in xs:
+            positions.append(torch.tensor([x, y]))
+            
+    return torch.stack(positions)  # (16, 2)
 
 
 def downsample_to_sensor(
@@ -132,9 +132,10 @@ def downsample_to_sensor_batch(
         sensor_positions = build_sensor_positions(spacing_mm, origin_x_mm, origin_y_mm)
 
     device = hr_map.device
-    sensor_positions = sensor_positions.to(device)  # (N, 2)
-    x_bounds = x_bounds.to(device)   # (B, 2)
-    y_bounds = y_bounds.to(device)   # (B, 2)
+    dtype = hr_map.dtype
+    sensor_positions = sensor_positions.to(device=device, dtype=dtype)  # (N, 2)
+    x_bounds = x_bounds.to(device=device, dtype=dtype)   # (B, 2)
+    y_bounds = y_bounds.to(device=device, dtype=dtype)   # (B, 2)
 
     B = hr_map.shape[0]
     N = sensor_positions.shape[0]
