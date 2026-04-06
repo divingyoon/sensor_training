@@ -1,0 +1,2 @@
+pytorch==2.9.0+cu128
+# Add any other necessary dependencies here
