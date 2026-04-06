@@ -26,13 +26,32 @@ import numpy as np
 import pandas as pd
 
 TRIAL_DIR_RE = re.compile(
-    r"^(?P<material>[^_]+)_d(?P<diameter_mm>\d+(?:\.\d+)?)_(?P<trial_no>\d+)$",
+    # 지원 형태:
+    #   material_d5_1  -> 소재, 지름, 시험번호 모두 포함
+    #   material_1     -> 소재, 시험번호만 포함(지름 없음)
+    r"^(?P<material>[^_]+)(?:_d(?P<diameter_mm>\d+(?:\.\d+)?))?_(?P<trial_no>\d+)$",
     re.IGNORECASE,
 )
 
-DUE_GLOB = "due_data_*.csv"
-ETHERMOTION_GLOB = "ethermotion_data_*.csv"
-AFD_GLOB = "afd50_data_*.csv"
+# CSV 파일명 변형 대응: "*_data_*.csv" 외에
+# due_<소재>_<번호>.csv, afd50_<소재>_<번호>.csv, ethermotion/eithermotion_*.csv 등도 허용한다.
+DUE_PATTERNS = [
+    "due_data_*.csv",
+    "due_*_*.csv",
+    "due*.csv",
+]
+ETHERMOTION_PATTERNS = [
+    "ethermotion_data_*.csv",
+    "ethermotion_*_*.csv",
+    "eithermotion_*_*.csv",  # 현장 오타 대응
+    "*thermotion*.csv",
+]
+AFD_PATTERNS = [
+    "afd50_data_*.csv",
+    "afd50_*_*.csv",
+    "afd_*_*.csv",
+    "afd*.csv",
+]
 
 SKIN_COLS = [f"Skin{i}" for i in range(1, 17)]
 XYZ_SCALE = 1e-4  # 0.1 um -> mm
@@ -138,6 +157,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def parse_trial_dir_name(name: str) -> dict:
+    """폴더명에서 소재/지름/시험번호를 추출한다.
+
+    허용 예시
+      - ecemesh_d5_1   -> material=ecemesh, diameter=5, trial=1
+      - ecemesh_1      -> material=ecemesh, diameter=None, trial=1
+      - foo_bar        -> 정규식 미일치: material=foo_bar, trial=None
+    """
+
     m = TRIAL_DIR_RE.match(name)
     if not m:
         return {
@@ -146,22 +173,34 @@ def parse_trial_dir_name(name: str) -> dict:
             "indenter_diameter_mm": None,
             "experiment_no": None,
         }
+
+    diameter = m.group("diameter_mm")
     return {
         "trial_id": name,
         "material": m.group("material").lower(),
-        "indenter_diameter_mm": float(m.group("diameter_mm")),
+        "indenter_diameter_mm": float(diameter) if diameter is not None else None,
         "experiment_no": int(m.group("trial_no")),
     }
 
 
 
-def find_single_file(trial_dir: Path, pattern: str) -> Path:
-    files = sorted(trial_dir.glob(pattern))
-    if len(files) != 1:
-        raise FileNotFoundError(
-            f"[{trial_dir.name}] pattern '{pattern}' expected 1 file, found {len(files)}"
-        )
-    return files[0]
+def find_single_file(trial_dir: Path, patterns: list[str]) -> Path:
+    """Return exactly one match across a set of glob patterns.
+
+    패턴 목록을 순서대로 적용해 처음으로 단일 매치를 만드는 파일을 반환한다.
+    어떤 패턴도 단일 매치를 만들지 못하면 전체 후보를 포함해 오류를 던진다.
+    """
+
+    errors: list[str] = []
+    for pat in patterns:
+        files = sorted(trial_dir.glob(pat))
+        if len(files) == 1:
+            return files[0]
+        errors.append(f"{pat}:{len(files)}")
+
+    raise FileNotFoundError(
+        f"[{trial_dir.name}] expected exactly one CSV but found {', '.join(errors)}"
+    )
 
 
 
@@ -882,9 +921,9 @@ def process_trial_dir(
 ) -> None:
     info = parse_trial_dir_name(trial_dir.name)
 
-    due_path = find_single_file(trial_dir, DUE_GLOB)
-    ether_path = find_single_file(trial_dir, ETHERMOTION_GLOB)
-    afd_path = find_single_file(trial_dir, AFD_GLOB)
+    due_path = find_single_file(trial_dir, DUE_PATTERNS)
+    ether_path = find_single_file(trial_dir, ETHERMOTION_PATTERNS)
+    afd_path = find_single_file(trial_dir, AFD_PATTERNS)
 
     due_df = load_due_csv(due_path)
     ether_df = load_ethermotion_csv(ether_path)
