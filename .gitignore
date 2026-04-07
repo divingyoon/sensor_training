@@ -4,11 +4,21 @@ preprocessing/preprocessing_data/
 preprocessing/raw_data/
 preprocessing/processed_data/
 preprocessing/processed_sweeps/
+processed_data/
 
 # Local env and artifacts
 skin/
 training/runs/
-training/runs_ff_zarr/
-training/runs_sr_ecomesh/
 **/__pycache__/
 *.pyc
+
+# Model artifacts
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.bin
+*.h5
+*.npz
+*.npy
+*.safetensors

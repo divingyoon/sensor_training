@@ -38,7 +38,7 @@ class UnifiedTactileDataset(Dataset):
     - 실제 텐서 생성은 __getitem__ 호출 시 해당 파일을 읽거나(캐시 미스) 캐시된 DataFrame에서 슬라이스한다.
     """
 
-    def __init__(self, folder_path, seq_len=50, stride=5, augment=False, file_glob="**/*_merged.csv"):
+    def __init__(self, folder_path, seq_len=50, stride=5, augment=False, file_glob="**/*_grid.csv"):
         self.folder_path = folder_path
         self.seq_len = seq_len
         self.stride = stride
@@ -62,6 +62,18 @@ class UnifiedTactileDataset(Dataset):
             return self._cache[fpath]
 
         df = pd.read_csv(fpath)
+        rename_map = {}
+        if "z_depth_mm" in df.columns and "z_mm" not in df.columns:
+            rename_map["z_depth_mm"] = "z_mm"
+        if "fx" in df.columns and "Fx" not in df.columns:
+            rename_map["fx"] = "Fx"
+        if "fy" in df.columns and "Fy" not in df.columns:
+            rename_map["fy"] = "Fy"
+        if "fz" in df.columns and "Fz" not in df.columns:
+            rename_map["fz"] = "Fz"
+        if rename_map:
+            df = df.rename(columns=rename_map)
+
         if not set(self.sensors).issubset(df.columns):
             raise ValueError(f"[{fpath}] missing sensor columns")
 
@@ -69,7 +81,11 @@ class UnifiedTactileDataset(Dataset):
         # 필요한 컬럼만 보관해 메모리 절약 (float32 변환)
         keep_cols = self.sensors + self.drift_cols + [c for c in ["x_mm", "y_mm", "z_mm", "Fx", "Fy", "Fz"] if c in df.columns]
         df = df[keep_cols].astype(np.float32)
-        df["indenter_diameter"] = np.float32(dia)
+        if "diameter_mm" in df.columns:
+            dia_val = float(df["diameter_mm"].iloc[0])
+        else:
+            dia_val = float(dia)
+        df["indenter_diameter"] = np.float32(dia_val)
 
         # 간단한 캐시 정책: 최근 2개 파일만 유지
         self._cache[fpath] = df
@@ -82,7 +98,13 @@ class UnifiedTactileDataset(Dataset):
 
     def _index_all_files(self):
         import glob
-        file_list = glob.glob(os.path.join(self.folder_path, self.file_glob), recursive=True)
+        patterns = [self.file_glob]
+        if self.file_glob == "**/*_grid.csv":
+            patterns.append("**/*_merged.csv")
+        file_list = []
+        for pat in patterns:
+            file_list.extend(glob.glob(os.path.join(self.folder_path, pat), recursive=True))
+        file_list = sorted(set(file_list))
         if not file_list:
             print(f"Warning: No CSV files found in {self.folder_path}")
             return
@@ -113,7 +135,7 @@ class UnifiedTactileDataset(Dataset):
 
         grid_input = seq[self.sensors].values.reshape(self.seq_len, 1, 4, 4)
         drift_vals = seq[self.drift_cols].values
-        dia_col = np.full((self.seq_len, 1), dia, dtype=np.float32)
+        dia_col = seq[["indenter_diameter"]].values.astype(np.float32)
         iso_feat = np.concatenate([drift_vals, dia_col], axis=1)
 
         target_cols = ["x_mm", "y_mm", "z_mm", "Fx", "Fy", "Fz"]

@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from training.sensor_layout import DEAD_CHANNEL_INDICES
+from training.data.sensor_layout import DEAD_CHANNEL_INDICES
 
 try:
     import zarr

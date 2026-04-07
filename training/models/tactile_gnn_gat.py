@@ -15,8 +15,9 @@ class TactileGAT(nn.Module):
         
         # GAT 파라미터
         self.w = nn.Linear(in_feat, out_feat * n_heads, bias=False)
-        self.a = nn.Parameter(torch.zeros(size=(1, n_heads, 2 * out_feat, 1)))
-        nn.init.xavier_uniform_(self.a.data, gain=1.414)
+        # Per-head attention vector for concatenated pair feature (2*out_feat)
+        self.a = nn.Parameter(torch.empty(n_heads, 2 * out_feat))
+        nn.init.xavier_uniform_(self.a, gain=1.414)
         
         self.fc = nn.Sequential(
             nn.Linear(out_feat * n_heads * 16, 128),
@@ -36,7 +37,8 @@ class TactileGAT(nn.Module):
         combined = torch.cat([h_i, h_j], dim=-1).transpose(1, 3) # (B, n_heads, 16, 16, 2*out_feat)
         
         # Energy: (B, n_heads, 16, 16)
-        e = F.leaky_relu(torch.matmul(combined, self.a.to(combined.device)).squeeze(-1))
+        # combined: (B, H, 16, 16, 2F), a: (H, 2F)
+        e = F.leaky_relu(torch.einsum("bhijc,hc->bhij", combined, self.a))
         attention = F.softmax(e, dim=-1)
         
         # Aggregate: (B, n_heads, 16, out_feat)
