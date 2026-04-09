@@ -40,6 +40,25 @@ def contact_radius(depth_mm: float, R_mm: float = 2.5, model: RadiusModel = "her
     return math.sqrt(R_mm * depth_mm)
 
 
+def contact_radius_tensor(depth_mm, R_mm: float = 2.5, model: RadiusModel = "hertz"):
+    """Torch-friendly 접촉 반경 계산 (broadcast 지원).
+
+    Args:
+        depth_mm: torch.Tensor 또는 숫자. 음수는 0으로 클램프.
+        R_mm: 인덴터 반경(mm)
+        model: "hertz" 또는 "geo"
+    """
+
+    import torch
+
+    depth = torch.clamp(depth_mm, min=0.0)
+    if model == "geo":
+        a_sq = torch.clamp(2 * R_mm * depth - depth * depth, min=0.0)
+    else:
+        a_sq = torch.clamp(R_mm * depth, min=0.0)
+    return torch.sqrt(torch.clamp(a_sq, min=1e-12))
+
+
 def radial_weight(dist_mm: float, a_mm: float, kernel: KernelType = "gaussian") -> float:
     """거리 기반 가중치 (라벨 커널).
 

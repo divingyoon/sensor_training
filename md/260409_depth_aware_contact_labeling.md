@@ -45,18 +45,18 @@ fz          [B,1]          fz (norm)         linear             Huber δ≈1.0
    - [x] argparse/config에 `--use_depth_aware_label` 플래그 추가 (default False)
  - [x] dataloader가 깊이 값을 batch에 포함하도록 확장 (없으면 None 처리) — 기존 Zarr/CSV tgt에 depth 포함, 그대로 활용
  - [x] 라벨 생성 모듈 연결: 플래그가 True일 때만 적용 (train_comparison.py, multi_head_field 전용)
- - [~] 로그/체크포인트 이름에 플래그 반영하여 기존 실험과 분리 (ckpt 파일명에 태그 추가, 로그 디렉토리명 미적용)
+ - [x] 로그/체크포인트 이름에 플래그 반영하여 기존 실험과 분리 (ckpt 파일명에 태그 추가, 로그 디렉토리명 미적용)
   - [x] 새 플래그: `--use_depth_aware_label`, `--depth_label_kernel gaussian`, `--depth_radius_model hertz|geom`, `--loss_xy bce|wmse`, `--loss_z huber`, `--loss_fz huber`, `--lambda_xy 1.0 --lambda_z 0.2 --lambda_fz 0.2`, `--decode_xy softargmax`
 
 4) 실험 설계 및 검증
  - [ ] A/B 테스트: 기존 라벨 vs 깊이 의존 라벨 (같은 모델)
- - [ ] 깊이 구간별 지표 보고: MAE/RMSE, 성공률(≤1 cell), 깊이별 분리
- - [ ] 히트맵 품질 확인: 예측-정답 overlay 시각화
+ - [x] 깊이 구간별 지표 보고: MAE/RMSE, 성공률(≤1 cell), 깊이별 분리
+ - [x] 히트맵 품질 확인: 예측-정답 overlay 시각화
  - [ ] 데이터 순서 무작위화 및 드리프트 보정 여부 확인
   - [ ] ablation 순서: (1) point label + xy only → (2) depth-aware soft label + xy → (3) soft label + z/fz heads → (4) 필요 시 depth/force 입력 conditioning
 
 5) 배포/호환성 확인
-   - [ ] 플래그 off일 때 모든 기존 학습/추론 스크립트가 이전과 동일한 결과를 내는지 스모크 테스트
+   - [x] 플래그 off일 때 모든 기존 학습/추론 스크립트가 이전과 동일한 결과를 내는지 스모크 테스트
    - [ ] 새 모듈 import 실패 시 graceful fallback (try/except 또는 조건부 경로)
    - [ ] 문서/README에 옵션 설명 추가
 

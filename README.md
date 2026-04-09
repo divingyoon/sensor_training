@@ -70,61 +70,52 @@ python3 preprocessing/preprocess.py \
 
 
 ### Step 3: 통합 및 비교 학습 (Unified & Comparison Training)
-다양한 아키텍처를 테스트하고 최적의 모델을 선정합니다.
-```bash
-# 대표 예시: MLP, CNN-LSTM, SATS 모델을 동시에 학습하여 성능 비교
-python3 -m training.pipelines.train_comparison \
- --models mlp cnn cnnlstm cnnbilstm sats transformer unified isoline_gnn tactile_gnn_gat multi_head_field \
- --epochs 100
- 
-python3 -m training.pipelines.train_comparison \
-  --data-dir preprocessing/processed_data \
-  --out-dir training/runs/min20 \
-  --models cnnlstm sats_xy sats\
-  --preload-vram \
-  --preload-batch-size 512 \
-  --epochs 100 \
-  --lr 3e-4
-  
-python3 -m training.pipelines.train_comparison \
-  --data-dir preprocessing/processed_data_min10 \
-  --out-dir training/runs/min10 \
-  --models cnnlstm sats_xy sats\
-  --preload-vram \
-  --preload-batch-size 512 \
-  --epochs 100 \
-  --lr 3e-4
-
-python3 -m training.pipelines.train_comparison \
-  --data-dir preprocessing/processed_data_min8 \
-  --out-dir training/runs/min8 \
-  --models cnnlstm sats_xy sats\
-  --preload-vram \
-  --preload-batch-size 512 \
-  --epochs 100 \
-  --lr 3e-4
-
+권장 기본 실험은 depth-aware heatmap 기반의 `multi_head_field` 3단계(Stage1~3)입니다.
+- **Stage1 (baseline, point label)**  
+```
+python -m training.pipelines.train_comparison \
+  --models multi_head_field \
+  --epochs 100 --batch-size 512 --seq-len 50 \
+  --decode-xy none
+```
+- **Stage2 (soft label, xy만)**  
+```
+python -m training.pipelines.train_comparison \
+  --models multi_head_field \
+  --use-depth-aware-label \
+  --depth-label-kernel gaussian --depth-radius-model hertz \
+  --heatmap-size 40 --fg-weight 8.0 --heatmap-sigma-scale 0.35 \
+  --lambda-z 0.0 --lambda-fz 0.0 \
+  --decode-xy softargmax \
+  --depth-fallback-mm 1.0 --depth-min-for-label 0.05 \
+  --normalize-heatmap \
+  --save-heatmap-overlay --overlay-batches 1 --overlay-samples 4 \
+  --epochs 100 --batch-size 512
+```
+- **Stage3 (soft label + z/Fz 보조)**  
+```
+python -m training.pipelines.train_comparison \
+  --models multi_head_field \
+  --use-depth-aware-label \
+  --loss-xy bce --loss-z huber --loss-fz huber \
+  --lambda-xy 1.0 --lambda-z 0.2 --lambda-fz 0.2 \
+  --depth-label-kernel gaussian --depth-radius-model hertz \
+  --heatmap-size 40 --fg-weight 8.0 --heatmap-sigma-scale 0.35 \
+  --decode-xy softargmax \
+  --depth-fallback-mm 1.0 --depth-min-for-label 0.05 \
+  --normalize-heatmap \
+  --save-heatmap-overlay --overlay-batches 1 --overlay-samples 4 \
+  --epochs 100 --batch-size 512
 ```
 
-```bash
-  # 1) 7~9만 별도 학습
-  python3 -m training.pipelines.train_comparison \
-    --data-dir preprocessing/processed_data_789 \
-    --models mlp cnn cnnlstm cnnbilstm sats transformer unified isoline_gnn tactile_gnn_gat multi_head_field \
-    --epochs 100 \
-    --preload-vram \
-    --preload-workers 8 \
-    --preload-batch-size 512 \
-    --batch-size 16384 \
-    --device cuda
-```
+여전히 다른 모델(MFP 외 MLP, CNNLSTM, SATS 등)을 비교하고 싶다면 `--models` 목록에 추가해 동일 스크립트로 함께 학습하면 됩니다.
 
-모델별 실제 배치 상한(메모리 보호용 클램프)
-- `cnnlstm`, `cnnbilstm`, `multi_head_field`: 최대 1024
+모델별 배치 상한(메모리 보호용 클램프)
+- `cnnlstm`, `cnnbilstm`: 최대 1024
 - `sats`, `sats_xy`: 최대 512
 - `unified`: 최대 4096
+- `multi_head_field`: 요청한 배치 그대로 사용 (OOM 주의)
 - 기타: 요청한 `--batch-size` 그대로 적용
-→ 로그에 `batch_size=16384`처럼 보여도 위 상한으로 자동 조정됩니다.
 
 성능/속도 참고
 - `--preload-vram`을 켜면 전체 데이터를 VRAM에 적재해 I/O 대기 없이 빠르게 학습합니다. VRAM 부족 시 끄거나 `--preload-batch-size`를 더 줄이세요.
@@ -148,6 +139,7 @@ python3 -m training.pipelines.evaluate_comparison_heatmap \
 
 *   **`preprocessing/`**: 데이터 병합 및 정제 로직. (상세 내용은 `preprocessing/README.md` 참조)
 *   **`training/`**: 모델 정의, 증강, 비교 학습 및 평가 도구. (상세 내용은 `training/README.md` 참조)
+*   **`inference/`**: 학습된 체크포인트로 xy/z/Fz 추론 및 heatmap overlay를 확인하는 스크립트.
 *   **`md/`**: 연구 보고서, 최신 논문 기술 분석 및 학습 구조 설계 문서.
 *   **`learning_based/`**: (Old) 초기 단계의 CNN-LSTM 및 6자유도 실험 코드.
 

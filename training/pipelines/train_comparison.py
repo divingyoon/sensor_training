@@ -16,6 +16,7 @@ import json
 import argparse
 import numpy as np
 from sklearn.metrics import r2_score
+import matplotlib.pyplot as plt
 
 from training.data.dataset_unified import UnifiedTactileDataset
 from training.data.dataset_zarr import ZarrDataset
@@ -30,7 +31,7 @@ from training.models.tactile_transformer import TactileTransformer
 from training.models.isoline_gnn import IsolineGNN
 from training.models.tactile_gnn_gat import TactileGAT
 from training.models.multi_head_field_model import MultiHeadFieldModel
-from training.utils.contact_geometry import contact_radius
+from training.utils.contact_geometry import contact_radius_tensor
 
 def get_model(name, seq_len=50, heatmap_size=40):
     if name == "unified": return UnifiedSensorModel(seq_len=seq_len)
@@ -55,6 +56,27 @@ def calculate_metrics(preds, targets):
     mae = np.mean(np.abs(preds - targets), axis=0)
     r2 = r2_score(targets, preds, multioutput='raw_values')
     return {"mse": mse.tolist(), "rmse": rmse.tolist(), "mae": mae.tolist(), "r2": r2.tolist()}
+
+
+def depth_bin_metrics(preds, targets, bin_edges):
+    """
+    preds, targets: np arrays (N,3) where [:,2]=depth
+    bin_edges: list of edges including upper edge
+    Returns list of dicts per bin.
+    """
+    results = []
+    depth = targets[:, 2]
+    xy_err = np.linalg.norm(preds[:, :2] - targets[:, :2], axis=1)
+    for i in range(len(bin_edges) - 1):
+        lo, hi = bin_edges[i], bin_edges[i + 1]
+        mask = (depth >= lo) & (depth < hi)
+        if mask.sum() == 0:
+            results.append({"range": [lo, hi], "count": 0})
+            continue
+        mae = float(xy_err[mask].mean())
+        succ = float((xy_err[mask] <= GRID_STEP).mean())
+        results.append({"range": [float(lo), float(hi)], "count": int(mask.sum()), "xy_mae": mae, "success<=1cell": succ})
+    return results
 
 
 def apply_linear_calib(pred: torch.Tensor, args):
@@ -98,10 +120,10 @@ def _forward_model(model_name, model, grid, iso, return_field: bool = False):
         return model(grid)
 
     if model_name == "multi_head_field":
-        force_vec, field_map = model(grid)
+        scalar_vec, field_map = model(grid)
         if return_field:
-            return force_vec, field_map
-        return force_vec
+            return scalar_vec, field_map
+        return scalar_vec
 
     if model_name == "mlp":
         s16 = grid[:, -1, 0].reshape(grid.size(0), -1)
@@ -134,7 +156,7 @@ def _effective_batch_size(model_name: str, requested_bs: int) -> int:
     if model_name == "cnnbilstm":
         return min(requested_bs, 1024)
     if model_name == "multi_head_field":
-        return min(requested_bs, 1024)
+        return requested_bs  # allow full batch; user controls OOM
     if model_name == "unified":
         return min(requested_bs, 4096)
     if model_name in ["sats", "sats_xy"]:
@@ -154,6 +176,52 @@ def _resolve_device(force: str) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def _decode_xy_from_heatmap(fmap_logits: torch.Tensor, decode: str):
+    """
+    fmap_logits: (B,1,H,W)
+    Returns (x_mm, y_mm) tensors (B,)
+    """
+    B, _, H, W = fmap_logits.shape
+    device = fmap_logits.device
+    dtype = fmap_logits.dtype
+    xs = torch.arange(W, device=device, dtype=dtype) * GRID_STEP + GRID_MIN
+    ys = torch.arange(H, device=device, dtype=dtype) * GRID_STEP + GRID_MIN
+
+    if decode == "softargmax":
+        prob = torch.softmax(fmap_logits.view(B, -1), dim=1)
+        exp_x = torch.sum(prob * xs.view(1, 1, W).repeat(1, H, 1).view(1, -1), dim=1)
+        exp_y = torch.sum(prob * ys.view(1, H, 1).repeat(1, 1, W).view(1, -1), dim=1)
+        return exp_x, exp_y
+
+    # argmax_refine: coarse argmax + local softmax 3x3 window
+    flat_idx = torch.argmax(fmap_logits.view(B, -1), dim=1)
+    iy = flat_idx // W
+    ix = flat_idx % W
+    # local window
+    x0 = torch.clamp(ix - 1, 0, W - 1)
+    x1 = torch.clamp(ix + 1, 0, W - 1)
+    y0 = torch.clamp(iy - 1, 0, H - 1)
+    y1 = torch.clamp(iy + 1, 0, H - 1)
+    # gather 3x3
+    coords_x = []
+    coords_y = []
+    weights = []
+    for dy in [-1, 0, 1]:
+        for dx in [-1, 0, 1]:
+            cx = torch.clamp(ix + dx, 0, W - 1)
+            cy = torch.clamp(iy + dy, 0, H - 1)
+            coords_x.append(xs[cx])
+            coords_y.append(ys[cy])
+            weights.append(fmap_logits[torch.arange(B, device=device), 0, cy, cx])
+    w = torch.stack(weights, dim=1)
+    prob_local = torch.softmax(w, dim=1)
+    cx = torch.stack(coords_x, dim=1)
+    cy = torch.stack(coords_y, dim=1)
+    exp_x = (prob_local * cx).sum(dim=1)
+    exp_y = (prob_local * cy).sum(dim=1)
+    return exp_x, exp_y
+
+
 def _build_soft_heatmap(
     x_mm: torch.Tensor,
     y_mm: torch.Tensor,
@@ -163,6 +231,8 @@ def _build_soft_heatmap(
     kernel: str = "gaussian",
     normalize: bool = False,
     indenter_radius_mm: float = 2.5,
+    fallback_depth_mm: float = 1.0,
+    sigma_scale: float = 1.0,
 ) -> torch.Tensor:
     """
     Depth-aware soft target heatmap.
@@ -178,12 +248,10 @@ def _build_soft_heatmap(
     dy = yy.unsqueeze(0) - y_mm.view(-1, 1, 1)
     dist2 = dx * dx + dy * dy
 
-    depth_clamped = torch.clamp(depth_mm, min=0.0)
-    if radius_model == "geom":
-        a_sq = torch.clamp(2 * indenter_radius_mm * depth_clamped - depth_clamped * depth_clamped, min=0.0)
-    else:
-        a_sq = torch.clamp(indenter_radius_mm * depth_clamped, min=0.0)
-    a = torch.sqrt(torch.clamp(a_sq, min=1e-12))  # (B,)
+    depth_eff = torch.where(depth_mm > 0, depth_mm, torch.full_like(depth_mm, fallback_depth_mm))
+    a = contact_radius_tensor(depth_eff, R_mm=indenter_radius_mm, model=radius_model)
+
+    a = a * sigma_scale
 
     if kernel == "linear":
         dist = torch.sqrt(dist2 + 1e-12)
@@ -192,13 +260,37 @@ def _build_soft_heatmap(
         denom = 2.0 * (a.view(-1, 1, 1) ** 2) + 1e-12
         target = torch.exp(-dist2 / denom)
 
-    target = torch.where(depth_clamped.view(-1, 1, 1) > 0, target, torch.zeros_like(target))
+    target = torch.where(depth_eff.view(-1, 1, 1) > 0, target, torch.zeros_like(target))
 
     if normalize:
         s = target.flatten(1).sum(dim=1, keepdim=True) + 1e-6
         target = target / s.view(-1, 1, 1)
 
     return target.unsqueeze(1)
+
+
+def _save_overlay(batch_idx, fmap_logits, target_map, out_dir, prefix="val", max_samples=4):
+    """
+    Save overlay images (pred heatmap sigmoid vs target) for quick visual check.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    prob = torch.sigmoid(fmap_logits).detach().cpu()
+    tgt = target_map.detach().cpu()
+    b = min(prob.size(0), max_samples)
+    for i in range(b):
+        plt.figure(figsize=(5, 2.2))
+        plt.subplot(1, 2, 1)
+        plt.title("pred")
+        plt.imshow(prob[i, 0], origin="lower", cmap="inferno")
+        plt.colorbar(fraction=0.046, pad=0.04)
+        plt.subplot(1, 2, 2)
+        plt.title("target")
+        plt.imshow(tgt[i, 0], origin="lower", cmap="viridis")
+        plt.colorbar(fraction=0.046, pad=0.04)
+        plt.tight_layout()
+        path = os.path.join(out_dir, f"{prefix}_overlay_b{batch_idx}_i{i}.png")
+        plt.savefig(path)
+        plt.close()
 
 
 class PreloadedDataset(Dataset):
@@ -308,11 +400,11 @@ class ZarrSequenceDataset(Dataset):
         iso[:, 16:17] = r
 
         last_i = idxs[-1]
-        tgt = torch.zeros(6, dtype=s16.dtype)
+        tgt = torch.zeros(4, dtype=s16.dtype)  # [x, y, z, fz]
         tgt[0] = self.cx[last_i]
         tgt[1] = self.cy[last_i]
         tgt[2] = self.depth[last_i]
-        tgt[5] = self.fz[last_i]
+        tgt[3] = self.fz[last_i]
         return grid, iso, tgt
 
 
@@ -412,11 +504,9 @@ def _iter_batches(preloaded_ds, index_tensor, batch_size, shuffle, device, augme
             if flip_x.any():
                 grid[flip_x] = torch.flip(grid[flip_x], dims=[-1])
                 tgt[flip_x, 0] = -tgt[flip_x, 0]
-                tgt[flip_x, 3] = -tgt[flip_x, 3]
             if flip_y.any():
                 grid[flip_y] = torch.flip(grid[flip_y], dims=[-2])
                 tgt[flip_y, 1] = -tgt[flip_y, 1]
-                tgt[flip_y, 4] = -tgt[flip_y, 4]
             grid = grid + torch.randn_like(grid) * 0.01
 
         if grid.device != device:
@@ -440,7 +530,7 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
     bce_heatmap = None
     huber = None
     mse = nn.MSELoss()
-    if args.use_depth_aware_label and model_name == "multi_head_field":
+    if model_name == "multi_head_field":
         if args.loss_xy == "bce":
             bce_heatmap = nn.BCEWithLogitsLoss(pos_weight=bce_pos_weight)
         huber = nn.SmoothL1Loss(beta=args.huber_delta)
@@ -467,30 +557,48 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
         for grid, iso, tgt, _ in train_bar:
             optimizer.zero_grad()
 
-            if args.use_depth_aware_label and model_name == "multi_head_field":
-                pred, fmap = _forward_model(model_name, model, grid, iso, return_field=True)
+            if model_name == "multi_head_field":
+                depth_mask = tgt[:, 2] > args.depth_min_for_label
+                if not depth_mask.any():
+                    continue  # skip batch with no contact
+
+                grid_m = grid[depth_mask]
+                iso_m = iso[depth_mask]
+                tgt_m = tgt[depth_mask]
+
+                pred, fmap = _forward_model(model_name, model, grid_m, iso_m, return_field=True)
                 target_map = _build_soft_heatmap(
-                    tgt[:, 0], tgt[:, 1], tgt[:, 2],
+                    tgt_m[:, 0], tgt_m[:, 1], tgt_m[:, 2],
                     heatmap_size=args.heatmap_size,
                     radius_model=args.depth_radius_model,
                     kernel=args.depth_label_kernel,
                     normalize=args.normalize_heatmap,
                     indenter_radius_mm=args.indenter_radius_mm,
+                    fallback_depth_mm=args.depth_fallback_mm,
+                    sigma_scale=args.heatmap_sigma_scale,
                 )
+                if args.loss_xy == "bce" and args.normalize_heatmap:
+                    maxv = target_map.max(dim=2, keepdim=True)[0].max(dim=3, keepdim=True)[0].clamp(min=1e-6)
+                    target_map = target_map / maxv
                 if args.loss_xy == "bce":
                     l_xy = bce_heatmap(fmap, target_map)
                 else:
                     weight = 1.0 + args.wmse_alpha * target_map
                     l_xy = (weight * (fmap - target_map) ** 2).mean()
 
+                pred_z = (pred[:, 0] - args.z_mean) / args.z_std
+                tgt_z = (tgt_m[:, 2] - args.z_mean) / args.z_std
+                pred_fz = (pred[:, 1] - args.fz_mean) / args.fz_std
+                tgt_fz = (tgt_m[:, 3] - args.fz_mean) / args.fz_std
+
                 if args.loss_z == "huber":
-                    l_z = huber(pred[:, 2], tgt[:, 2])
+                    l_z = huber(pred_z, tgt_z)
                 else:
-                    l_z = mse(pred[:, 2], tgt[:, 2])
+                    l_z = mse(pred_z, tgt_z)
                 if args.loss_fz == "huber":
-                    l_fz = huber(pred[:, 5], tgt[:, 5])
+                    l_fz = huber(pred_fz, tgt_fz)
                 else:
-                    l_fz = mse(pred[:, 5], tgt[:, 5])
+                    l_fz = mse(pred_fz, tgt_fz)
 
                 loss = args.lambda_xy * l_xy + args.lambda_z * l_z + args.lambda_fz * l_fz
             else:
@@ -525,37 +633,81 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
                 leave=False,
             )
             val_losses = []
-            for grid, iso, tgt, _ in val_bar:
-                if args.use_depth_aware_label and model_name == "multi_head_field":
-                    pred, fmap = _forward_model(model_name, model, grid, iso, return_field=True)
+            for batch_idx, (grid, iso, tgt, _) in enumerate(val_bar):
+                if model_name == "multi_head_field":
+                    depth_mask = tgt[:, 2] > args.depth_min_for_label
+                    if not depth_mask.any():
+                        continue
+                    grid_m = grid[depth_mask]
+                    iso_m = iso[depth_mask]
+                    tgt_m = tgt[depth_mask]
+
+                    pred, fmap = _forward_model(model_name, model, grid_m, iso_m, return_field=True)
                     target_map = _build_soft_heatmap(
-                        tgt[:, 0], tgt[:, 1], tgt[:, 2],
+                        tgt_m[:, 0], tgt_m[:, 1], tgt_m[:, 2],
                         heatmap_size=args.heatmap_size,
                         radius_model=args.depth_radius_model,
                         kernel=args.depth_label_kernel,
                         normalize=args.normalize_heatmap,
                         indenter_radius_mm=args.indenter_radius_mm,
+                        fallback_depth_mm=args.depth_fallback_mm,
+                        sigma_scale=args.heatmap_sigma_scale,
                     )
+                    if args.loss_xy == "bce" and args.normalize_heatmap:
+                        maxv = target_map.max(dim=2, keepdim=True)[0].max(dim=3, keepdim=True)[0].clamp(min=1e-6)
+                        target_map = target_map / maxv
                     if args.loss_xy == "bce":
                         l_xy = bce_heatmap(fmap, target_map)
                     else:
                         weight = 1.0 + args.wmse_alpha * target_map
                         l_xy = (weight * (fmap - target_map) ** 2).mean()
-                    l_z = huber(pred[:, 2], tgt[:, 2]) if args.loss_z == "huber" else mse(pred[:, 2], tgt[:, 2])
-                    l_fz = huber(pred[:, 5], tgt[:, 5]) if args.loss_fz == "huber" else mse(pred[:, 5], tgt[:, 5])
+                    pred_z = (pred[:, 0] - args.z_mean) / args.z_std
+                    tgt_z = (tgt_m[:, 2] - args.z_mean) / args.z_std
+                    pred_fz = (pred[:, 1] - args.fz_mean) / args.fz_std
+                    tgt_fz = (tgt_m[:, 3] - args.fz_mean) / args.fz_std
+                    l_z = huber(pred_z, tgt_z) if args.loss_z == "huber" else mse(pred_z, tgt_z)
+                    l_fz = huber(pred_fz, tgt_fz) if args.loss_fz == "huber" else mse(pred_fz, tgt_fz)
                     val_loss = args.lambda_xy * l_xy + args.lambda_z * l_z + args.lambda_fz * l_fz
+                    if args.save_heatmap_overlay and batch_idx < args.overlay_batches:
+                        _save_overlay(
+                            batch_idx,
+                            fmap,
+                            target_map,
+                            os.path.join(args.out_dir, "overlays"),
+                            prefix=f"{model_name}_e{epoch+1}",
+                            max_samples=args.overlay_samples,
+                        )
                 else:
                     pred = _forward_model(model_name, model, grid, iso)
                     val_loss = criterion(pred[:, :3], tgt[:, :3])
 
-                pred_use = apply_linear_calib(pred, args)
+                # decode xy from heatmap for metrics if requested
+                if model_name == "multi_head_field":
+                    if args.decode_xy != "none":
+                        x_dec, y_dec = _decode_xy_from_heatmap(fmap, args.decode_xy)
+                        pred_xy = torch.stack([x_dec, y_dec], dim=1)
+                    else:
+                        flat = fmap.view(fmap.size(0), -1)
+                        argmax = flat.argmax(dim=1)
+                        iy = argmax // args.heatmap_size
+                        ix = argmax % args.heatmap_size
+                        xs = torch.arange(args.heatmap_size, device=fmap.device, dtype=fmap.dtype) * GRID_STEP + GRID_MIN
+                        ys = torch.arange(args.heatmap_size, device=fmap.device, dtype=fmap.dtype) * GRID_STEP + GRID_MIN
+                        pred_xy = torch.stack([xs[ix], ys[iy]], dim=1)
+                    z_col = pred[:, 0:1]  # pred z
+                    pred_concat = torch.cat([pred_xy, z_col], dim=1)
+                else:
+                    pred_concat = pred[:, :3]
+
+                pred_use = apply_linear_calib(pred_concat, args)
                 all_preds.append(pred_use[:, :3].cpu().numpy())
-                all_targets.append(tgt[:, :3].cpu().numpy())
+                all_targets.append(tgt_m[:, :3].cpu().numpy() if model_name == "multi_head_field" else tgt[:, :3].cpu().numpy())
                 val_losses.append(val_loss.item())
 
         all_preds = np.concatenate(all_preds)
         all_targets = np.concatenate(all_targets)
         metrics = calculate_metrics(all_preds, all_targets)
+        metrics["depth_bins"] = depth_bin_metrics(all_preds, all_targets, args.depth_bin_edges)
         avg_mae = np.mean(metrics["mae"])
 
         if avg_mae < best_val_mae:
@@ -565,12 +717,18 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
             if args.use_depth_aware_label and model_name == "multi_head_field":
                 tag = f"_dlabel-{args.depth_label_kernel}-{args.depth_radius_model}"
                 tag += f"_xy{args.loss_xy}_z{args.loss_z}_fz{args.loss_fz}"
+                if args.decode_xy != "none":
+                    tag += f"_dec{args.decode_xy}"
+                if args.normalize_heatmap:
+                    tag += "_hnorm"
             save_path = os.path.join(args.out_dir, f"best_{model_name}{tag}.pth")
             torch.save({
                 "state_dict": model.state_dict(),
                 "metrics": metrics,
                 "model_name": model_name
             }, save_path)
+            with open(os.path.join(args.out_dir, f"metrics_{model_name}{tag}.json"), "w") as f:
+                json.dump(metrics, f, indent=2)
 
         print(
             f"  [EPOCH {epoch+1:03d}/{args.epochs}] "
@@ -627,7 +785,10 @@ if __name__ == "__main__":
     parser.add_argument("--depth-radius-model", choices=["hertz", "geom"], default="hertz")
     parser.add_argument("--indenter-radius-mm", type=float, default=2.5)
     parser.add_argument("--heatmap-size", type=int, default=40)
+    parser.add_argument("--heatmap-sigma-scale", type=float, default=1.0, help="Scale factor applied to contact radius when building soft heatmap")
     parser.add_argument("--normalize-heatmap", action="store_true", help="Normalize soft heatmap to sum=1")
+    parser.add_argument("--depth-fallback-mm", type=float, default=1.0, help="Depth to use when depth is missing/<=0")
+    parser.add_argument("--depth-min-for-label", type=float, default=0.05, help="Ignore samples with depth <= this when computing heatmap losses/metrics")
     parser.add_argument("--fg-weight", type=float, default=5.0, help="Foreground weight for BCEWithLogitsLoss")
     parser.add_argument("--loss-xy", choices=["bce", "wmse"], default="bce")
     parser.add_argument("--wmse-alpha", type=float, default=4.0, help="weight = 1 + alpha * target for wmse")
@@ -638,8 +799,25 @@ if __name__ == "__main__":
     parser.add_argument("--lambda-z", type=float, default=0.2)
     parser.add_argument("--lambda-fz", type=float, default=0.2)
     parser.add_argument("--huber-delta", type=float, default=1.0)
+    parser.add_argument("--z-mean", type=float, default=0.0)
+    parser.add_argument("--z-std", type=float, default=1.0)
+    parser.add_argument("--fz-mean", type=float, default=0.0)
+    parser.add_argument("--fz-std", type=float, default=1.0)
+    parser.add_argument("--depth-bins", type=str, default="0.8,1.1,1.4,1.7", help="comma-separated depth bin edges (mm)")
+    parser.add_argument("--save-heatmap-overlay", action="store_true", help="Save pred/target heatmap overlays on validation")
+    parser.add_argument("--overlay-samples", type=int, default=4)
+    parser.add_argument("--overlay-batches", type=int, default=1)
+    parser.add_argument("--smoke-off-baseline", action="store_true", help="Run one forward path with depth-aware flag off to ensure compatibility")
 
     args = parser.parse_args()
+    try:
+        edges = [float(x) for x in args.depth_bins.split(",") if x.strip() != ""]
+        if len(edges) >= 2:
+            args.depth_bin_edges = edges + [float("inf")]
+        else:
+            args.depth_bin_edges = [0.0, float("inf")]
+    except Exception:
+        args.depth_bin_edges = [0.0, float("inf")]
     os.makedirs(args.out_dir, exist_ok=True)
 
     device = _resolve_device(args.device)
@@ -649,6 +827,19 @@ if __name__ == "__main__":
     results = {}
     for m in args.models:
         results[m] = train_one_model(m, args, device, preloaded_ds, train_idx, val_idx)
+
+        # quick smoke: flag off path still runs when depth-aware enabled
+        if args.smoke_off_baseline and args.use_depth_aware_label and m == "multi_head_field":
+            args.use_depth_aware_label = False
+            try:
+                # use a tiny subset to avoid heavy compute
+                small_iter = _iter_batches(preloaded_ds, train_idx[:1], batch_size=1, shuffle=False, device=device, augment=False)
+                grid, iso, tgt, _ = next(small_iter)
+                _ = _forward_model(m, get_model(m, args.seq_len, args.heatmap_size).to(device), grid, iso)
+                print("[SMOKE] flag-off forward pass succeeded.")
+            except Exception as e:
+                print(f"[SMOKE] flag-off forward failed: {e}")
+            args.use_depth_aware_label = True
     
     with open(os.path.join(args.out_dir, "comparison_results.json"), "w") as f:
         json.dump(results, f, indent=2)

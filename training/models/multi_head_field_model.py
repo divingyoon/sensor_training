@@ -21,11 +21,11 @@ class MultiHeadFieldModel(nn.Module):
         )
         self.lstm = nn.LSTM(64 * 4 * 4, 128, batch_first=True)
         
-        # Head 1: 3-Axis Force Vector at Contact Center [x, y, z, Fx, Fy, Fz]
-        self.head_force = nn.Sequential(
+        # Head: scalar depth/force [z, Fz]
+        self.head_scalar = nn.Sequential(
             nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(128, 6)
+            nn.Linear(128, 2)
         )
         
         # Head 2: 2D Heatmap logits (e.g., 40x40 grid)
@@ -42,7 +42,7 @@ class MultiHeadFieldModel(nn.Module):
         lstm_out, _ = self.lstm(cnn_out)
         feat = lstm_out[:, -1, :]  # Last hidden state
         
-        force_vec = self.head_force(feat)
+        scalar_vec = self.head_scalar(feat)
         field_map = self.head_field(feat).view(B, 1, self.heatmap_size, self.heatmap_size)
         
-        return force_vec, field_map
+        return scalar_vec, field_map
