@@ -324,6 +324,12 @@ def parse_args() -> argparse.Namespace:
         default=0.02,
         help="max(|s_norm_i|)가 이 값 미만인 저신호 샘플 제거. 0 이하면 비활성.",
     )
+    parser.add_argument(
+        "--min-reliable-s",
+        type=float,
+        default=0.005,
+        help="일관성 필터에서 좌표별 최소 신호 임계값. 낮출수록 더 많은 좌표를 남김.",
+    )
     return parser.parse_args()
 
 
@@ -485,7 +491,7 @@ def main():
         grid_min_quality.rename(columns={"max_s": "min_trial_s"}, inplace=True)
         
         # 2. 모든 Trial에서 최소 0.005 이상의 신호가 보장된 좌표만 선별
-        MIN_RELIABLE_S = 0.005
+        MIN_RELIABLE_S = args.min_reliable_s
         good_grids = grid_min_quality[grid_min_quality["min_trial_s"] >= MIN_RELIABLE_S]
         
         n_total_grids = len(grid_min_quality)
@@ -494,7 +500,10 @@ def main():
         # 3. 데이터 필터링
         all_feat = pd.merge(all_feat, good_grids[["x_mm", "y_mm"]], on=["x_mm", "y_mm"], how="inner")
         
-        print(f"    → 전체 {n_total_grids}개 그리드 중 {n_good_grids}개 유지 ({n_good_grids/n_total_grids*100:.1f}%)")
+        print(
+            f"    → 전체 {n_total_grids}개 그리드 중 {n_good_grids}개 유지 "
+            f"({n_good_grids/n_total_grids*100:.1f}%) | min_reliable_s={MIN_RELIABLE_S}"
+        )
         if n_total_grids > n_good_grids:
             removed = grid_min_quality[grid_min_quality["min_trial_s"] < MIN_RELIABLE_S]
             print(f"    → 제거된 그리드 수: {len(removed)}")

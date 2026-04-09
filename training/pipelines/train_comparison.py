@@ -6,6 +6,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
+import torch.multiprocessing as mp
+
+# Avoid "Too many open files" when using many DataLoader workers / large preload.
+# Use file_system sharing to reduce FD usage per worker on Linux.
+mp.set_sharing_strategy("file_system")
 from tqdm import tqdm
 import json
 import argparse
@@ -20,6 +25,7 @@ from training.models.cnn_sr import CNNSR
 from training.models.cnnlstm_sr import CNNLSTMSR
 from training.models.cnn_bilstm import CNNBiLSTM
 from training.models.sats_model import SATSModel
+from training.models.sats_xy_multihead import SATSXYMultiHead
 from training.models.tactile_transformer import TactileTransformer
 from training.models.isoline_gnn import IsolineGNN
 from training.models.tactile_gnn_gat import TactileGAT
@@ -32,6 +38,7 @@ def get_model(name, seq_len=50):
     elif name == "cnnlstm": return CNNLSTMSR()
     elif name == "cnnbilstm": return CNNBiLSTM()
     elif name == "sats": return SATSModel()
+    elif name == "sats_xy": return SATSXYMultiHead()
     elif name == "transformer": return TactileTransformer()
     elif name == "isoline_gnn": return IsolineGNN()
     elif name == "tactile_gnn_gat": return TactileGAT()
@@ -44,6 +51,23 @@ def calculate_metrics(preds, targets):
     mae = np.mean(np.abs(preds - targets), axis=0)
     r2 = r2_score(targets, preds, multioutput='raw_values')
     return {"mse": mse.tolist(), "rmse": rmse.tolist(), "mae": mae.tolist(), "r2": r2.tolist()}
+
+
+def apply_linear_calib(pred: torch.Tensor, args):
+    """
+    Optional post-calibration to correct systematic scale/offset between
+    predicted [x,y] and ground truth. Coefficients are user-tunable.
+    """
+    if not getattr(args, "apply_linear_calib", False):
+        return pred
+    if pred.size(-1) < 2:
+        return pred
+    out = pred.clone()
+    px = pred[:, 0]
+    py = pred[:, 1]
+    out[:, 0] = args.calib_x_ax * px + args.calib_x_by * py + args.calib_x_bias
+    out[:, 1] = args.calib_y_ax * px + args.calib_y_by * py + args.calib_y_bias
+    return out
 
 
 def _forward_model(model_name, model, grid, iso):
@@ -62,7 +86,7 @@ def _forward_model(model_name, model, grid, iso):
         radius_seq = iso[:, :, -1:]
         return model(grid, radius_seq)
 
-    if model_name == "sats":
+    if model_name in ["sats", "sats_xy"]:
         s16_seq = grid[:, :, 0].reshape(grid.size(0), grid.size(1), -1)
         return model(s16_seq)
 
@@ -107,7 +131,7 @@ def _effective_batch_size(model_name: str, requested_bs: int) -> int:
         return min(requested_bs, 1024)
     if model_name == "unified":
         return min(requested_bs, 4096)
-    if model_name == "sats":
+    if model_name in ["sats", "sats_xy"]:
         return min(requested_bs, 512)
     if model_name == "tactile_gnn_gat":
         return min(requested_bs, 2048)
@@ -384,6 +408,11 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
             
             pred = _forward_model(model_name, model, grid, iso)
             loss = criterion(pred[:, :3], tgt[:, :3]) # Position loss
+            if args.lambda_offdiag > 0.0:
+                xc = pred[:, 0] - pred[:, 0].mean()
+                yc = pred[:, 1] - pred[:, 1].mean()
+                cov = (xc * yc).mean()
+                loss = loss + args.lambda_offdiag * (cov * cov)
             loss.backward()
             optimizer.step()
             train_bar.set_postfix(loss=f"{loss.item():.4f}")
@@ -408,7 +437,8 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
             )
             for grid, iso, tgt, _ in val_bar:
                 pred = _forward_model(model_name, model, grid, iso)
-                all_preds.append(pred[:, :3].cpu().numpy())
+                pred_use = apply_linear_calib(pred, args)
+                all_preds.append(pred_use[:, :3].cpu().numpy())
                 all_targets.append(tgt[:, :3].cpu().numpy())
 
         all_preds = np.concatenate(all_preds)
@@ -455,6 +485,16 @@ if __name__ == "__main__":
     parser.add_argument("--seq-len", type=int, default=50)
     parser.add_argument("--stride", type=int, default=5)
     parser.add_argument("--phase", choices=["loading", "unloading", "all"], default="all")
+    # calibration (optional)
+    parser.add_argument("--apply-linear-calib", action="store_true", help="Apply post linear calibration to [x,y] outputs")
+    parser.add_argument("--calib-x-ax", type=float, default=1.0)
+    parser.add_argument("--calib-x-by", type=float, default=0.23)
+    parser.add_argument("--calib-x-bias", type=float, default=-1.06)
+    parser.add_argument("--calib-y-ax", type=float, default=0.0)
+    parser.add_argument("--calib-y-by", type=float, default=0.60)
+    parser.add_argument("--calib-y-bias", type=float, default=1.80)
+    # cross coupling regularization
+    parser.add_argument("--lambda-offdiag", type=float, default=0.0, help="Penalty weight for cov(x_pred, y_pred)")
     parser.add_argument("--data-source", choices=["auto", "zarr", "csv"], default="auto")
     parser.add_argument("--zarr-path", type=str, default="")
     parser.add_argument("--preload-vram", action="store_true", default=True, help="Preload all samples into VRAM")

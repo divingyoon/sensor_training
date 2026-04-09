@@ -21,12 +21,25 @@ GRID_RANGE = np.arange(GRID_MIN, GRID_MAX + 1e-6, GRID_STEP)
 N_GRID = len(GRID_RANGE)
 
 
+def apply_linear_calib(pred: torch.Tensor, args):
+    if not getattr(args, "apply_linear_calib", False):
+        return pred
+    if pred.size(-1) < 2:
+        return pred
+    out = pred.clone()
+    px = pred[:, 0]
+    py = pred[:, 1]
+    out[:, 0] = args.calib_x_ax * px + args.calib_x_by * py + args.calib_x_bias
+    out[:, 1] = args.calib_y_ax * px + args.calib_y_by * py + args.calib_y_bias
+    return out
+
+
 def to_grid_idx(v: np.ndarray) -> np.ndarray:
     idx = np.round((v - GRID_MIN) / GRID_STEP).astype(np.int64)
     return np.clip(idx, 0, N_GRID - 1)
 
 
-def evaluate_one(model_name: str, ckpt_path: Path, ds: UnifiedTactileDataset, val_idx: np.ndarray, batch_size: int, device: torch.device):
+def evaluate_one(model_name: str, ckpt_path: Path, ds: UnifiedTactileDataset, val_idx: np.ndarray, batch_size: int, device: torch.device, args):
     ckpt = torch.load(ckpt_path, map_location=device)
     model = get_model(model_name).to(device)
     model.load_state_dict(ckpt["state_dict"])
@@ -50,6 +63,7 @@ def evaluate_one(model_name: str, ckpt_path: Path, ds: UnifiedTactileDataset, va
             tgt = torch.stack([b[2] for b in batch], dim=0).to(device)
 
             pred = _forward_model(model_name, model, grid, iso)
+            pred = apply_linear_calib(pred, args)
             err = (pred[:, :3] - tgt[:, :3]).abs().cpu().numpy()
             tgt_np = tgt[:, :3].cpu().numpy()
             pred_np = pred[:, :3].cpu().numpy()
@@ -204,6 +218,14 @@ def main():
     p.add_argument("--error-vmax", type=float, default=1.0)
     p.add_argument("--fixed-error-range", action="store_true", default=True)
     p.add_argument("--no-fixed-error-range", dest="fixed_error_range", action="store_false")
+    # calibration
+    p.add_argument("--apply-linear-calib", action="store_true", help="Apply post linear calibration to [x,y] outputs")
+    p.add_argument("--calib-x-ax", type=float, default=1.0)
+    p.add_argument("--calib-x-by", type=float, default=0.23)
+    p.add_argument("--calib-x-bias", type=float, default=-1.06)
+    p.add_argument("--calib-y-ax", type=float, default=0.0)
+    p.add_argument("--calib-y-by", type=float, default=0.60)
+    p.add_argument("--calib-y-bias", type=float, default=1.80)
     args = p.parse_args()
 
     device = torch.device(args.device)
@@ -243,7 +265,7 @@ def main():
         if not ckpt.exists():
             print(f"[WARN] skip {m}: checkpoint not found: {ckpt}")
             continue
-        maps, rows, g = evaluate_one(m, ckpt, ds, val_idx, args.batch_size, device)
+        maps, rows, g = evaluate_one(m, ckpt, ds, val_idx, args.batch_size, device, args)
         model_maps[m] = maps
         model_rows[m] = rows
         model_global[m] = g
