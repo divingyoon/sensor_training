@@ -23,6 +23,8 @@ except ImportError:
 class ZarrDataset(Dataset):
     """
     preprocess.py에서 생성한 .zarr 데이터를 로드하는 PyTorch Dataset.
+    aux_feat 마지막 컬럼이 직경(diameter_mm) 또는 접촉 반경(contact_radius_mm)일 수 있으며
+    zarr attrs["aux_last_field"] 값으로 구분한다.
     
     Args:
         zarr_path: .zarr 디렉토리 경로
@@ -51,6 +53,7 @@ class ZarrDataset(Dataset):
         
         # Zarr 데이터 열기
         zg = zarr.open_group(str(self.zarr_path), mode='r')
+        self.aux_last_field = zg.attrs.get("aux_last_field", "diameter_mm")
         
         # 인덱스 파일 로드
         index_path = self.zarr_path.parent / "dataset_index.json"
@@ -112,9 +115,13 @@ class ZarrDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        if self.aux_last_field == "contact_radius_mm":
+            radius_val = self.aux_data[idx, 3]
+        else:
+            radius_val = self.aux_data[idx, 3] / 2.0  # diameter → radius
         return {
             "tactile": self.tactile_data[idx],
-            "radius":  self.aux_data[idx, 3] / 2.0,
+            "radius":  radius_val,
             "target_sr": torch.stack([self.cx_data[idx], self.cy_data[idx], self.depth_data[idx]]),
             "target_fz": self.fz_data[idx:idx+1],
             "trial_id": self.trial_ids[idx]

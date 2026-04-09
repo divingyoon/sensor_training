@@ -1,83 +1,88 @@
-# Tactile Sensor Training Framework (v4.0)
+# Tactile Sensor Training (2026-04-09)
 
-본 프레임워크는 16채널 촉각 센서의 **3D Super-Resolution(SR)**, **3축 힘(Fx, Fy, Fz) 추정**, 그리고 **연속적인 Force Field 재구성**을 위한 고도화된 연구 및 학습 파이프라인입니다.
+16ch 촉각 센서로 다음을 학습·검증하기 위한 파이프라인입니다.
+- XY 위치(0.5 mm grid), Z depth, Fz 회귀
+- 선택적 depth-aware soft heatmap + z/fz 보조 헤드 (옵션 B)
+- Force Field 재구성(heatmap) 멀티태스크
 
----
-
-## 1. 디렉토리 구조 (Directory Structure)
-
-```text
+## 구조
+```
 training/
-├── data/           # 데이터셋 로더 및 증강 (dataset_unified.py, sensor_layout.py)
-├── models/         # 모델 정의 (10종 이상의 아키텍처)
-│   ├── mlp_baseline.py         # 비교용 기본 MLP
-│   ├── cnn_sr.py / cnnlstm_sr.py # 공간/시간 기반 SR
-│   ├── sats_model.py           # Self-Attention 기반 (X축 오차 특화)
-│   ├── supertac_vae.py         # VAE + Deconv (고해상도 맵 생성)
-│   ├── tactile_transformer.py   # Transformer 기반 전역 상관관계 학습
-│   └── tactile_gnn_gat.py      # Graph Attention Network 기반
-├── utils/          # 손실 함수, 설정, 분석 도구 (loss.py, visualize_grid_errors.py)
-└── pipelines/      # 실행 스크립트 (train_unified.py, train_comparison.py)
+├─ data/       # Dataset 로더 (zarr/csv)
+├─ models/     # MLP, CNN/LSTM, SATS, Transformer, GNN, Multi-head 등
+├─ pipelines/  # 학습/평가 스크립트
+├─ utils/      # 기하/라벨/시각화 유틸
+└─ runs*/      # 결과 저장 경로
 ```
 
----
+## 주요 파이프라인
+- `pipelines/train_comparison.py` : 여러 모델 동시 학습/비교 (zarr 또는 csv)
+- `pipelines/train_sr_zarr.py`   : SR 회귀(x,y,z) 단일 모델 (zarr)
+- `pipelines/train_ff_zarr.py`   : Force Field/Fz 전용 (zarr)
+- `pipelines/train_unified.py`   : 시퀀스 기반 통합 모델
+- `pipelines/evaluate_comparison_heatmap.py`, `evaluate_sr.py` : 평가/히트맵 출력
 
-## 2. 모델 라인업 및 특징
+## 데이터 요구
+- 기본 경로: `preprocessing/processed_data/` 또는 `preprocessing/zarr_data/*.zarr`
+- Zarr 필수 필드: `tactile_lr_norm`(N,16), `aux_feat[:,3]=diameter`, `cx, cy, depth_mm, fz`
+- CSV 경로 사용 시 `x_mm, y_mm, z_mm, Fz` 컬럼 포함 권장
 
-| 모델명 | 핵심 기술 | 주요 용도 |
-| :--- | :--- | :--- |
-| **MLP Baseline** | Simple MLP | 성능 비교를 위한 기준점 |
-| **CNN-LSTM** | Spatial + Temporal | 히스테리시스 보정 및 동적 정밀도 향상 |
-| **SATS** | Self-Attention | 센서 간 비대칭성(X축 오차) 집중 해결 |
-| **SuperTac** | VAE + Upsampling | 25x25 이상의 고해상도 Force Field 생성 |
-| **Transformer** | Global Attention | 대량의 데이터에서 최고의 일반화 성능 확보 |
-| **Tactile GAT** | Graph Attention | 센서 배치의 기하학적 구조를 명시적으로 반영 |
+## 옵션 B (depth-aware soft heatmap) 사용법
+- 플래그 (multi_head_field에 적용):
+  - `--use-depth-aware-label`
+  - `--depth-label-kernel gaussian|linear`
+  - `--depth-radius-model hertz|geom`
+  - `--heatmap-size 40` (0.5 mm grid 기준)
+  - `--loss-xy bce|wmse --loss-z huber|mse --loss-fz huber|mse`
+  - `--lambda-xy 1.0 --lambda-z 0.2 --lambda-fz 0.2`
+  - `--fg-weight 5.0` (BCE pos weight), `--huber-delta 1.0`
+- 출력: `xy_heatmap logits`, `z_depth`, `fz` (heatmap은 BCEWithLogits/WMSE)
+- ckpt 이름에 `dlabel-*` 태그 자동 부여
 
----
+## 권장 실험 순서 (Ablation)
+1) Baseline: point label + xy only (`--use-depth-aware-label` off)
+2) Stage2: depth-aware soft label + xy only (`--use-depth-aware-label` on, λ_z=λ_fz=0 또는 헤드 off)
+3) Stage3: soft label + z/fz heads (멀티태스크, λ=1/0.2/0.2)
+4) Optional: depth/force 입력 conditioning 추가 후 비교
 
-## 3. 사용 방법 (Usage Guide)
-
-### 3.1 모델 비교 학습 (Comparison Pipeline)
-여러 모델의 성능을 동시에 측정하고 최적의 구조를 찾습니다.
-```bash
-# MLP, CNN, CNN-LSTM, SATS 모델을 동시에 30에포크 학습 및 비교
-python3 -m training.pipelines.train_comparison \
-    --models mlp cnn cnnlstm sats \
-    --epochs 30 --batch-size 64 --seq-len 50
+## 예시 명령
+- Stage1 (baseline, csv/zarr 자동 감지):
 ```
-*   **평가 지표**: MSE, RMSE, MAE, **$R^2$ (결정계수)** 가 자동으로 산출되어 `comparison_results.json`에 저장됩니다.
-
-### 3.2 통합 모델 학습 (Unified Training)
-위치와 힘을 동시에 학습하는 최종형 모델을 실행합니다.
-```bash
-python3 -m training.pipelines.train_unified \
-    --data-dir preprocessing/raw_data \
-    --out-dir training/runs_unified \
-    --epochs 100
+python -m training.pipelines.train_comparison \
+  --models multi_head_field \
+  --epochs 20 --batch-size 8192 --seq-len 50
+```
+- Stage2 (soft label):
+```
+python -m training.pipelines.train_comparison \
+  --models multi_head_field \
+  --use-depth-aware-label \
+  --depth-label-kernel gaussian --depth-radius-model hertz \
+  --heatmap-size 40 --fg-weight 5.0 \
+  --epochs 20 --batch-size 8192
+```
+- Stage3 (soft label + z/fz):
+```
+python -m training.pipelines.train_comparison \
+  --models multi_head_field \
+  --use-depth-aware-label \
+  --loss-xy bce --loss-z huber --loss-fz huber \
+  --lambda-xy 1.0 --lambda-z 0.2 --lambda-fz 0.2 \
+  --epochs 20 --batch-size 8192
 ```
 
-### 3.3 데이터 증강 (Data Augmentation)
-과적합을 방지하기 위해 학습 시 `--augment` 옵션을 활성화할 수 있습니다 (코드 내 기본 설정 가능).
-*   **Spatial Flip**: 센서 그리드 좌우/상하 반전 및 좌표 부호 보정.
-*   **Gaussian Noise**: 신호에 1% 미세 노이즈 추가로 강인성 확보.
+## 검증 체크리스트
+- A/B: 기존 라벨 vs depth-aware 라벨 (동일 모델)
+- 깊이 구간별 지표: MAE/RMSE, 성공률(≤1 cell)
+- 히트맵 overlay로 정답 대비 예측 품질 확인
+- 데이터 순서 무작위화, 드리프트 보정 여부 확인
+- Ablation 순서 기록: (1) point → (2) soft → (3) soft+z/fz → (4) conditioning
 
----
+## 출력/로그
+- ckpt: `training/runs_comparison/best_<model>[dlabel-*].pth`
+- 지표: `comparison_results.json`
+- 히트맵/시각화: `runs_comparison/heatmaps/*` (evaluate_comparison_heatmap)
 
-## 4. 분석 및 시각화 (Analysis)
-
-### 그리드 오차 히트맵 생성
-특정 모델이 X축 오차를 얼마나 줄였는지 시각적으로 검증합니다.
-```bash
-python3 -m training.utils.visualize_grid_errors \
-    --model-path training/runs_comparison/best_sats.pth \
-    --out-path training/runs_comparison/sats_error_map.png
-```
-*   **결과**: X, Y, Z축 각각의 MAE 분포가 PNG 히트맵으로 출력됩니다.
-
-### 학습 결과 해석 (Metrics)
-*   **MAE (Mean Absolute Error)**: 실제 거리(mm) 또는 힘(N) 단위의 평균 오차.
-*   **$R^2$ Score**: 1.0에 가까울수록 모델이 센서 데이터의 물리적 거동을 완벽하게 이해했음을 의미합니다. (0.95 이상 권장)
-
----
-**Last Updated**: 2026-04-06
-**Version**: 4.0 (Advanced Tactile Intelligence Framework)
+## 버전
+- Last Updated: 2026-04-09
+- Version: 4.1 (Depth-Aware Option B)

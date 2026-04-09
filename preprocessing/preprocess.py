@@ -14,10 +14,18 @@
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+THIS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = THIS_DIR.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from training.utils.contact_geometry import contact_radius
 
 # ── 상수 ────────────────────────────────────────────────────────────────────
 SKIN_COLS = [f"s{i}" for i in range(1, 17)]
@@ -52,37 +60,139 @@ def parse_trial_name(stem: str) -> dict:
     }
 
 
-# ── Baseline 추출 ────────────────────────────────────────────────────────────
-def extract_baseline(df: pd.DataFrame, trial_id: str, info: dict) -> dict:
+# ── Baseline 추출 / 드리프트 보정 ────────────────────────────────────────────
+def find_baseline_segments(
+    df: pd.DataFrame,
+    z_thresh: float = 0.001,
+    force_thresh: float = 0.5,
+    min_consec: int = 40,
+) -> list[tuple[int, int]]:
     """
-    파일 맨 앞의 연속적인 x_mm=y_mm=z_mm=0 구간만 baseline으로 사용.
+    z_mm가 거의 0이고(stage 정지) 힘이 작은 연속 구간을 baseline 후보로 찾는다.
+
+    반환: [(start_idx, end_idx), ...] (end 포함)
     """
-    # raw_merge.py에서 생성된 컬럼명 사용 (x_mm, y_mm, z_mm)
-    mask = (df["x_mm"] == 0) & (df["y_mm"] == 0) & (df["z_mm"] == 0)
 
-    # 파일 앞에서 첫 번째 비-0 행 위치 탐색
-    first_nonzero_pos = int((~mask).values.argmax())
-    if first_nonzero_pos == 0 and not mask.values[0]:
-        # 파일 첫 행부터 비-0 -> baseline 없음
-        raise ValueError(f"[{trial_id}] 파일 시작에 x=y=z=0 baseline 구간이 없습니다.")
+    dx = df["x_mm"].diff().abs().fillna(0.0)
+    dy = df["y_mm"].diff().abs().fillna(0.0)
 
-    rows = df.iloc[:first_nonzero_pos]
-    if len(rows) == 0:
-        raise ValueError(f"[{trial_id}] x=y=z=0인 baseline 행이 없습니다.")
+    no_load = (df["z_mm"].abs() <= z_thresh) & (dx < 0.01) & (dy < 0.01)
+    if force_thresh > 0 and {"Fz"}.issubset(df.columns):
+        no_load &= df["Fz"].abs() <= force_thresh
 
+    segments: list[tuple[int, int]] = []
+    start_idx: int | None = None
+    arr = no_load.to_numpy()
+
+    for idx, flag in enumerate(arr):
+        if flag and start_idx is None:
+            start_idx = idx
+            continue
+        if (not flag) and start_idx is not None:
+            if idx - start_idx >= min_consec:
+                segments.append((start_idx, idx - 1))
+            start_idx = None
+
+    if start_idx is not None and len(arr) - start_idx >= min_consec:
+        segments.append((start_idx, len(arr) - 1))
+
+    return segments
+
+
+def compute_baseline_stats(
+    rows: pd.DataFrame,
+    trial_id: str,
+    info: dict,
+    baseline_id: int,
+    start_idx: int,
+    end_idx: int,
+) -> dict:
     baseline = {
+        "baseline_id": baseline_id,
         "trial_id": trial_id,
         "material": info["material"],
         "diameter_mm": info["diameter_mm"],
         "baseline_n_rows": int(len(rows)),
-        "fz_mean": float(rows["Fz"].mean()),
-        "fx_mean": float(rows["Fx"].mean()),
-        "fy_mean": float(rows["Fy"].mean()),
+        "start_idx": int(start_idx),
+        "end_idx": int(end_idx),
     }
+
+    if "timestep_sec" in rows.columns:
+        baseline["start_time_sec"] = float(rows["timestep_sec"].iloc[0])
+        baseline["end_time_sec"] = float(rows["timestep_sec"].iloc[-1])
+
+    baseline["fz_mean"] = float(rows["Fz"].mean())
+    baseline["fx_mean"] = float(rows["Fx"].mean())
+    baseline["fy_mean"] = float(rows["Fy"].mean())
     for col in SKIN_COLS:
         baseline[f"{col}_mean"] = float(rows[col].mean())
 
     return baseline
+
+
+def assign_baseline_ids(n_rows: int, segments: list[tuple[int, int]]) -> np.ndarray:
+    """
+    각 row에 가장 최근 baseline segment id를 할당한다.
+    segment가 없으면 0으로 채운다.
+    """
+
+    if not segments:
+        return np.zeros(n_rows, dtype=int)
+
+    baseline_ids = np.zeros(n_rows, dtype=int)
+    seg_ptr = 0
+    seg_start, seg_end = segments[0]
+    current_id = 0
+
+    for i in range(n_rows):
+        # 다음 baseline 구간 시작 시점 업데이트
+        if seg_ptr < len(segments) and i >= segments[seg_ptr][0]:
+            seg_start, seg_end = segments[seg_ptr]
+            current_id = seg_ptr
+        baseline_ids[i] = current_id
+        # 다음 segment로 이동할 준비
+        if i == seg_end and seg_ptr + 1 < len(segments):
+            seg_ptr += 1
+
+    return baseline_ids
+
+
+def extract_baselines(
+    df: pd.DataFrame,
+    trial_id: str,
+    info: dict,
+    z_thresh: float = 0.001,
+    force_thresh: float = 0.5,
+    min_consec: int = 40,
+) -> tuple[list[dict], list[tuple[int, int]]]:
+    """
+    다중 baseline 구간을 찾아 각 구간별 평균을 반환한다.
+
+    1) z_mm≈0 & 힘 작음 & 정지 상태 구간을 우선 사용
+    2) 없으면 기존 방식(파일 앞 x=y=z=0 연속 구간)으로 폴백
+    """
+
+    segments = find_baseline_segments(df, z_thresh=z_thresh, force_thresh=force_thresh, min_consec=min_consec)
+
+    # 기존 방식으로 폴백
+    if not segments:
+        mask = (df["x_mm"] == 0) & (df["y_mm"] == 0) & (df["z_mm"] == 0)
+        inverse = ~mask
+        if inverse.any():
+            first_nonzero_pos = int(inverse.values.argmax())
+        else:
+            first_nonzero_pos = len(df)
+
+        if first_nonzero_pos == 0 and not mask.values[0]:
+            raise ValueError(f"[{trial_id}] baseline 구간을 찾을 수 없습니다.")
+        segments = [(0, max(first_nonzero_pos - 1, 0))]
+
+    baselines: list[dict] = []
+    for b_id, (start_idx, end_idx) in enumerate(segments):
+        rows = df.iloc[start_idx : end_idx + 1]
+        baselines.append(compute_baseline_stats(rows, trial_id, info, b_id, start_idx, end_idx))
+
+    return baselines, segments
 
 
 # ── 그리드 행 필터링 ──────────────────────────────────────────────────────────
@@ -126,7 +236,6 @@ def filter_grid_rows(df: pd.DataFrame) -> pd.DataFrame:
 # ── z_depth 계산 ─────────────────────────────────────────────────────────────
 def compute_z_depth(
     df: pd.DataFrame,
-    baseline: dict,
     contact_threshold: float = 0.01,
     n_consec: int = 3,
 ) -> pd.DataFrame:
@@ -162,18 +271,17 @@ def make_grid_df(
     df: pd.DataFrame,
     trial_id: str,
     info: dict,
-    baseline: dict,
     contact_threshold: float = 0.01,
 ) -> pd.DataFrame:
     """그리드 필터링 + z_depth + phase 포함 raw CSV 생성."""
     df = filter_grid_rows(df)
     if df.empty:
         return pd.DataFrame()
-        
-    df = compute_z_depth(df, baseline, contact_threshold=contact_threshold)
+
+    df = compute_z_depth(df, contact_threshold=contact_threshold)
     if df.empty:
         return pd.DataFrame()
-        
+
     df = assign_phase(df)
 
     n = len(df)
@@ -181,12 +289,13 @@ def make_grid_df(
         "trial_id": np.full(n, trial_id),
         "material": np.full(n, info["material"]),
         "diameter_mm": np.full(n, info["diameter_mm"], dtype=np.float32),
+        "baseline_id": df["baseline_id"].values if "baseline_id" in df.columns else np.zeros(n, dtype=int),
         "x_mm": df["x_mm"].values,
         "y_mm": df["y_mm"].values,
         "z_depth_mm": df["z_depth_mm"].values,
-        "fz": df["Fz"].values,
-        "fx": df["Fx"].values,
-        "fy": df["Fy"].values,
+        "fz": np.round(df["Fz"].values, 2),
+        "fx": np.round(df["Fx"].values, 2),
+        "fy": np.round(df["Fy"].values, 2),
     }
     for col in SKIN_COLS:
         data[col] = df[col].values
@@ -197,19 +306,31 @@ def make_grid_df(
 
 # ── Normalized Features CSV 생성 (SR 및 Force Field 학습용) ───────────────────
 def make_features_df(
-    grid_df: pd.DataFrame, baseline: dict, max_diameter: float, z_bin_mm: float, min_signal: float
+    grid_df: pd.DataFrame,
+    baselines: list[dict],
+    max_diameter: float,
+    z_bin_mm: float,
+    min_signal: float,
+    contact_radius_mm: np.ndarray | None = None,
+    contact_radius_cell: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """잔차 정규화 + diameter 정규화 + fz 정규화 → 학습 입력/타겟 CSV."""
     feat = pd.DataFrame()
 
-    # 입력 특징: s_norm_i = (s_i - baseline_i) / baseline_i
+    # baseline_id → baseline dict 매핑
+    baseline_map = {b["baseline_id"]: b for b in baselines}
+    if "baseline_id" not in grid_df.columns:
+        grid_df = grid_df.copy()
+        grid_df["baseline_id"] = 0
+
+    # 입력 특징: s_norm_i = (s_i - baseline_i) / baseline_i (구간별 baseline 사용)
+    bl_ids = grid_df["baseline_id"].to_numpy()
     for i, col in enumerate(SKIN_COLS, 1):
-        bl_val = baseline[f"{col}_mean"]
+        bl_vals = np.array([baseline_map[b]["%s_mean" % col] for b in bl_ids], dtype=np.float64)
         norm_col = f"s_norm_{i}"
-        if bl_val == 0:
-            feat[norm_col] = 0.0
-        else:
-            feat[norm_col] = (grid_df[col].values - bl_val) / bl_val
+        col_vals = grid_df[col].to_numpy(dtype=np.float64)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            feat[norm_col] = np.where(bl_vals == 0, 0.0, (col_vals - bl_vals) / bl_vals)
 
     # 입력 특징: diameter 정규화 (0~1)
     diam = grid_df["diameter_mm"].values[0] if "diameter_mm" in grid_df.columns else 0.0
@@ -219,10 +340,15 @@ def make_features_df(
     feat["x_mm"] = grid_df["x_mm"].values
     feat["y_mm"] = grid_df["y_mm"].values
     feat["z_depth_mm"] = grid_df["z_depth_mm"].values
+    if contact_radius_mm is not None:
+        feat["contact_radius_mm"] = contact_radius_mm
+    if contact_radius_cell is not None:
+        feat["contact_radius_cell"] = contact_radius_cell
+    feat["baseline_id"] = bl_ids
     
-    # 힘 (Force Field 타겟): Baseline 정정된 Fz
-    fz_bl = baseline.get("fz_mean", 0.0)
-    feat["fz_bc"] = grid_df["fz"].values - fz_bl
+    # 힘 (Force Field 타겟): Baseline 정정된 Fz (구간별 baseline 사용, 0.01 정밀도)
+    fz_bl = np.array([baseline_map[b]["fz_mean"] for b in bl_ids], dtype=np.float64)
+    feat["fz_bc"] = np.round(grid_df["fz"].values - fz_bl, 2)
     
     # 메타 데이터
     feat["fz_raw"] = grid_df["fz"].values
@@ -241,6 +367,10 @@ def make_features_df(
         agg_spec["diameter_norm"] = "first"
         agg_spec["fz_bc"] = "mean"
         agg_spec["fz_raw"] = "mean"
+        if contact_radius_mm is not None and "contact_radius_mm" in feat.columns:
+            agg_spec["contact_radius_mm"] = "mean"
+        if contact_radius_cell is not None and "contact_radius_cell" in feat.columns:
+            agg_spec["contact_radius_cell"] = "mean"
         feat = feat.groupby(group_cols, as_index=False).agg(agg_spec)
 
     if min_signal > 0:
@@ -254,21 +384,25 @@ def make_features_df(
 # ── 단일 Trial 처리 ──────────────────────────────────────────────────────────
 def process_trial(
     csv_path: Path, out_dir: Path, contact_threshold: float = 0.01
-) -> tuple[dict, pd.DataFrame]:
+) -> tuple[list[dict], pd.DataFrame]:
     trial_id = csv_path.stem
     info = parse_trial_name(trial_id)
 
     print(f"  처리 중: {trial_id}")
     df = pd.read_csv(csv_path)
 
-    # Baseline
-    baseline = extract_baseline(df, trial_id, info)
-    bl_path = out_dir / f"{trial_id}_baseline.json"
+    # Baseline (다중 구간 지원)
+    baselines, segments = extract_baselines(df, trial_id, info)
+    baseline_ids = assign_baseline_ids(len(df), segments)
+    df = df.copy()
+    df["baseline_id"] = baseline_ids
+
+    bl_path = out_dir / f"{trial_id}_baselines.json"
     with open(bl_path, "w", encoding="utf-8") as f:
-        json.dump(baseline, f, indent=2, ensure_ascii=False)
+        json.dump(baselines, f, indent=2, ensure_ascii=False)
 
     # Grid CSV (센서 반응 기반 접촉점 기준 z_depth)
-    grid_df = make_grid_df(df, trial_id, info, baseline, contact_threshold)
+    grid_df = make_grid_df(df, trial_id, info, contact_threshold)
     grid_path = out_dir / f"{trial_id}_grid.csv"
     grid_df.to_csv(grid_path, index=False)
 
@@ -278,13 +412,11 @@ def process_trial(
     z_min = grid_df["z_depth_mm"].min()
     z_max = grid_df["z_depth_mm"].max()
     print(
-        f"    → baseline {baseline['baseline_n_rows']}행 | "
-        f"그리드 {n_pts}포인트 | "
-        f"total {len(grid_df)}행 (loading {n_load} / unloading {n_unload}) | "
-        f"z_depth [{z_min:.3f}, {z_max:.3f}]mm"
+        f"    → baselines {len(baselines)}개 | 그리드 {n_pts}포인트 | total {len(grid_df)}행 "
+        f"(loading {n_load} / unloading {n_unload}) | z_depth [{z_min:.3f}, {z_max:.3f}]mm"
     )
 
-    return baseline, grid_df
+    return baselines, grid_df
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -330,13 +462,90 @@ def parse_args() -> argparse.Namespace:
         default=0.005,
         help="일관성 필터에서 좌표별 최소 신호 임계값. 낮출수록 더 많은 좌표를 남김.",
     )
+    parser.add_argument(
+        "--baseline-z-thresh",
+        type=float,
+        default=0.001,
+        help="baseline 탐색 시 |z_mm| 최대 허용치 (mm).",
+    )
+    parser.add_argument(
+        "--baseline-force-thresh",
+        type=float,
+        default=0.5,
+        help="baseline 탐색 시 |Fz| 최대 허용치 (N). 0이면 무시.",
+    )
+    parser.add_argument(
+        "--baseline-min-consec",
+        type=int,
+        default=40,
+        help="baseline으로 인정할 최소 연속 샘플 수.",
+    )
+    parser.add_argument(
+        "--use-depth-aware-radius",
+        action="store_true",
+        help="깊이 기반 접촉 반경을 계산해 contact_radius_mm 필드를 생성합니다.",
+    )
+    parser.add_argument(
+        "--radius-model",
+        choices=["hertz", "geo"],
+        default="hertz",
+        help="접촉 반경 계산 모델: hertz(a=sqrt(R*δ)) 또는 geo(a=sqrt(2Rδ-δ^2)).",
+    )
+    parser.add_argument(
+        "--indenter-radius-mm",
+        type=float,
+        default=2.5,
+        help="인덴터 반경(mm). 기본 2.5 (지름 5mm).",
+    )
+    parser.add_argument(
+        "--max-radius-mm",
+        type=float,
+        default=None,
+        help="계산된 접촉 반경 상한(mm). None이면 제한 없음.",
+    )
+    parser.add_argument(
+        "--fallback-depth-mode",
+        choices=["none", "mean", "const"],
+        default="none",
+        help="깊이값이 0/음수인 경우 대체 규칙: none=0 유지, mean=양수 depth 평균으로 치환, const=fallback-depth-mm 사용.",
+    )
+    parser.add_argument(
+        "--fallback-depth-mm",
+        type=float,
+        default=0.0,
+        help="fallback-depth-mode=const 일 때 사용할 깊이(mm).",
+    )
+    parser.add_argument(
+        "--export-label-heatmap",
+        action="store_true",
+        help="(옵션) 깊이 기반 라벨 히트맵을 PNG로 샘플 시각화합니다.",
+    )
+    parser.add_argument(
+        "--label-samples",
+        type=int,
+        default=3,
+        help="시각화할 샘플 수 (grid row 기준).",
+    )
+    parser.add_argument(
+        "--label-kernel",
+        choices=["gaussian", "linear"],
+        default="gaussian",
+        help="라벨 히트맵 커널 형태.",
+    )
+    parser.add_argument(
+        "--sigma-scale",
+        type=float,
+        default=1.0,
+        help="Gaussian 커널 시 sigma = a * scale 로 설정.",
+    )
     return parser.parse_args()
 
 
 # ── Zarr Export ──────────────────────────────────────────────────────────────
-def export_to_zarr(features_df: pd.DataFrame, zarr_path: Path):
+def export_to_zarr(features_df: pd.DataFrame, zarr_path: Path, aux_last_field: str = "diameter_mm"):
     """
     SkinDataset에서 바로 로드 가능한 Zarr 구조로 저장.
+    aux_last_field: aux_feat의 마지막 컬럼 의미를 명시 (\"diameter_mm\" | \"contact_radius_mm\")
     """
     try:
         import zarr
@@ -351,12 +560,15 @@ def export_to_zarr(features_df: pd.DataFrame, zarr_path: Path):
     s_norm_cols = [f"s_norm_{i}" for i in range(1, 17)]
     tactile_lr_norm = features_df[s_norm_cols].values.astype(np.float32)
     
-    # SkinDataset 호환 aux_feat 구성: [fx_N, fy_N, depth_mm, radius_mm]
-    # 현재 fx, fy는 features_df에 없으므로 (grid_df에는 있음) 0으로 채우거나 
-    # 필요시 features_df 구성을 수정해야 함. 여기서는 일단 [0, 0, z_depth, diameter]
+    # SkinDataset 호환 aux_feat 구성: [fx_N, fy_N, depth_mm, last_field]
+    # last_field는 diameter_mm 또는 contact_radius_mm 중 하나.
     aux_feat = np.zeros((n, 4), dtype=np.float32)
     aux_feat[:, 2] = features_df["z_depth_mm"].values
-    aux_feat[:, 3] = features_df["diameter_mm"].values
+    if aux_last_field == "contact_radius_mm" and "contact_radius_mm" in features_df.columns:
+        aux_feat[:, 3] = features_df["contact_radius_mm"].values
+    else:
+        aux_feat[:, 3] = features_df["diameter_mm"].values
+    # contact_radius_cell은 현재 aux_feat에 넣지 않지만 메타로 남긴다.
     
     fz = features_df["fz_bc"].values.astype(np.float32)
     cx = features_df["x_mm"].values.astype(np.float32)
@@ -369,6 +581,7 @@ def export_to_zarr(features_df: pd.DataFrame, zarr_path: Path):
 
     # Zarr 그룹 생성 및 데이터 저장 (Blosc 압축 기본 적용)
     root = zarr.open_group(str(zarr_path), mode='w')
+    root.attrs["aux_last_field"] = aux_last_field
     root.create_dataset("tactile_lr_norm", data=tactile_lr_norm, chunks=(1000, 16))
     root.create_dataset("aux_feat", data=aux_feat, chunks=(1000, 4))
     root.create_dataset("fz", data=fz, chunks=(1000,))
@@ -383,14 +596,20 @@ def export_to_zarr(features_df: pd.DataFrame, zarr_path: Path):
     trial_ids = features_df["trial_id"].values
     phases = features_df["phase"].values
     
+    has_contact_radius = aux_last_field == "contact_radius_mm" and "contact_radius_mm" in features_df.columns
     for i in range(n):
-        samples_info.append({
+        sample = {
             "trial_id": str(trial_ids[i]),
             "phase": "loading" if phases[i] == 0 else "unloading",
             "zarr_path": str(zarr_path),
             "zarr_index": i,
-            "depth_bin_mm": float(depth_mm[i])
-        })
+            "depth_bin_mm": float(depth_mm[i]),
+        }
+        if has_contact_radius:
+            sample["radius_mm"] = float(features_df["contact_radius_mm"].iloc[i])
+            if "contact_radius_cell" in features_df.columns:
+                sample["radius_cell"] = float(features_df["contact_radius_cell"].iloc[i])
+        samples_info.append(sample)
     
     index_path = zarr_path.parent / "dataset_index.json"
     with open(index_path, "w", encoding="utf-8") as f:
@@ -437,32 +656,66 @@ def main():
         print(f"  처리 중: {trial_id}")
         df = pd.read_csv(csv_path)
 
-        # Baseline
+        # Baseline (multi-segment)
         try:
-            baseline = extract_baseline(df, trial_id, info)
+            baselines, segments = extract_baselines(
+                df,
+                trial_id,
+                info,
+                z_thresh=args.baseline_z_thresh,
+                force_thresh=args.baseline_force_thresh,
+                min_consec=args.baseline_min_consec,
+            )
         except ValueError as e:
             print(f"    [건너뜀] {e}")
             continue
-            
-        bl_path = dirs["baselines"] / f"{trial_id}_baseline.json"
+
+        baseline_ids = assign_baseline_ids(len(df), segments)
+        df["baseline_id"] = baseline_ids
+
+        bl_path = dirs["baselines"] / f"{trial_id}_baselines.json"
         with open(bl_path, "w", encoding="utf-8") as f:
-            json.dump(baseline, f, indent=2, ensure_ascii=False)
+            json.dump(baselines, f, indent=2, ensure_ascii=False)
 
         # Grid CSV
-        grid_df = make_grid_df(df, trial_id, info, baseline, args.contact_threshold)
+        grid_df = make_grid_df(df, trial_id, info, args.contact_threshold)
         if grid_df.empty:
             print("    [건너뜀] 그리드 데이터가 없습니다.")
             continue
         grid_path = dirs["grid"] / f"{trial_id}_grid.csv"
         grid_df.to_csv(grid_path, index=False)
 
+        # 선택: 깊이 기반 접촉 반경
+        contact_radius_arr = None
+        if args.use_depth_aware_radius:
+            depth_arr = grid_df["z_depth_mm"].to_numpy(dtype=np.float64)
+            if args.fallback_depth_mode != "none":
+                pos_depth = depth_arr[depth_arr > 0]
+                fallback = args.fallback_depth_mm
+                if args.fallback_depth_mode == "mean" and len(pos_depth) > 0:
+                    fallback = float(pos_depth.mean())
+                depth_arr = np.where(depth_arr > 0, depth_arr, fallback)
+            contact_radius_arr = np.array(
+                [contact_radius(float(d), R_mm=args.indenter_radius_mm, model=args.radius_model) for d in depth_arr],
+                dtype=np.float64,
+            )
+            if args.max_radius_mm is not None:
+                contact_radius_arr = np.minimum(contact_radius_arr, args.max_radius_mm)
+            # 셀 단위 반경 추가 (0.5mm grid)
+            contact_radius_cell = contact_radius_arr / GRID_STEP_MM
+            grid_df = grid_df.copy()
+            grid_df["contact_radius_mm"] = contact_radius_arr
+            grid_df["contact_radius_cell"] = contact_radius_cell
+
         # Features CSV
         feat_df = make_features_df(
             grid_df,
-            baseline,
+            baselines,
             max_diameter,
             z_bin_mm=args.z_bin_mm,
             min_signal=args.min_signal,
+            contact_radius_mm=contact_radius_arr,
+            contact_radius_cell=contact_radius_cell if args.use_depth_aware_radius else None,
         )
         feat_path = dirs["features"] / f"{trial_id}_features.csv"
         feat_df.to_csv(feat_path, index=False)
@@ -516,7 +769,8 @@ def main():
         # Zarr 저장
         if not args.no_zarr:
             zarr_dir = dirs["zarr"] / f"dataset_{mat}.zarr"
-            export_to_zarr(all_feat, zarr_dir)
+            aux_last_field = "contact_radius_mm" if args.use_depth_aware_radius and "contact_radius_mm" in all_feat.columns else "diameter_mm"
+            export_to_zarr(all_feat, zarr_dir, aux_last_field=aux_last_field)
 
         print(f"  [{mat}] 최종 {len(all_feat):,}행 가공 완료")
 

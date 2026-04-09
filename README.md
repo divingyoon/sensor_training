@@ -20,28 +20,55 @@
 분산된 센서 로그를 하나의 시계열 CSV로 통합합니다.
 ```bash
 # 대표 예시: 100Hz 리샘플링 및 미세 시간 지연 보정 적용
-python3 preprocessing/raw_merge.py --align-mode resample --resample-hz 100
+python3 preprocessing/raw_merge.py \
+    --raw-root preprocessing/raw_data \
+    --align-mode resample --resample-hz 100 \
+    --min-match-ratio 0.9 \
+    --force-round-dp 2
+
 ```
 
 ### Step 2: 전처리 및 정제 (Preprocess)
-스테이지가 이동 중인 오염된 데이터를 필터링하고 학습용 정규화를 수행합니다.
+스테이지 정지 구간만 남기고, 드리프트를 구간별 baseline으로 보정하여 학습 특성을 생성합니다.
 ```bash
-# 대표 예시: 0.01 임계값 이상의 유효 접촉 데이터만 추출
-python3 preprocessing/preprocess.py --contact-threshold 0.01 --z-bin-mm 0.02
+# 기본값 예시
+python3 preprocessing/preprocess.py \
+  --raw-dir preprocessing/raw_data \
+  --out-dir preprocessing/processed_data \
+  --min-signal 0.02 \
+  --min-reliable-s 0.001 \
+  --baseline-z-thresh 0.001 \
+  --baseline-force-thresh 0.5 \
+  --baseline-min-consec 40
+  
+python3 preprocessing/preprocess.py \
+  --raw-dir preprocessing/raw_data \
+  --out-dir preprocessing/processed_data_min10 \
+  --min-signal 0.01 \
+  --min-reliable-s 0.001\
+  --baseline-z-thresh 0.001 \
+  --baseline-force-thresh 0.5 \
+  --baseline-min-consec 40
+
+python3 preprocessing/preprocess.py \
+  --raw-dir preprocessing/raw_data \
+  --out-dir preprocessing/processed_data_min8 \
+  --min-signal 0.008 \
+  --min-reliable-s 0.001\
+  --baseline-z-thresh 0.001 \
+  --baseline-force-thresh 0.5 \
+  --baseline-min-consec 40
 ```
 
-```bash
-# 전처리: 신호/좌표 삭제 최소화
-  python3 preprocessing/preprocess.py \
-    --raw-dir preprocessing/raw_data \
-    --out-dir preprocessing/processed_data_789 \
-    --glob "**/ecomesh_d5_[789]_merged.csv" \
-    --contact-threshold 0.0 \
-    --z-bin-mm 0.0 \
-    --min-signal 0.0 \
-    --min-reliable-s 0.001
+전처리 세부 단계
+- 다중 baseline 자동 탐색: z≈0 & |Fz|이 낮고 이동이 멈춘 구간을 전체 시퀀스에서 찾아 baseline_id를 부여합니다(없으면 파일 선두 구간으로 폴백).
+- 좌표/정지 필터: 0.5 mm 그리드에 스냅되고 앞뒤 샘플까지 정지한 행만 유지.
+- 깊이·위상 계산: z_depth_mm=원본 z_mm(음수 제거), 각 (x,y) 그룹의 최대 깊이 이후를 unloading(phase=1)으로 표기.
+- 센서 정규화: s_norm_i = (s_i - baseline_i) / baseline_i 를 baseline_id별로 적용, Fz는 구간별 fz_mean을 빼서 보정.
+- z-bin 및 신호 필터: z_bin_mm 간격으로 binning 후 max|s_norm| < min_signal 행 제거; min_reliable_s로 모든 실험에서 일정 신호가 확보된 좌표만 유지.
+- 출력물: `processed_data/baselines/*_baselines.json`, `grid/*_grid.csv`, `features/*_features.csv`, 소재별 통합 `*_features.csv`, 선택 시 `zarr_data/dataset_<mat>.zarr`.
 
-```
+
 ### Step 3: 통합 및 비교 학습 (Unified & Comparison Training)
 다양한 아키텍처를 테스트하고 최적의 모델을 선정합니다.
 ```bash
@@ -49,6 +76,34 @@ python3 preprocessing/preprocess.py --contact-threshold 0.01 --z-bin-mm 0.02
 python3 -m training.pipelines.train_comparison \
  --models mlp cnn cnnlstm cnnbilstm sats transformer unified isoline_gnn tactile_gnn_gat multi_head_field \
  --epochs 100
+ 
+python3 -m training.pipelines.train_comparison \
+  --data-dir preprocessing/processed_data \
+  --out-dir training/runs/min20 \
+  --models cnnlstm sats_xy sats\
+  --preload-vram \
+  --preload-batch-size 512 \
+  --epochs 100 \
+  --lr 3e-4
+  
+python3 -m training.pipelines.train_comparison \
+  --data-dir preprocessing/processed_data_min10 \
+  --out-dir training/runs/min10 \
+  --models cnnlstm sats_xy sats\
+  --preload-vram \
+  --preload-batch-size 512 \
+  --epochs 100 \
+  --lr 3e-4
+
+python3 -m training.pipelines.train_comparison \
+  --data-dir preprocessing/processed_data_min8 \
+  --out-dir training/runs/min8 \
+  --models cnnlstm sats_xy sats\
+  --preload-vram \
+  --preload-batch-size 512 \
+  --epochs 100 \
+  --lr 3e-4
+
 ```
 
 ```bash
@@ -63,6 +118,17 @@ python3 -m training.pipelines.train_comparison \
     --batch-size 16384 \
     --device cuda
 ```
+
+모델별 실제 배치 상한(메모리 보호용 클램프)
+- `cnnlstm`, `cnnbilstm`, `multi_head_field`: 최대 1024
+- `sats`, `sats_xy`: 최대 512
+- `unified`: 최대 4096
+- 기타: 요청한 `--batch-size` 그대로 적용
+→ 로그에 `batch_size=16384`처럼 보여도 위 상한으로 자동 조정됩니다.
+
+성능/속도 참고
+- `--preload-vram`을 켜면 전체 데이터를 VRAM에 적재해 I/O 대기 없이 빠르게 학습합니다. VRAM 부족 시 끄거나 `--preload-batch-size`를 더 줄이세요.
+- 데이터 건수가 약 1.9만(예: min20)일 경우 CNN-LSTM은 에폭당 스텝이 ~19개라 에폭이 매우 빠르게 끝나는 것이 정상입니다. 더 촘촘한 학습이 필요하면 데이터 필터를 완화하거나 에폭 수를 늘리세요.
 
 ### Step 4: 셀별 히트맵 평가 (Comparison Heatmap)
 모델별 X/Y/Z/XY 오차를 동일 그리드에서 시각화합니다.
@@ -92,5 +158,3 @@ python3 -m training.pipelines.evaluate_comparison_heatmap \
 학습이 완료된 모델은 다음 도구를 통해 검증할 수 있습니다.
 *   **오차 분석**: `training/utils/visualize_grid_errors.py`를 통해 X/Y/Z 축별 오차 히트맵 생성.
 *   **실시간 확인**: `training/pipelines/visualize_realtime`을 통해 3D 히트맵 및 힘 벡터 시각화.
-
-

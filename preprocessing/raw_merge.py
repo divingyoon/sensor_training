@@ -152,6 +152,18 @@ def parse_args() -> argparse.Namespace:
         default=0.05,
         help="Tolerance for fixed Y(mm) filtering.",
     )
+    parser.add_argument(
+        "--min-match-ratio",
+        type=float,
+        default=0.9,
+        help="due/ethermotion/afd match_ratio가 이 값보다 낮으면 에러로 중단합니다.",
+    )
+    parser.add_argument(
+        "--force-round-dp",
+        type=int,
+        default=2,
+        help="Fx/Fy/Fz 소수점 자릿수(예: 2 -> 0.01). 음수면 반올림 비활성.",
+    )
     return parser.parse_args()
 
 
@@ -669,7 +681,7 @@ def trim_to_common_recording_start(
     return out.reset_index(drop=True)
 
 
-def build_export_frame(merged: pd.DataFrame) -> pd.DataFrame:
+def build_export_frame(merged: pd.DataFrame, force_round_dp: int | None = None) -> pd.DataFrame:
     out = merged.copy()
     out["timestep_sec"] = out["time_rel_sec"]
 
@@ -716,6 +728,12 @@ def build_export_frame(merged: pd.DataFrame) -> pd.DataFrame:
         z_adj_raw = np.maximum(z_adj_raw - start_offset, 0.0)
 
     out["z_mm"] = z_adj_raw * XY_GRID_MM
+
+    # 힘 채널 소수점 절삭(필요 시)
+    if force_round_dp is not None:
+        out["Fx"] = np.round(out["Fx"].to_numpy(dtype=np.float64), force_round_dp)
+        out["Fy"] = np.round(out["Fy"].to_numpy(dtype=np.float64), force_round_dp)
+        out["Fz"] = np.round(out["Fz"].to_numpy(dtype=np.float64), force_round_dp)
 
     ordered = (
         ["timestep_sec"]
@@ -918,6 +936,8 @@ def process_trial_dir(
     plot_max_points: int,
     plot_y_mm: float,
     plot_y_tol_mm: float,
+    min_match_ratio: float,
+    force_round_dp: int | None,
 ) -> None:
     info = parse_trial_dir_name(trial_dir.name)
 
@@ -970,7 +990,7 @@ def process_trial_dir(
     if align_mode == "resample" and "resample_hz" in merged.columns:
         summary["resample_hz"] = float(merged["resample_hz"].iloc[0])
 
-    export_df = build_export_frame(merged)
+    export_df = build_export_frame(merged, force_round_dp=None if force_round_dp is None else force_round_dp)
 
     merged_csv = trial_dir / f"{trial_dir.name}_merged.csv"
     baseline_json = trial_dir / f"{trial_dir.name}_baseline.json"
@@ -992,6 +1012,18 @@ def process_trial_dir(
         f"ethermotion={summary.get('ethermotion_match_ratio', np.nan):.3f}, "
         f"afd={summary.get('afd_match_ratio', np.nan):.3f}"
     )
+
+    # 품질 게이트: 매칭 비율 확인
+    min_ratio = min(
+        summary.get("due_match_ratio", 1.0),
+        summary.get("ethermotion_match_ratio", 1.0),
+        summary.get("afd_match_ratio", 1.0),
+    )
+    if min_ratio < min_match_ratio:
+        raise RuntimeError(
+            f"match ratio {min_ratio:.3f} < min-match-ratio {min_match_ratio:.3f} "
+            f"(trial {trial_dir.name})"
+        )
 
 
 
@@ -1026,6 +1058,8 @@ def main() -> None:
                 plot_max_points=args.plot_max_points,
                 plot_y_mm=args.plot_y_mm,
                 plot_y_tol_mm=args.plot_y_tol_mm,
+                min_match_ratio=args.min_match_ratio,
+                force_round_dp=args.force_round_dp if args.force_round_dp >= 0 else None,
             )
         except Exception as exc:
             print(f"[{trial_dir.name}] failed: {exc}")

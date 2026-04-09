@@ -30,8 +30,9 @@ from training.models.tactile_transformer import TactileTransformer
 from training.models.isoline_gnn import IsolineGNN
 from training.models.tactile_gnn_gat import TactileGAT
 from training.models.multi_head_field_model import MultiHeadFieldModel
+from training.utils.contact_geometry import contact_radius
 
-def get_model(name, seq_len=50):
+def get_model(name, seq_len=50, heatmap_size=40):
     if name == "unified": return UnifiedSensorModel(seq_len=seq_len)
     elif name == "mlp": return MLPBaseline()
     elif name == "cnn": return CNNSR()
@@ -42,8 +43,11 @@ def get_model(name, seq_len=50):
     elif name == "transformer": return TactileTransformer()
     elif name == "isoline_gnn": return IsolineGNN()
     elif name == "tactile_gnn_gat": return TactileGAT()
-    elif name == "multi_head_field": return MultiHeadFieldModel(seq_len=seq_len)
+    elif name == "multi_head_field": return MultiHeadFieldModel(seq_len=seq_len, heatmap_size=heatmap_size)
     else: raise ValueError(f"Unknown model: {name}")
+
+GRID_STEP = 0.5
+GRID_MIN = -9.75
 
 def calculate_metrics(preds, targets):
     mse = np.mean((preds - targets)**2, axis=0)
@@ -70,7 +74,7 @@ def apply_linear_calib(pred: torch.Tensor, args):
     return out
 
 
-def _forward_model(model_name, model, grid, iso):
+def _forward_model(model_name, model, grid, iso, return_field: bool = False):
     # grid: (B, T, 1, 4, 4), iso: (B, T, 17=[drift16 + radius1])
     if model_name == "unified":
         # Unified model expects iso dim 19; pad two zeros when metadata is unavailable.
@@ -94,7 +98,9 @@ def _forward_model(model_name, model, grid, iso):
         return model(grid)
 
     if model_name == "multi_head_field":
-        force_vec, _ = model(grid)
+        force_vec, field_map = model(grid)
+        if return_field:
+            return force_vec, field_map
         return force_vec
 
     if model_name == "mlp":
@@ -146,6 +152,53 @@ def _resolve_device(force: str) -> torch.device:
         return torch.device("cpu")
     # auto
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _build_soft_heatmap(
+    x_mm: torch.Tensor,
+    y_mm: torch.Tensor,
+    depth_mm: torch.Tensor,
+    heatmap_size: int = 40,
+    radius_model: str = "hertz",
+    kernel: str = "gaussian",
+    normalize: bool = False,
+    indenter_radius_mm: float = 2.5,
+) -> torch.Tensor:
+    """
+    Depth-aware soft target heatmap.
+    Returns (B,1,H,W) on the same device/dtype as inputs.
+    """
+    device = x_mm.device
+    dtype = x_mm.dtype
+    xs = torch.arange(heatmap_size, device=device, dtype=dtype) * GRID_STEP + GRID_MIN
+    ys = torch.arange(heatmap_size, device=device, dtype=dtype) * GRID_STEP + GRID_MIN
+    yy, xx = torch.meshgrid(ys, xs, indexing="ij")  # (H, W)
+
+    dx = xx.unsqueeze(0) - x_mm.view(-1, 1, 1)
+    dy = yy.unsqueeze(0) - y_mm.view(-1, 1, 1)
+    dist2 = dx * dx + dy * dy
+
+    depth_clamped = torch.clamp(depth_mm, min=0.0)
+    if radius_model == "geom":
+        a_sq = torch.clamp(2 * indenter_radius_mm * depth_clamped - depth_clamped * depth_clamped, min=0.0)
+    else:
+        a_sq = torch.clamp(indenter_radius_mm * depth_clamped, min=0.0)
+    a = torch.sqrt(torch.clamp(a_sq, min=1e-12))  # (B,)
+
+    if kernel == "linear":
+        dist = torch.sqrt(dist2 + 1e-12)
+        target = torch.relu(1.0 - dist / a.view(-1, 1, 1))
+    else:
+        denom = 2.0 * (a.view(-1, 1, 1) ** 2) + 1e-12
+        target = torch.exp(-dist2 / denom)
+
+    target = torch.where(depth_clamped.view(-1, 1, 1) > 0, target, torch.zeros_like(target))
+
+    if normalize:
+        s = target.flatten(1).sum(dim=1, keepdim=True) + 1e-6
+        target = target / s.view(-1, 1, 1)
+
+    return target.unsqueeze(1)
 
 
 class PreloadedDataset(Dataset):
@@ -380,9 +433,17 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
     if effective_bs != args.batch_size:
         print(f"  [INFO] batch_size override for {model_name}: {args.batch_size} -> {effective_bs} (OOM prevention)")
 
-    model = get_model(model_name, args.seq_len).to(device)
+    model = get_model(model_name, args.seq_len, args.heatmap_size).to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    bce_pos_weight = torch.tensor(args.fg_weight, device=device) if args.fg_weight > 0 else None
+    bce_heatmap = None
+    huber = None
+    mse = nn.MSELoss()
+    if args.use_depth_aware_label and model_name == "multi_head_field":
+        if args.loss_xy == "bce":
+            bce_heatmap = nn.BCEWithLogitsLoss(pos_weight=bce_pos_weight)
+        huber = nn.SmoothL1Loss(beta=args.huber_delta)
 
     best_val_mae = float('inf')
     best_metrics = {}
@@ -405,14 +466,42 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
         )
         for grid, iso, tgt, _ in train_bar:
             optimizer.zero_grad()
-            
-            pred = _forward_model(model_name, model, grid, iso)
-            loss = criterion(pred[:, :3], tgt[:, :3]) # Position loss
-            if args.lambda_offdiag > 0.0:
-                xc = pred[:, 0] - pred[:, 0].mean()
-                yc = pred[:, 1] - pred[:, 1].mean()
-                cov = (xc * yc).mean()
-                loss = loss + args.lambda_offdiag * (cov * cov)
+
+            if args.use_depth_aware_label and model_name == "multi_head_field":
+                pred, fmap = _forward_model(model_name, model, grid, iso, return_field=True)
+                target_map = _build_soft_heatmap(
+                    tgt[:, 0], tgt[:, 1], tgt[:, 2],
+                    heatmap_size=args.heatmap_size,
+                    radius_model=args.depth_radius_model,
+                    kernel=args.depth_label_kernel,
+                    normalize=args.normalize_heatmap,
+                    indenter_radius_mm=args.indenter_radius_mm,
+                )
+                if args.loss_xy == "bce":
+                    l_xy = bce_heatmap(fmap, target_map)
+                else:
+                    weight = 1.0 + args.wmse_alpha * target_map
+                    l_xy = (weight * (fmap - target_map) ** 2).mean()
+
+                if args.loss_z == "huber":
+                    l_z = huber(pred[:, 2], tgt[:, 2])
+                else:
+                    l_z = mse(pred[:, 2], tgt[:, 2])
+                if args.loss_fz == "huber":
+                    l_fz = huber(pred[:, 5], tgt[:, 5])
+                else:
+                    l_fz = mse(pred[:, 5], tgt[:, 5])
+
+                loss = args.lambda_xy * l_xy + args.lambda_z * l_z + args.lambda_fz * l_fz
+            else:
+                pred = _forward_model(model_name, model, grid, iso)
+                loss = criterion(pred[:, :3], tgt[:, :3])  # Position loss
+                if args.lambda_offdiag > 0.0:
+                    xc = pred[:, 0] - pred[:, 0].mean()
+                    yc = pred[:, 1] - pred[:, 1].mean()
+                    cov = (xc * yc).mean()
+                    loss = loss + args.lambda_offdiag * (cov * cov)
+
             loss.backward()
             optimizer.step()
             train_bar.set_postfix(loss=f"{loss.item():.4f}")
@@ -435,11 +524,34 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
                 desc=f"{model_name} val   {epoch+1}/{args.epochs}",
                 leave=False,
             )
+            val_losses = []
             for grid, iso, tgt, _ in val_bar:
-                pred = _forward_model(model_name, model, grid, iso)
+                if args.use_depth_aware_label and model_name == "multi_head_field":
+                    pred, fmap = _forward_model(model_name, model, grid, iso, return_field=True)
+                    target_map = _build_soft_heatmap(
+                        tgt[:, 0], tgt[:, 1], tgt[:, 2],
+                        heatmap_size=args.heatmap_size,
+                        radius_model=args.depth_radius_model,
+                        kernel=args.depth_label_kernel,
+                        normalize=args.normalize_heatmap,
+                        indenter_radius_mm=args.indenter_radius_mm,
+                    )
+                    if args.loss_xy == "bce":
+                        l_xy = bce_heatmap(fmap, target_map)
+                    else:
+                        weight = 1.0 + args.wmse_alpha * target_map
+                        l_xy = (weight * (fmap - target_map) ** 2).mean()
+                    l_z = huber(pred[:, 2], tgt[:, 2]) if args.loss_z == "huber" else mse(pred[:, 2], tgt[:, 2])
+                    l_fz = huber(pred[:, 5], tgt[:, 5]) if args.loss_fz == "huber" else mse(pred[:, 5], tgt[:, 5])
+                    val_loss = args.lambda_xy * l_xy + args.lambda_z * l_z + args.lambda_fz * l_fz
+                else:
+                    pred = _forward_model(model_name, model, grid, iso)
+                    val_loss = criterion(pred[:, :3], tgt[:, :3])
+
                 pred_use = apply_linear_calib(pred, args)
                 all_preds.append(pred_use[:, :3].cpu().numpy())
                 all_targets.append(tgt[:, :3].cpu().numpy())
+                val_losses.append(val_loss.item())
 
         all_preds = np.concatenate(all_preds)
         all_targets = np.concatenate(all_targets)
@@ -449,7 +561,11 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
         if avg_mae < best_val_mae:
             best_val_mae = avg_mae
             best_metrics = metrics
-            save_path = os.path.join(args.out_dir, f"best_{model_name}.pth")
+            tag = ""
+            if args.use_depth_aware_label and model_name == "multi_head_field":
+                tag = f"_dlabel-{args.depth_label_kernel}-{args.depth_radius_model}"
+                tag += f"_xy{args.loss_xy}_z{args.loss_z}_fz{args.loss_fz}"
+            save_path = os.path.join(args.out_dir, f"best_{model_name}{tag}.pth")
             torch.save({
                 "state_dict": model.state_dict(),
                 "metrics": metrics,
@@ -505,6 +621,24 @@ if __name__ == "__main__":
         default="cuda",
         help="'auto'=cuda if available else cpu; 'cuda'=require GPU; 'cpu'=force cpu",
     )
+    # depth-aware heatmap option B
+    parser.add_argument("--use-depth-aware-label", action="store_true", help="Use depth-aware soft heatmap (option B) for multi_head_field")
+    parser.add_argument("--depth-label-kernel", choices=["gaussian", "linear"], default="gaussian")
+    parser.add_argument("--depth-radius-model", choices=["hertz", "geom"], default="hertz")
+    parser.add_argument("--indenter-radius-mm", type=float, default=2.5)
+    parser.add_argument("--heatmap-size", type=int, default=40)
+    parser.add_argument("--normalize-heatmap", action="store_true", help="Normalize soft heatmap to sum=1")
+    parser.add_argument("--fg-weight", type=float, default=5.0, help="Foreground weight for BCEWithLogitsLoss")
+    parser.add_argument("--loss-xy", choices=["bce", "wmse"], default="bce")
+    parser.add_argument("--wmse-alpha", type=float, default=4.0, help="weight = 1 + alpha * target for wmse")
+    parser.add_argument("--loss-z", choices=["huber", "mse"], default="huber")
+    parser.add_argument("--loss-fz", choices=["huber", "mse"], default="huber")
+    parser.add_argument("--decode-xy", choices=["none", "softargmax", "argmax_refine"], default="none")
+    parser.add_argument("--lambda-xy", type=float, default=1.0)
+    parser.add_argument("--lambda-z", type=float, default=0.2)
+    parser.add_argument("--lambda-fz", type=float, default=0.2)
+    parser.add_argument("--huber-delta", type=float, default=1.0)
+
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
