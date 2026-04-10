@@ -364,7 +364,7 @@ def _build_soft_heatmap(
     radius_model: str = "hertz",
     kernel: str = "gaussian",
     normalize: bool = False,
-    indenter_radius_mm: float = 2.5,
+    indenter_radius_mm: float | torch.Tensor = 2.5,
     fallback_depth_mm: float = 1.0,
     sigma_scale: float = 1.0,
 ) -> torch.Tensor:
@@ -383,7 +383,11 @@ def _build_soft_heatmap(
     dist2 = dx * dx + dy * dy
 
     depth_eff = torch.where(depth_mm > 0, depth_mm, torch.full_like(depth_mm, fallback_depth_mm))
-    a = contact_radius_tensor(depth_eff, R_mm=indenter_radius_mm, model=radius_model)
+    if torch.is_tensor(indenter_radius_mm):
+        radius_mm = indenter_radius_mm.to(device=device, dtype=dtype).view(-1)
+        a = contact_radius_tensor(depth_eff, R_mm=radius_mm, model=radius_model)
+    else:
+        a = contact_radius_tensor(depth_eff, R_mm=indenter_radius_mm, model=radius_model)
 
     a = a * sigma_scale
 
@@ -421,6 +425,7 @@ def _build_point_heatmap(
 
 def _build_multi_head_target_map(targets: torch.Tensor, args) -> torch.Tensor:
     if args.use_depth_aware_label:
+        indenter_radius_mm = targets[:, 4] if targets.size(1) > 4 else args.indenter_radius_mm
         return _build_soft_heatmap(
             targets[:, 0],
             targets[:, 1],
@@ -429,7 +434,7 @@ def _build_multi_head_target_map(targets: torch.Tensor, args) -> torch.Tensor:
             radius_model=args.depth_radius_model,
             kernel=args.depth_label_kernel,
             normalize=args.normalize_heatmap,
-            indenter_radius_mm=args.indenter_radius_mm,
+            indenter_radius_mm=indenter_radius_mm,
             fallback_depth_mm=args.depth_fallback_mm,
             sigma_scale=args.heatmap_sigma_scale,
         )
@@ -626,11 +631,12 @@ class ZarrSequenceDataset(Dataset):
         iso[:, 16:17] = r
 
         last_i = idxs[-1]
-        tgt = torch.zeros(4, dtype=s16.dtype)  # [x, y, z, fz]
+        tgt = torch.zeros(5, dtype=s16.dtype)  # [x, y, z, fz, indenter_radius_mm]
         tgt[0] = self.cx[last_i]
         tgt[1] = self.cy[last_i]
         tgt[2] = self.depth[last_i]
         tgt[3] = self.fz[last_i]
+        tgt[4] = self.radius[last_i]
         return grid, iso, tgt
 
 

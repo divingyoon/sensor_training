@@ -17,6 +17,7 @@ training/
 
 ## 주요 파이프라인
 - `pipelines/train_comparison.py` : 여러 모델 동시 학습/비교 (zarr 또는 csv)
+- `pipelines/train_z_fz_regressor.py` : XY 조건부 Z/Fz 전용 시퀀스 회귀 (zarr)
 - `pipelines/train_sr_zarr.py`   : SR 회귀(x,y,z) 단일 모델 (zarr)
 - `pipelines/train_ff_zarr.py`   : Force Field/Fz 전용 (zarr)
 - `pipelines/train_unified.py`   : 시퀀스 기반 통합 모델
@@ -35,13 +36,15 @@ training/
   - 디코드/시각화: `--decode-xy softargmax|argmax_refine`, `--save-heatmap-overlay`, `--overlay-batches`, `--overlay-samples`
   - 지표 bin: `--depth-bins "0.8,1.1,1.4,1.7"`
 - 출력: `xy_heatmap logits`, `z_depth`, `fz`; decode 옵션 사용 시 xy는 heatmap에서 softargmax/argmax_refine로 계산해 검증.
+- depth-aware soft heatmap은 Zarr sequence target에 포함된 샘플별 인덴터 반경을 우선 사용합니다. 없으면 `--indenter-radius-mm`로 폴백합니다.
 - ckpt/tag: `stageN_<point|dlabel-kernel-radius>_xy*_z*_fz*_dec*` 형태로 자동 부여, `--normalize-heatmap` 사용 시 `_hnorm`이 추가됩니다. metrics JSON도 동일 태그로 저장됩니다.
 
 ## 권장 실험 순서 (Ablation)
 1) Baseline: point label + xy only (`--use-depth-aware-label` off)
 2) Stage2: depth-aware soft label + xy only (`--use-depth-aware-label` on, λ_z=λ_fz=0 또는 헤드 off)
 3) Stage3: soft label + z/fz heads (멀티태스크, λ=1/0.2/0.2)
-4) Optional: depth/force 입력 conditioning 추가 후 비교
+4) Z/Fz separate: frozen XY heatmap 또는 GT XY를 조건으로 z/fz 전용 회귀 학습
+5) Optional: depth/force 입력 conditioning 추가 후 비교
 
 ## 예시 명령 (추천)
 - Stage1 (baseline, point label)
@@ -88,6 +91,18 @@ python -m training.pipelines.train_comparison \
   --depth-min-for-label 0.05 \
   --save-heatmap-overlay --overlay-batches 1 --overlay-samples 4 \
   --epochs 100 --batch-size 1024
+```
+
+- Z/Fz 전용 회귀 (GT XY upper-bound + 선택적 frozen XY end-to-end 평가)
+```
+python -m training.pipelines.train_z_fz_regressor \
+  --data-dir preprocessing/processed_data \
+  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
+  --out-dir training/runs_z_fz \
+  --xy-checkpoint training/runs_comparison/best_multi_head_field_stage2_dlabel-gaussian-hertz_xybce1_zoff_fzoff_decsoftargmax.pth \
+  --decode-xy softargmax \
+  --xy-noise-std-mm 0.5 \
+  --epochs 100 --batch-size 1024 --device cuda
 ```
 
 ## 검증 체크리스트

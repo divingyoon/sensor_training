@@ -113,6 +113,18 @@ python -m training.pipelines.train_comparison \
   --epochs 100 --batch-size 1024
 ```
 
+- **Z/Fz 전용 회귀 (Stage3 보조 head 대신 분리 학습)**
+```
+python -m training.pipelines.train_z_fz_regressor \
+  --data-dir preprocessing/processed_data \
+  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
+  --out-dir training/runs_z_fz \
+  --xy-checkpoint training/runs_comparison/best_multi_head_field_stage2_dlabel-gaussian-hertz_xybce1_zoff_fzoff_decsoftargmax.pth \
+  --decode-xy softargmax \
+  --xy-noise-std-mm 0.5 \
+  --epochs 100 --batch-size 1024 --device cuda
+```
+
 여전히 다른 모델(MFP 외 MLP, CNNLSTM, SATS 등)을 비교하고 싶다면 `--models` 목록에 추가해 동일 스크립트로 함께 학습하면 됩니다.
 
 모델별 배치 상한(메모리 보호용 클램프)

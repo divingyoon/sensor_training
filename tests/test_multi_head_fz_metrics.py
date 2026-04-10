@@ -8,6 +8,7 @@ import torch
 
 from training.pipelines.train_comparison import (
     _build_multi_head_target_map,
+    _build_soft_heatmap,
     _effective_batch_size,
     _combine_multi_head_loss,
     _multi_head_metric_tensors,
@@ -160,6 +161,28 @@ class MultiHeadFzMetricsTest(unittest.TestCase):
 
         self.assertGreater(torch.count_nonzero(target_map).item(), 1)
         self.assertGreater(target_map[0, 0, 0, 0].item(), target_map[0, 0, 0, 3].item())
+
+    def test_soft_heatmap_accepts_per_sample_indenter_radius(self) -> None:
+        x = torch.tensor([-9.75, -9.75], dtype=torch.float32)
+        y = torch.tensor([-9.75, -9.75], dtype=torch.float32)
+        depth = torch.tensor([1.0, 1.0], dtype=torch.float32)
+        radius = torch.tensor([2.5, 5.0], dtype=torch.float32)
+
+        target_map = _build_soft_heatmap(
+            x,
+            y,
+            depth,
+            heatmap_size=4,
+            radius_model="hertz",
+            kernel="gaussian",
+            normalize=False,
+            indenter_radius_mm=radius,
+            fallback_depth_mm=1.0,
+            sigma_scale=1.0,
+        )
+
+        self.assertEqual(tuple(target_map.shape), (2, 1, 4, 4))
+        self.assertGreater(target_map[1, 0, 0, 3].item(), target_map[0, 0, 0, 3].item())
 
     def test_zero_scalar_lambdas_do_not_contribute_to_total_loss(self) -> None:
         args = SimpleNamespace(lambda_xy=1.0, lambda_z=0.0, lambda_fz=0.0)
