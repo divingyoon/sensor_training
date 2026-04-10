@@ -1,7 +1,10 @@
 
 import os
+import csv
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional, Sequence
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -16,6 +19,9 @@ import json
 import argparse
 import numpy as np
 from sklearn.metrics import r2_score
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from training.data.dataset_unified import UnifiedTactileDataset
@@ -50,12 +56,46 @@ def get_model(name, seq_len=50, heatmap_size=40):
 GRID_STEP = 0.5
 GRID_MIN = -9.75
 
+def _metric_output_names(width: int) -> list[str]:
+    if width == 3:
+        return ["x", "y", "z"]
+    if width == 4:
+        return ["x", "y", "z", "fz"]
+    return [f"output_{i}" for i in range(width)]
+
+
 def calculate_metrics(preds, targets):
     mse = np.mean((preds - targets)**2, axis=0)
     rmse = np.sqrt(mse)
     mae = np.mean(np.abs(preds - targets), axis=0)
     r2 = r2_score(targets, preds, multioutput='raw_values')
-    return {"mse": mse.tolist(), "rmse": rmse.tolist(), "mae": mae.tolist(), "r2": r2.tolist()}
+    output_names = _metric_output_names(preds.shape[1])
+    per_output = {}
+    for i, name in enumerate(output_names):
+        per_output[name] = {
+            "mse": float(mse[i]),
+            "rmse": float(rmse[i]),
+            "mae": float(mae[i]),
+            "r2": float(r2[i]),
+        }
+    return {
+        "metric_schema": {
+            "outputs": output_names,
+            "array_order": output_names,
+            "units": {
+                "x": "mm",
+                "y": "mm",
+                "z": "mm",
+                "fz": "source_units",
+            },
+        },
+        "output_names": output_names,
+        "mse": mse.tolist(),
+        "rmse": rmse.tolist(),
+        "mae": mae.tolist(),
+        "r2": r2.tolist(),
+        "per_output": per_output,
+    }
 
 
 def depth_bin_metrics(preds, targets, bin_edges):
@@ -94,6 +134,100 @@ def apply_linear_calib(pred: torch.Tensor, args):
     out[:, 0] = args.calib_x_ax * px + args.calib_x_by * py + args.calib_x_bias
     out[:, 1] = args.calib_y_ax * px + args.calib_y_by * py + args.calib_y_bias
     return out
+
+
+def _multi_head_metric_tensors(
+    scalar_pred: torch.Tensor,
+    fmap: torch.Tensor,
+    targets: torch.Tensor,
+    args,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if args.decode_xy != "none":
+        x_dec, y_dec = _decode_xy_from_heatmap(fmap, args.decode_xy)
+        pred_xy = torch.stack([x_dec, y_dec], dim=1)
+    else:
+        flat = fmap.view(fmap.size(0), -1)
+        argmax = flat.argmax(dim=1)
+        iy = argmax // args.heatmap_size
+        ix = argmax % args.heatmap_size
+        xs = torch.arange(args.heatmap_size, device=fmap.device, dtype=fmap.dtype) * GRID_STEP + GRID_MIN
+        ys = torch.arange(args.heatmap_size, device=fmap.device, dtype=fmap.dtype) * GRID_STEP + GRID_MIN
+        pred_xy = torch.stack([xs[ix], ys[iy]], dim=1)
+
+    pred_concat = torch.cat(
+        [
+            pred_xy,
+            scalar_pred[:, 0:1],  # z
+            scalar_pred[:, 1:2],  # Fz
+        ],
+        dim=1,
+    )
+    pred_use = apply_linear_calib(pred_concat, args)
+    return pred_use, targets[:, :4]
+
+
+def _loss_component_tag(weight: float, loss_name: str) -> str:
+    if float(weight) == 0.0:
+        return "off"
+    weight_text = f"{float(weight):g}".replace("-", "m").replace(".", "p")
+    return f"{loss_name}{weight_text}"
+
+
+def _multi_head_stage(args) -> str:
+    if not args.use_depth_aware_label:
+        return "stage1"
+    if float(args.lambda_z) == 0.0 and float(args.lambda_fz) == 0.0:
+        return "stage2"
+    return "stage3"
+
+
+def _multi_head_run_tag(model_name: str, args) -> str:
+    if model_name != "multi_head_field":
+        return ""
+
+    label_tag = (
+        f"dlabel-{args.depth_label_kernel}-{args.depth_radius_model}"
+        if args.use_depth_aware_label
+        else "point"
+    )
+    tag = f"_{_multi_head_stage(args)}_{label_tag}"
+    tag += f"_xy{_loss_component_tag(args.lambda_xy, args.loss_xy)}"
+    tag += f"_z{_loss_component_tag(args.lambda_z, args.loss_z)}"
+    tag += f"_fz{_loss_component_tag(args.lambda_fz, args.loss_fz)}"
+    if args.decode_xy != "none":
+        tag += f"_dec{args.decode_xy}"
+    if args.use_depth_aware_label and args.normalize_heatmap:
+        tag += "_hnorm"
+    return tag
+
+
+def _write_fz_summary_csv(path: Path, preds: np.ndarray, targets: np.ndarray) -> None:
+    if preds.shape[1] < 4 or targets.shape[1] < 4:
+        return
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "pred_z",
+        "target_z",
+        "error_z",
+        "pred_fz",
+        "target_fz",
+        "error_fz",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for pred_row, target_row in zip(preds, targets):
+            writer.writerow(
+                {
+                    "pred_z": float(pred_row[2]),
+                    "target_z": float(target_row[2]),
+                    "error_z": float(pred_row[2] - target_row[2]),
+                    "pred_fz": float(pred_row[3]),
+                    "target_fz": float(target_row[3]),
+                    "error_fz": float(pred_row[3] - target_row[3]),
+                }
+            )
 
 
 def _forward_model(model_name, model, grid, iso, return_field: bool = False):
@@ -156,7 +290,7 @@ def _effective_batch_size(model_name: str, requested_bs: int) -> int:
     if model_name == "cnnbilstm":
         return min(requested_bs, 1024)
     if model_name == "multi_head_field":
-        return requested_bs  # allow full batch; user controls OOM
+        return min(requested_bs, 1024)
     if model_name == "unified":
         return min(requested_bs, 4096)
     if model_name in ["sats", "sats_xy"]:
@@ -269,24 +403,112 @@ def _build_soft_heatmap(
     return target.unsqueeze(1)
 
 
-def _save_overlay(batch_idx, fmap_logits, target_map, out_dir, prefix="val", max_samples=4):
+def _build_point_heatmap(
+    x_mm: torch.Tensor,
+    y_mm: torch.Tensor,
+    heatmap_size: int = 40,
+) -> torch.Tensor:
+    target = torch.zeros(
+        (x_mm.size(0), 1, heatmap_size, heatmap_size),
+        device=x_mm.device,
+        dtype=x_mm.dtype,
+    )
+    ix = torch.round((x_mm - GRID_MIN) / GRID_STEP).long().clamp(0, heatmap_size - 1)
+    iy = torch.round((y_mm - GRID_MIN) / GRID_STEP).long().clamp(0, heatmap_size - 1)
+    target[torch.arange(x_mm.size(0), device=x_mm.device), 0, iy, ix] = 1.0
+    return target
+
+
+def _build_multi_head_target_map(targets: torch.Tensor, args) -> torch.Tensor:
+    if args.use_depth_aware_label:
+        return _build_soft_heatmap(
+            targets[:, 0],
+            targets[:, 1],
+            targets[:, 2],
+            heatmap_size=args.heatmap_size,
+            radius_model=args.depth_radius_model,
+            kernel=args.depth_label_kernel,
+            normalize=args.normalize_heatmap,
+            indenter_radius_mm=args.indenter_radius_mm,
+            fallback_depth_mm=args.depth_fallback_mm,
+            sigma_scale=args.heatmap_sigma_scale,
+        )
+    return _build_point_heatmap(targets[:, 0], targets[:, 1], heatmap_size=args.heatmap_size)
+
+
+def _combine_multi_head_loss(args, l_xy: torch.Tensor, l_z: torch.Tensor, l_fz: torch.Tensor) -> torch.Tensor:
+    return args.lambda_xy * l_xy + args.lambda_z * l_z + args.lambda_fz * l_fz
+
+
+def _heatmap_coord_from_mm(value: torch.Tensor, heatmap_size: int) -> torch.Tensor:
+    return ((value - GRID_MIN) / GRID_STEP).detach().cpu().clamp(0, heatmap_size - 1)
+
+
+def _save_overlay(
+    batch_idx,
+    fmap_logits,
+    target_map,
+    out_dir,
+    prefix="val",
+    max_samples=4,
+    pred_values: Optional[torch.Tensor] = None,
+    target_values: Optional[torch.Tensor] = None,
+):
     """
-    Save overlay images (pred heatmap sigmoid vs target) for quick visual check.
+    Save overlay images with pred/target centers and scalar diagnostics.
     """
     os.makedirs(out_dir, exist_ok=True)
     prob = torch.sigmoid(fmap_logits).detach().cpu()
     tgt = target_map.detach().cpu()
+    pred_diag = pred_values.detach().cpu() if pred_values is not None else None
+    target_diag = target_values.detach().cpu() if target_values is not None else None
     b = min(prob.size(0), max_samples)
+    if pred_diag is not None:
+        b = min(b, pred_diag.size(0))
+    if target_diag is not None:
+        b = min(b, target_diag.size(0))
     for i in range(b):
-        plt.figure(figsize=(5, 2.2))
-        plt.subplot(1, 2, 1)
-        plt.title("pred")
-        plt.imshow(prob[i, 0], origin="lower", cmap="inferno")
-        plt.colorbar(fraction=0.046, pad=0.04)
-        plt.subplot(1, 2, 2)
-        plt.title("target")
-        plt.imshow(tgt[i, 0], origin="lower", cmap="viridis")
-        plt.colorbar(fraction=0.046, pad=0.04)
+        heatmap_size = prob.size(-1)
+        if pred_diag is not None and pred_diag.size(1) >= 2:
+            pred_x = _heatmap_coord_from_mm(pred_diag[i, 0], heatmap_size).item()
+            pred_y = _heatmap_coord_from_mm(pred_diag[i, 1], heatmap_size).item()
+        else:
+            flat = prob[i, 0].reshape(-1).argmax()
+            pred_y = float((flat // heatmap_size).item())
+            pred_x = float((flat % heatmap_size).item())
+
+        if target_diag is not None and target_diag.size(1) >= 2:
+            target_x = _heatmap_coord_from_mm(target_diag[i, 0], heatmap_size).item()
+            target_y = _heatmap_coord_from_mm(target_diag[i, 1], heatmap_size).item()
+        else:
+            flat = tgt[i, 0].reshape(-1).argmax()
+            target_y = float((flat // heatmap_size).item())
+            target_x = float((flat % heatmap_size).item())
+
+        annotation = ""
+        if pred_diag is not None and target_diag is not None and pred_diag.size(1) >= 3 and target_diag.size(1) >= 3:
+            xy_err = torch.linalg.vector_norm(pred_diag[i, :2] - target_diag[i, :2]).item()
+            parts = [
+                f"xy_err={xy_err:.3f} mm",
+                f"z tgt/pred={target_diag[i, 2].item():.3f}/{pred_diag[i, 2].item():.3f}",
+            ]
+            if pred_diag.size(1) >= 4 and target_diag.size(1) >= 4:
+                parts.append(f"Fz tgt/pred={target_diag[i, 3].item():.3f}/{pred_diag[i, 3].item():.3f}")
+            annotation = " | ".join(parts)
+
+        fig, axes = plt.subplots(1, 2, figsize=(7.8, 3.0))
+        for ax, image, title, cmap in (
+            (axes[0], prob[i, 0], "pred heatmap", "inferno"),
+            (axes[1], tgt[i, 0], "target heatmap", "viridis"),
+        ):
+            im = ax.imshow(image, origin="lower", cmap=cmap, vmin=0, vmax=1)
+            ax.scatter([target_x], [target_y], marker="o", facecolors="none", edgecolors="cyan", linewidths=1.8, label="target")
+            ax.scatter([pred_x], [pred_y], marker="x", c="white", linewidths=1.8, label="pred")
+            ax.set_title(title)
+            ax.legend(loc="upper right", fontsize=6, framealpha=0.75)
+            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        if annotation:
+            fig.suptitle(annotation, fontsize=8)
         plt.tight_layout()
         path = os.path.join(out_dir, f"{prefix}_overlay_b{batch_idx}_i{i}.png")
         plt.savefig(path)
@@ -356,17 +578,21 @@ class ZarrSequenceDataset(Dataset):
             groups[key].append(i)
 
         self.samples = []
-        for _, idxs in groups.items():
+        self.sample_trial_ids = []
+        for key, idxs in groups.items():
             idxs = sorted(idxs, key=lambda j: float(depth[j].item()))
+            trial_id = key[0]
             t = len(idxs)
             if t <= 0:
                 continue
             if t <= seq_len:
                 self.samples.append(idxs)
+                self.sample_trial_ids.append(trial_id)
             else:
                 max_start = t - seq_len
                 for s in range(0, max_start + 1, stride):
                     self.samples.append(idxs[s : s + seq_len])
+                    self.sample_trial_ids.append(trial_id)
 
         self.tactile = tactile
         self.radius = radius
@@ -415,13 +641,137 @@ def _resolve_zarr_path(data_dir: str, zarr_path: str = ""):
     p = Path(data_dir)
     if p.suffix == ".zarr":
         return str(p)
-    cands = sorted((p / "zarr_data").glob("*.zarr"))
-    if cands:
+    cands = sorted((p / "zarr_data").glob("*.zarr")) + sorted(p.glob("*.zarr"))
+    cands = sorted(set(cands))
+    if len(cands) == 1:
         return str(cands[0])
-    cands = sorted(p.glob("*.zarr"))
-    if cands:
-        return str(cands[0])
+    if len(cands) > 1:
+        formatted = ", ".join(str(c) for c in cands)
+        raise RuntimeError(
+            "Found multiple .zarr datasets; pass --zarr-path explicitly or provide a single integrated zarr. "
+            f"Candidates: {formatted}"
+        )
     return ""
+
+
+@dataclass(frozen=True)
+class TrialSplit:
+    train_indices: list[int]
+    val_indices: list[int]
+    test_indices: list[int]
+    train_trials: list[str]
+    val_trials: list[str]
+    test_trials: list[str]
+
+
+def _parse_trial_list(values: Optional[Sequence[str]]) -> Optional[list[str]]:
+    if values is None:
+        return None
+
+    parsed: list[str] = []
+    for raw in values:
+        parsed.extend(token.strip() for token in str(raw).split(",") if token.strip())
+    return parsed
+
+
+def _dataset_split_ids(dataset: Dataset) -> list[str]:
+    explicit_ids = getattr(dataset, "sample_trial_ids", None)
+    if explicit_ids is not None:
+        if len(explicit_ids) != len(dataset):
+            raise RuntimeError(
+                f"Dataset split metadata length mismatch: {len(explicit_ids)} ids for {len(dataset)} samples"
+            )
+        return [str(x) for x in explicit_ids]
+
+    samples = getattr(dataset, "samples", None)
+    if samples is None:
+        raise RuntimeError(
+            "Dataset does not expose trial split metadata; expected sample_trial_ids or samples"
+        )
+
+    split_ids = []
+    for sample in samples:
+        if isinstance(sample, dict) and "trial_id" in sample:
+            split_ids.append(str(sample["trial_id"]))
+        elif isinstance(sample, tuple) and sample:
+            split_ids.append(str(sample[0]))
+        else:
+            raise RuntimeError(f"Cannot infer trial id for dataset sample: {sample!r}")
+    return split_ids
+
+
+def _split_indices_by_trial(
+    dataset: Dataset,
+    seed: int,
+    val_trials: Optional[Sequence[str]] = None,
+    test_trials: Optional[Sequence[str]] = None,
+    val_ratio: float = 0.2,
+) -> TrialSplit:
+    sample_trials = _dataset_split_ids(dataset)
+    trial_ids = sorted(set(sample_trials))
+    if len(trial_ids) < 2 and val_trials is None and test_trials is None:
+        raise RuntimeError(
+            "Trial-level split needs at least 2 distinct trials for train/val. "
+            f"Found: {trial_ids}"
+        )
+
+    all_trials = set(trial_ids)
+    requested_val = set(val_trials or [])
+    requested_test = set(test_trials or [])
+    unknown = (requested_val | requested_test) - all_trials
+    if unknown:
+        raise RuntimeError(f"Requested split trials are not present in dataset: {sorted(unknown)}")
+
+    overlap = requested_val & requested_test
+    if overlap:
+        raise RuntimeError(f"Trials cannot be both val and test: {sorted(overlap)}")
+
+    rng = np.random.default_rng(seed)
+    remaining_trials = [t for t in trial_ids if t not in requested_val and t not in requested_test]
+
+    if val_trials is None:
+        if len(remaining_trials) < 2:
+            raise RuntimeError(
+                "Seed-based trial split needs at least 2 train/val candidate trials after test exclusion. "
+                f"Candidates: {remaining_trials}"
+            )
+        shuffled = np.array(remaining_trials, dtype=object)
+        rng.shuffle(shuffled)
+        n_val = max(1, int(round(len(shuffled) * val_ratio)))
+        n_val = min(n_val, len(shuffled) - 1)
+        requested_val = set(str(t) for t in shuffled[:n_val])
+        remaining_trials = [str(t) for t in shuffled[n_val:]]
+
+    train_trials = sorted(t for t in remaining_trials if t not in requested_val)
+    val_trials_sorted = sorted(requested_val)
+    test_trials_sorted = sorted(requested_test)
+
+    if not train_trials:
+        raise RuntimeError("Trial split leaves no train trials. Adjust --val-trials/--test-trials.")
+    if not val_trials_sorted:
+        raise RuntimeError("Trial split leaves no val trials. Provide --val-trials or more trials.")
+
+    split_by_trial = {
+        "train": set(train_trials),
+        "val": set(val_trials_sorted),
+        "test": set(test_trials_sorted),
+    }
+    train_indices = [i for i, trial in enumerate(sample_trials) if trial in split_by_trial["train"]]
+    val_indices = [i for i, trial in enumerate(sample_trials) if trial in split_by_trial["val"]]
+    test_indices = [i for i, trial in enumerate(sample_trials) if trial in split_by_trial["test"]]
+
+    return TrialSplit(
+        train_indices=train_indices,
+        val_indices=val_indices,
+        test_indices=test_indices,
+        train_trials=train_trials,
+        val_trials=val_trials_sorted,
+        test_trials=test_trials_sorted,
+    )
+
+
+def _format_trials(trials: Sequence[str]) -> str:
+    return "[" + ", ".join(trials) + "]"
 
 
 def build_shared_data(args, device: torch.device):
@@ -447,12 +797,13 @@ def build_shared_data(args, device: torch.device):
         raise RuntimeError(f"Dataset at {args.data_dir} is empty. Check your data path!")
 
     total = len(base_ds)
-    split = int(0.8 * total)
-    rng = np.random.default_rng(args.seed)
-    indices = np.arange(total, dtype=np.int64)
-    rng.shuffle(indices)
-    train_indices = indices[:split].tolist()
-    val_indices = indices[split:].tolist()
+    split = _split_indices_by_trial(
+        base_ds,
+        seed=args.seed,
+        val_trials=_parse_trial_list(getattr(args, "val_trials", None)),
+        test_trials=_parse_trial_list(getattr(args, "test_trials", None)),
+    )
+    preload_indices = np.arange(total, dtype=np.int64)
 
     if args.preload_vram and device.type != "cuda":
         raise RuntimeError("--preload-vram requires CUDA device")
@@ -462,7 +813,7 @@ def build_shared_data(args, device: torch.device):
     print(f"[INFO] Preloading all samples to {where} once...")
     preloaded_ds = PreloadedDataset(
         base_ds,
-        indices,
+        preload_indices,
         store_device=preload_device,
         desc="preload all",
         preload_workers=args.preload_workers,
@@ -470,12 +821,16 @@ def build_shared_data(args, device: torch.device):
     )
 
     idx_device = preload_device
-    train_idx = torch.as_tensor(train_indices, dtype=torch.long, device=idx_device)
-    val_idx = torch.as_tensor(val_indices, dtype=torch.long, device=idx_device)
+    train_idx = torch.as_tensor(split.train_indices, dtype=torch.long, device=idx_device)
+    val_idx = torch.as_tensor(split.val_indices, dtype=torch.long, device=idx_device)
     print(
-        f"[INFO] Train/Val split: {split:,}/{total-split:,} | "
+        f"[INFO] Trial-level split samples: train={len(split.train_indices):,}, "
+        f"val={len(split.val_indices):,}, test={len(split.test_indices):,} | "
         f"batch_size={args.batch_size}, preload_vram={args.preload_vram}, direct_batching=True"
     )
+    print(f"[INFO] Train trials: {_format_trials(split.train_trials)}")
+    print(f"[INFO] Val trials: {_format_trials(split.val_trials)}")
+    print(f"[INFO] Test trials: {_format_trials(split.test_trials)}")
     return preloaded_ds, train_idx, val_idx
 
 
@@ -567,17 +922,8 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
                 tgt_m = tgt[depth_mask]
 
                 pred, fmap = _forward_model(model_name, model, grid_m, iso_m, return_field=True)
-                target_map = _build_soft_heatmap(
-                    tgt_m[:, 0], tgt_m[:, 1], tgt_m[:, 2],
-                    heatmap_size=args.heatmap_size,
-                    radius_model=args.depth_radius_model,
-                    kernel=args.depth_label_kernel,
-                    normalize=args.normalize_heatmap,
-                    indenter_radius_mm=args.indenter_radius_mm,
-                    fallback_depth_mm=args.depth_fallback_mm,
-                    sigma_scale=args.heatmap_sigma_scale,
-                )
-                if args.loss_xy == "bce" and args.normalize_heatmap:
+                target_map = _build_multi_head_target_map(tgt_m, args)
+                if args.use_depth_aware_label and args.loss_xy == "bce" and args.normalize_heatmap:
                     maxv = target_map.max(dim=2, keepdim=True)[0].max(dim=3, keepdim=True)[0].clamp(min=1e-6)
                     target_map = target_map / maxv
                 if args.loss_xy == "bce":
@@ -600,7 +946,7 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
                 else:
                     l_fz = mse(pred_fz, tgt_fz)
 
-                loss = args.lambda_xy * l_xy + args.lambda_z * l_z + args.lambda_fz * l_fz
+                loss = _combine_multi_head_loss(args, l_xy, l_z, l_fz)
             else:
                 pred = _forward_model(model_name, model, grid, iso)
                 loss = criterion(pred[:, :3], tgt[:, :3])  # Position loss
@@ -643,17 +989,8 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
                     tgt_m = tgt[depth_mask]
 
                     pred, fmap = _forward_model(model_name, model, grid_m, iso_m, return_field=True)
-                    target_map = _build_soft_heatmap(
-                        tgt_m[:, 0], tgt_m[:, 1], tgt_m[:, 2],
-                        heatmap_size=args.heatmap_size,
-                        radius_model=args.depth_radius_model,
-                        kernel=args.depth_label_kernel,
-                        normalize=args.normalize_heatmap,
-                        indenter_radius_mm=args.indenter_radius_mm,
-                        fallback_depth_mm=args.depth_fallback_mm,
-                        sigma_scale=args.heatmap_sigma_scale,
-                    )
-                    if args.loss_xy == "bce" and args.normalize_heatmap:
+                    target_map = _build_multi_head_target_map(tgt_m, args)
+                    if args.use_depth_aware_label and args.loss_xy == "bce" and args.normalize_heatmap:
                         maxv = target_map.max(dim=2, keepdim=True)[0].max(dim=3, keepdim=True)[0].clamp(min=1e-6)
                         target_map = target_map / maxv
                     if args.loss_xy == "bce":
@@ -667,8 +1004,9 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
                     tgt_fz = (tgt_m[:, 3] - args.fz_mean) / args.fz_std
                     l_z = huber(pred_z, tgt_z) if args.loss_z == "huber" else mse(pred_z, tgt_z)
                     l_fz = huber(pred_fz, tgt_fz) if args.loss_fz == "huber" else mse(pred_fz, tgt_fz)
-                    val_loss = args.lambda_xy * l_xy + args.lambda_z * l_z + args.lambda_fz * l_fz
+                    val_loss = _combine_multi_head_loss(args, l_xy, l_z, l_fz)
                     if args.save_heatmap_overlay and batch_idx < args.overlay_batches:
+                        overlay_pred, overlay_target = _multi_head_metric_tensors(pred, fmap, tgt_m, args)
                         _save_overlay(
                             batch_idx,
                             fmap,
@@ -676,51 +1014,35 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
                             os.path.join(args.out_dir, "overlays"),
                             prefix=f"{model_name}_e{epoch+1}",
                             max_samples=args.overlay_samples,
+                            pred_values=overlay_pred,
+                            target_values=overlay_target,
                         )
                 else:
                     pred = _forward_model(model_name, model, grid, iso)
                     val_loss = criterion(pred[:, :3], tgt[:, :3])
 
-                # decode xy from heatmap for metrics if requested
                 if model_name == "multi_head_field":
-                    if args.decode_xy != "none":
-                        x_dec, y_dec = _decode_xy_from_heatmap(fmap, args.decode_xy)
-                        pred_xy = torch.stack([x_dec, y_dec], dim=1)
-                    else:
-                        flat = fmap.view(fmap.size(0), -1)
-                        argmax = flat.argmax(dim=1)
-                        iy = argmax // args.heatmap_size
-                        ix = argmax % args.heatmap_size
-                        xs = torch.arange(args.heatmap_size, device=fmap.device, dtype=fmap.dtype) * GRID_STEP + GRID_MIN
-                        ys = torch.arange(args.heatmap_size, device=fmap.device, dtype=fmap.dtype) * GRID_STEP + GRID_MIN
-                        pred_xy = torch.stack([xs[ix], ys[iy]], dim=1)
-                    z_col = pred[:, 0:1]  # pred z
-                    pred_concat = torch.cat([pred_xy, z_col], dim=1)
+                    pred_use, target_use = _multi_head_metric_tensors(pred, fmap, tgt_m, args)
                 else:
                     pred_concat = pred[:, :3]
+                    pred_use = apply_linear_calib(pred_concat, args)
+                    target_use = tgt[:, :3]
 
-                pred_use = apply_linear_calib(pred_concat, args)
-                all_preds.append(pred_use[:, :3].cpu().numpy())
-                all_targets.append(tgt_m[:, :3].cpu().numpy() if model_name == "multi_head_field" else tgt[:, :3].cpu().numpy())
+                all_preds.append(pred_use.cpu().numpy())
+                all_targets.append(target_use.cpu().numpy())
                 val_losses.append(val_loss.item())
 
         all_preds = np.concatenate(all_preds)
         all_targets = np.concatenate(all_targets)
         metrics = calculate_metrics(all_preds, all_targets)
         metrics["depth_bins"] = depth_bin_metrics(all_preds, all_targets, args.depth_bin_edges)
-        avg_mae = np.mean(metrics["mae"])
+        avg_mae = float(np.mean(metrics["mae"][:3]))
+        metrics["selection_mae_xyz"] = avg_mae
 
         if avg_mae < best_val_mae:
             best_val_mae = avg_mae
             best_metrics = metrics
-            tag = ""
-            if args.use_depth_aware_label and model_name == "multi_head_field":
-                tag = f"_dlabel-{args.depth_label_kernel}-{args.depth_radius_model}"
-                tag += f"_xy{args.loss_xy}_z{args.loss_z}_fz{args.loss_fz}"
-                if args.decode_xy != "none":
-                    tag += f"_dec{args.decode_xy}"
-                if args.normalize_heatmap:
-                    tag += "_hnorm"
+            tag = _multi_head_run_tag(model_name, args)
             save_path = os.path.join(args.out_dir, f"best_{model_name}{tag}.pth")
             torch.save({
                 "state_dict": model.state_dict(),
@@ -729,6 +1051,12 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
             }, save_path)
             with open(os.path.join(args.out_dir, f"metrics_{model_name}{tag}.json"), "w") as f:
                 json.dump(metrics, f, indent=2)
+            if model_name == "multi_head_field":
+                _write_fz_summary_csv(
+                    Path(args.out_dir) / f"fz_summary_{model_name}{tag}.csv",
+                    all_preds,
+                    all_targets,
+                )
 
         print(
             f"  [EPOCH {epoch+1:03d}/{args.epochs}] "
@@ -771,6 +1099,18 @@ if __name__ == "__main__":
     parser.add_argument("--lambda-offdiag", type=float, default=0.0, help="Penalty weight for cov(x_pred, y_pred)")
     parser.add_argument("--data-source", choices=["auto", "zarr", "csv"], default="auto")
     parser.add_argument("--zarr-path", type=str, default="")
+    parser.add_argument(
+        "--val-trials",
+        nargs="*",
+        default=None,
+        help="Explicit validation trial_id list. Accepts space-separated or comma-separated values.",
+    )
+    parser.add_argument(
+        "--test-trials",
+        nargs="*",
+        default=None,
+        help="Explicit test trial_id list to exclude from train/val. Accepts space-separated or comma-separated values.",
+    )
     parser.add_argument("--preload-vram", action="store_true", default=True, help="Preload all samples into VRAM")
     parser.add_argument("--no-preload-vram", dest="preload_vram", action="store_false", help="Preload all samples into RAM")
     parser.add_argument(

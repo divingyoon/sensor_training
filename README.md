@@ -74,13 +74,18 @@ python3 preprocessing/preprocess.py \
 - **Stage1 (baseline, point label)**  
 ```
 python -m training.pipelines.train_comparison \
+  --data-dir preprocessing/processed_data \
+  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
   --models multi_head_field \
-  --epochs 100 --batch-size 512 --seq-len 50 \
+  --epochs 100 --batch-size 1024 --seq-len 50 \
+  --lambda-z 0.0 --lambda-fz 0.0 \
   --decode-xy none
 ```
 - **Stage2 (soft label, xy만)**  
 ```
 python -m training.pipelines.train_comparison \
+  --data-dir preprocessing/processed_data \
+  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
   --models multi_head_field \
   --use-depth-aware-label \
   --depth-label-kernel gaussian --depth-radius-model hertz \
@@ -88,13 +93,14 @@ python -m training.pipelines.train_comparison \
   --lambda-z 0.0 --lambda-fz 0.0 \
   --decode-xy softargmax \
   --depth-fallback-mm 1.0 --depth-min-for-label 0.05 \
-  --normalize-heatmap \
   --save-heatmap-overlay --overlay-batches 1 --overlay-samples 4 \
-  --epochs 100 --batch-size 512
+  --epochs 100 --batch-size 1024
 ```
 - **Stage3 (soft label + z/Fz 보조)**  
 ```
 python -m training.pipelines.train_comparison \
+  --data-dir preprocessing/processed_data \
+  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
   --models multi_head_field \
   --use-depth-aware-label \
   --loss-xy bce --loss-z huber --loss-fz huber \
@@ -103,9 +109,8 @@ python -m training.pipelines.train_comparison \
   --heatmap-size 40 --fg-weight 8.0 --heatmap-sigma-scale 0.35 \
   --decode-xy softargmax \
   --depth-fallback-mm 1.0 --depth-min-for-label 0.05 \
-  --normalize-heatmap \
   --save-heatmap-overlay --overlay-batches 1 --overlay-samples 4 \
-  --epochs 100 --batch-size 512
+  --epochs 100 --batch-size 1024
 ```
 
 여전히 다른 모델(MFP 외 MLP, CNNLSTM, SATS 등)을 비교하고 싶다면 `--models` 목록에 추가해 동일 스크립트로 함께 학습하면 됩니다.
@@ -114,7 +119,7 @@ python -m training.pipelines.train_comparison \
 - `cnnlstm`, `cnnbilstm`: 최대 1024
 - `sats`, `sats_xy`: 최대 512
 - `unified`: 최대 4096
-- `multi_head_field`: 요청한 배치 그대로 사용 (OOM 주의)
+- `multi_head_field`: 최대 1024
 - 기타: 요청한 `--batch-size` 그대로 적용
 
 성능/속도 참고

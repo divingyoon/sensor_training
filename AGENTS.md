@@ -1,0 +1,1 @@
+/home/user/plugins/everything-claude-code/AGENTS.md

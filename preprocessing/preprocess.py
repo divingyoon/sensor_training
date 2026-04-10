@@ -15,6 +15,7 @@ import argparse
 import json
 import re
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -40,24 +41,91 @@ TRIAL_RE = re.compile(
     r"^(?P<material>[^_]+)_d(?P<diameter>\d+(?:\.\d+)?)_(?P<trial_no>\d+)$",
     re.IGNORECASE,
 )
+NESTED_TRIAL_RE = re.compile(
+    r"^(?P<material>[^_]+)_d(?P<diameter>\d+(?:\.\d+)?)_z(?P<z_max>\d+(?:\.\d+)?)_test(?P<trial_no>\d+)$",
+    re.IGNORECASE,
+)
+INDENTER_DIR_RE = re.compile(r"^d(?P<diameter>\d+(?:\.\d+)?)$", re.IGNORECASE)
+Z_DIR_RE = re.compile(r"^z_?(?P<z_max>\d+(?:\.\d+)?)mm$", re.IGNORECASE)
+TEST_DIR_RE = re.compile(r"^test(?P<trial_no>\d+)$", re.IGNORECASE)
 
 
 # ── 파일명 파싱 ──────────────────────────────────────────────────────────────
 def parse_trial_name(stem: str) -> dict:
+    base = stem.replace("_merged", "")
+
+    nested = NESTED_TRIAL_RE.match(base)
+    if nested:
+        return {
+            "material": nested.group("material").lower(),
+            "diameter_mm": float(nested.group("diameter")),
+            "z_max_indentation_mm": float(nested.group("z_max")),
+            "trial_no": int(nested.group("trial_no")),
+        }
+
     # trial_id가 폴더명과 동일한 경우 파싱
     m = TRIAL_RE.match(stem)
     if not m:
         # ecomesh_d5_1_merged 형태 대응
-        base = stem.replace("_merged", "")
         m = TRIAL_RE.match(base)
     
     if not m:
-        return {"material": stem, "diameter_mm": None, "trial_no": None}
+        return {"material": base, "diameter_mm": None, "z_max_indentation_mm": None, "trial_no": None}
     return {
         "material": m.group("material").lower(),
         "diameter_mm": float(m.group("diameter")),
+        "z_max_indentation_mm": None,
         "trial_no": int(m.group("trial_no")),
     }
+
+
+def discover_merged_csvs(raw_dir: Path, glob_pattern: str) -> list[Path]:
+    return sorted(raw_dir.glob(glob_pattern))
+
+
+def _format_number_for_id(value: float) -> str:
+    return f"{value:g}"
+
+
+def parse_trial_csv_info(csv_path: Path, raw_dir: Path) -> tuple[str, dict]:
+    trial_id = csv_path.stem.replace("_merged", "")
+    info = parse_trial_name(trial_id)
+    if info["diameter_mm"] is not None:
+        return trial_id, info
+
+    try:
+        rel_parts = csv_path.parent.relative_to(raw_dir).parts
+    except ValueError:
+        rel_parts = csv_path.parent.parts
+
+    if len(rel_parts) >= 4:
+        material, indenter_dir, z_dir, test_dir = rel_parts[-4:]
+        indenter_match = INDENTER_DIR_RE.match(indenter_dir)
+        z_match = Z_DIR_RE.match(z_dir)
+        test_match = TEST_DIR_RE.match(test_dir)
+        if indenter_match and z_match and test_match:
+            diameter_mm = float(indenter_match.group("diameter"))
+            z_max_indentation_mm = float(z_match.group("z_max"))
+            trial_no = int(test_match.group("trial_no"))
+            material_id = material.lower()
+            parsed_trial_id = (
+                f"{material_id}_d{_format_number_for_id(diameter_mm)}_"
+                f"z{z_match.group('z_max')}_test{trial_no}"
+            )
+            return parsed_trial_id, {
+                "material": material_id,
+                "diameter_mm": diameter_mm,
+                "z_max_indentation_mm": z_max_indentation_mm,
+                "trial_no": trial_no,
+            }
+
+    return trial_id, info
+
+
+def _normalize_workers(worker_count: int, num_tasks: int) -> int:
+    if worker_count <= 1 or num_tasks <= 1:
+        return 1
+    return min(worker_count, num_tasks)
 
 
 # ── Baseline 추출 / 드리프트 보정 ────────────────────────────────────────────
@@ -112,6 +180,7 @@ def compute_baseline_stats(
         "trial_id": trial_id,
         "material": info["material"],
         "diameter_mm": info["diameter_mm"],
+        "z_max_indentation_mm": info.get("z_max_indentation_mm"),
         "baseline_n_rows": int(len(rows)),
         "start_idx": int(start_idx),
         "end_idx": int(end_idx),
@@ -420,7 +489,7 @@ def process_trial(
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="센서 압입 실험 전처리 (v3)")
     parser.add_argument(
         "--raw-dir",
@@ -433,6 +502,12 @@ def parse_args() -> argparse.Namespace:
         default=Path("preprocessing/processed_data"),
     )
     parser.add_argument("--glob", type=str, default="**/*_merged.csv")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Trial CSV 병렬 처리 프로세스 수. 1이면 기존 단일 프로세스 실행.",
+    )
     parser.add_argument(
         "--contact-threshold",
         type=float,
@@ -538,7 +613,7 @@ def parse_args() -> argparse.Namespace:
         default=1.0,
         help="Gaussian 커널 시 sigma = a * scale 로 설정.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 # ── Zarr Export ──────────────────────────────────────────────────────────────
@@ -611,9 +686,114 @@ def export_to_zarr(features_df: pd.DataFrame, zarr_path: Path, aux_last_field: s
                 sample["radius_cell"] = float(features_df["contact_radius_cell"].iloc[i])
         samples_info.append(sample)
     
-    index_path = zarr_path.parent / "dataset_index.json"
+    index_path = zarr_path / "dataset_index.json"
     with open(index_path, "w", encoding="utf-8") as f:
         json.dump({"samples": samples_info}, f, indent=2)
+
+
+def _trial_options_from_args(args: argparse.Namespace) -> dict:
+    return {
+        "contact_threshold": args.contact_threshold,
+        "baseline_z_thresh": args.baseline_z_thresh,
+        "baseline_force_thresh": args.baseline_force_thresh,
+        "baseline_min_consec": args.baseline_min_consec,
+        "use_depth_aware_radius": args.use_depth_aware_radius,
+        "fallback_depth_mode": args.fallback_depth_mode,
+        "fallback_depth_mm": args.fallback_depth_mm,
+        "indenter_radius_mm": args.indenter_radius_mm,
+        "radius_model": args.radius_model,
+        "max_radius_mm": args.max_radius_mm,
+        "z_bin_mm": args.z_bin_mm,
+        "min_signal": args.min_signal,
+    }
+
+
+def _process_trial_csv(
+    csv_path: Path,
+    raw_dir: Path,
+    dirs: dict[str, Path],
+    max_diameter: float,
+    options: dict,
+) -> dict:
+    trial_id, info = parse_trial_csv_info(csv_path, raw_dir)
+    log_lines = [f"  처리 중: {trial_id}"]
+
+    df = pd.read_csv(csv_path)
+
+    try:
+        baselines, segments = extract_baselines(
+            df,
+            trial_id,
+            info,
+            z_thresh=options["baseline_z_thresh"],
+            force_thresh=options["baseline_force_thresh"],
+            min_consec=options["baseline_min_consec"],
+        )
+    except ValueError as exc:
+        log_lines.append(f"    [건너뜀] {exc}")
+        return {"skipped": True, "trial_id": trial_id, "logs": log_lines}
+
+    baseline_ids = assign_baseline_ids(len(df), segments)
+    df = df.copy()
+    df["baseline_id"] = baseline_ids
+
+    bl_path = dirs["baselines"] / f"{trial_id}_baselines.json"
+    with open(bl_path, "w", encoding="utf-8") as f:
+        json.dump(baselines, f, indent=2, ensure_ascii=False)
+
+    grid_df = make_grid_df(df, trial_id, info, options["contact_threshold"])
+    if grid_df.empty:
+        log_lines.append("    [건너뜀] 그리드 데이터가 없습니다.")
+        return {"skipped": True, "trial_id": trial_id, "logs": log_lines}
+
+    grid_path = dirs["grid"] / f"{trial_id}_grid.csv"
+    grid_df.to_csv(grid_path, index=False)
+
+    contact_radius_arr = None
+    contact_radius_cell = None
+    if options["use_depth_aware_radius"]:
+        depth_arr = grid_df["z_depth_mm"].to_numpy(dtype=np.float64)
+        if options["fallback_depth_mode"] != "none":
+            pos_depth = depth_arr[depth_arr > 0]
+            fallback = options["fallback_depth_mm"]
+            if options["fallback_depth_mode"] == "mean" and len(pos_depth) > 0:
+                fallback = float(pos_depth.mean())
+            depth_arr = np.where(depth_arr > 0, depth_arr, fallback)
+        contact_radius_arr = np.array(
+            [
+                contact_radius(float(d), R_mm=options["indenter_radius_mm"], model=options["radius_model"])
+                for d in depth_arr
+            ],
+            dtype=np.float64,
+        )
+        if options["max_radius_mm"] is not None:
+            contact_radius_arr = np.minimum(contact_radius_arr, options["max_radius_mm"])
+        contact_radius_cell = contact_radius_arr / GRID_STEP_MM
+        grid_df = grid_df.copy()
+        grid_df["contact_radius_mm"] = contact_radius_arr
+        grid_df["contact_radius_cell"] = contact_radius_cell
+
+    feat_df = make_features_df(
+        grid_df,
+        baselines,
+        max_diameter,
+        z_bin_mm=options["z_bin_mm"],
+        min_signal=options["min_signal"],
+        contact_radius_mm=contact_radius_arr,
+        contact_radius_cell=contact_radius_cell,
+    )
+    feat_path = dirs["features"] / f"{trial_id}_features.csv"
+    feat_df.to_csv(feat_path, index=False)
+
+    mat = str(grid_df["material"].iloc[0])
+    log_lines.append(f"    → total {len(grid_df):,}행 정제 완료")
+    return {
+        "skipped": False,
+        "trial_id": trial_id,
+        "material": mat,
+        "feature_path": feat_path,
+        "logs": log_lines,
+    }
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -631,7 +811,7 @@ def main():
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
 
-    csv_files = sorted(args.raw_dir.glob(args.glob))
+    csv_files = discover_merged_csvs(args.raw_dir, args.glob)
     if not csv_files:
         print(f"[오류] {args.raw_dir}/{args.glob} 에서 파일을 찾을 수 없습니다.")
         return
@@ -641,94 +821,46 @@ def main():
     # max_diameter 계산
     max_diameter = 0.0
     for f in csv_files:
-        info = parse_trial_name(f.stem)
+        _, info = parse_trial_csv_info(f, args.raw_dir)
         if info["diameter_mm"] is not None:
             max_diameter = max(max_diameter, info["diameter_mm"])
     if max_diameter == 0:
         max_diameter = 1.0
 
-    material_features: dict[str, list] = {}
+    material_feature_paths: dict[str, list[Path]] = {}
+    options = _trial_options_from_args(args)
+    workers = _normalize_workers(args.workers, len(csv_files))
+    if workers > 1:
+        print(f"[병렬 처리] workers={workers}")
+        results: list[dict | None] = [None] * len(csv_files)
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            future_to_idx = {
+                executor.submit(_process_trial_csv, csv_path, args.raw_dir, dirs, max_diameter, options): idx
+                for idx, csv_path in enumerate(csv_files)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                results[idx] = future.result()
+                for line in results[idx]["logs"]:
+                    print(line)
+    else:
+        results = [
+            _process_trial_csv(csv_path, args.raw_dir, dirs, max_diameter, options)
+            for csv_path in csv_files
+        ]
+        for result in results:
+            for line in result["logs"]:
+                print(line)
 
-    for csv_path in csv_files:
-        trial_id = csv_path.stem.replace("_merged", "")
-        info = parse_trial_name(trial_id)
-        
-        print(f"  처리 중: {trial_id}")
-        df = pd.read_csv(csv_path)
-
-        # Baseline (multi-segment)
-        try:
-            baselines, segments = extract_baselines(
-                df,
-                trial_id,
-                info,
-                z_thresh=args.baseline_z_thresh,
-                force_thresh=args.baseline_force_thresh,
-                min_consec=args.baseline_min_consec,
-            )
-        except ValueError as e:
-            print(f"    [건너뜀] {e}")
+    for result in results:
+        if result is None or result.get("skipped"):
             continue
-
-        baseline_ids = assign_baseline_ids(len(df), segments)
-        df["baseline_id"] = baseline_ids
-
-        bl_path = dirs["baselines"] / f"{trial_id}_baselines.json"
-        with open(bl_path, "w", encoding="utf-8") as f:
-            json.dump(baselines, f, indent=2, ensure_ascii=False)
-
-        # Grid CSV
-        grid_df = make_grid_df(df, trial_id, info, args.contact_threshold)
-        if grid_df.empty:
-            print("    [건너뜀] 그리드 데이터가 없습니다.")
-            continue
-        grid_path = dirs["grid"] / f"{trial_id}_grid.csv"
-        grid_df.to_csv(grid_path, index=False)
-
-        # 선택: 깊이 기반 접촉 반경
-        contact_radius_arr = None
-        if args.use_depth_aware_radius:
-            depth_arr = grid_df["z_depth_mm"].to_numpy(dtype=np.float64)
-            if args.fallback_depth_mode != "none":
-                pos_depth = depth_arr[depth_arr > 0]
-                fallback = args.fallback_depth_mm
-                if args.fallback_depth_mode == "mean" and len(pos_depth) > 0:
-                    fallback = float(pos_depth.mean())
-                depth_arr = np.where(depth_arr > 0, depth_arr, fallback)
-            contact_radius_arr = np.array(
-                [contact_radius(float(d), R_mm=args.indenter_radius_mm, model=args.radius_model) for d in depth_arr],
-                dtype=np.float64,
-            )
-            if args.max_radius_mm is not None:
-                contact_radius_arr = np.minimum(contact_radius_arr, args.max_radius_mm)
-            # 셀 단위 반경 추가 (0.5mm grid)
-            contact_radius_cell = contact_radius_arr / GRID_STEP_MM
-            grid_df = grid_df.copy()
-            grid_df["contact_radius_mm"] = contact_radius_arr
-            grid_df["contact_radius_cell"] = contact_radius_cell
-
-        # Features CSV
-        feat_df = make_features_df(
-            grid_df,
-            baselines,
-            max_diameter,
-            z_bin_mm=args.z_bin_mm,
-            min_signal=args.min_signal,
-            contact_radius_mm=contact_radius_arr,
-            contact_radius_cell=contact_radius_cell if args.use_depth_aware_radius else None,
-        )
-        feat_path = dirs["features"] / f"{trial_id}_features.csv"
-        feat_df.to_csv(feat_path, index=False)
-
-        mat = grid_df["material"].iloc[0]
-        material_features.setdefault(mat, []).append(feat_df)
-        
-        print(f"    → total {len(grid_df):,}행 정제 완료")
+        material_feature_paths.setdefault(result["material"], []).append(result["feature_path"])
 
     # 소재별 통합 및 Zarr 변환
     print()
-    for mat in sorted(material_features):
-        all_feat = pd.concat(material_features[mat], ignore_index=True)
+    for mat in sorted(material_feature_paths):
+        all_feat = pd.concat([pd.read_csv(path) for path in material_feature_paths[mat]], ignore_index=True)
         
         # ── [추가] 일관성 필터 (Consistency Filter) ──
         print(f"  [{mat}] 데이터 품질 검사 중...")

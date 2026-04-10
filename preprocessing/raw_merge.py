@@ -21,7 +21,6 @@ import json
 import re
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -32,6 +31,9 @@ TRIAL_DIR_RE = re.compile(
     r"^(?P<material>[^_]+)(?:_d(?P<diameter_mm>\d+(?:\.\d+)?))?_(?P<trial_no>\d+)$",
     re.IGNORECASE,
 )
+INDENTER_DIR_RE = re.compile(r"^d(?P<diameter_mm>\d+(?:\.\d+)?)$", re.IGNORECASE)
+Z_DIR_RE = re.compile(r"^z_?(?P<z_max_indentation_mm>\d+(?:\.\d+)?)mm$", re.IGNORECASE)
+TEST_DIR_RE = re.compile(r"^test(?P<trial_no>\d+)$", re.IGNORECASE)
 
 # CSV 파일명 변형 대응: "*_data_*.csv" 외에
 # due_<소재>_<번호>.csv, afd50_<소재>_<번호>.csv, ethermotion/eithermotion_*.csv 등도 허용한다.
@@ -183,6 +185,7 @@ def parse_trial_dir_name(name: str) -> dict:
             "trial_id": name,
             "material": name,
             "indenter_diameter_mm": None,
+            "z_max_indentation_mm": None,
             "experiment_no": None,
         }
 
@@ -191,8 +194,66 @@ def parse_trial_dir_name(name: str) -> dict:
         "trial_id": name,
         "material": m.group("material").lower(),
         "indenter_diameter_mm": float(diameter) if diameter is not None else None,
+        "z_max_indentation_mm": None,
         "experiment_no": int(m.group("trial_no")),
     }
+
+
+def _format_number_for_id(value: float) -> str:
+    return f"{value:g}"
+
+
+def parse_trial_dir_info(trial_dir: Path, raw_root: Path) -> dict:
+    """Extract metadata from a trial directory.
+
+    Supports both legacy flat trial directories and the nested layout:
+    raw_root/material/d{diameter}/z_{max indentation}mm/test{n}.
+    """
+
+    try:
+        rel_parts = trial_dir.relative_to(raw_root).parts
+    except ValueError:
+        rel_parts = trial_dir.parts
+
+    if len(rel_parts) >= 4:
+        material, indenter_dir, z_dir, test_dir = rel_parts[-4:]
+        indenter_match = INDENTER_DIR_RE.match(indenter_dir)
+        z_match = Z_DIR_RE.match(z_dir)
+        test_match = TEST_DIR_RE.match(test_dir)
+        if indenter_match and z_match and test_match:
+            diameter_mm = float(indenter_match.group("diameter_mm"))
+            z_max_indentation_mm = float(z_match.group("z_max_indentation_mm"))
+            trial_no = int(test_match.group("trial_no"))
+            material_id = material.lower()
+            trial_id = (
+                f"{material_id}_d{_format_number_for_id(diameter_mm)}_"
+                f"z{z_match.group('z_max_indentation_mm')}_test{trial_no}"
+            )
+            return {
+                "trial_id": trial_id,
+                "material": material_id,
+                "indenter_diameter_mm": diameter_mm,
+                "z_max_indentation_mm": z_max_indentation_mm,
+                "experiment_no": trial_no,
+            }
+
+    info = parse_trial_dir_name(trial_dir.name)
+    info.setdefault("z_max_indentation_mm", None)
+    return info
+
+
+def discover_trial_dirs(raw_root: Path) -> list[Path]:
+    """Return trial leaf directories for the supported raw_data layouts."""
+
+    nested = sorted(
+        p
+        for p in raw_root.rglob("test*")
+        if p.is_dir() and TEST_DIR_RE.match(p.name) and len(p.relative_to(raw_root).parts) >= 4
+    )
+    if nested:
+        return nested
+
+    return sorted([p for p in raw_root.iterdir() if p.is_dir()])
 
 
 
@@ -205,7 +266,7 @@ def find_single_file(trial_dir: Path, patterns: list[str]) -> Path:
 
     errors: list[str] = []
     for pat in patterns:
-        files = sorted(trial_dir.glob(pat))
+        files = sorted(trial_dir.rglob(pat))
         if len(files) == 1:
             return files[0]
         errors.append(f"{pat}:{len(files)}")
@@ -812,6 +873,8 @@ def save_sync_plot(
     y_mm: float,
     y_tol_mm: float,
 ) -> None:
+    import matplotlib.pyplot as plt
+
     sel = _filter_increasing_x_on_fixed_y(merged, y_mm=y_mm, y_tol_mm=y_tol_mm)
     if sel.empty:
         fig, ax = plt.subplots(1, 1, figsize=(12, 4))
@@ -920,6 +983,7 @@ def summarize_merge(merged: pd.DataFrame) -> dict:
 
 def process_trial_dir(
     trial_dir: Path,
+    raw_root: Path,
     align_mode: str,
     sync_ref: str,
     resample_hz: float,
@@ -939,7 +1003,7 @@ def process_trial_dir(
     min_match_ratio: float,
     force_round_dp: int | None,
 ) -> None:
-    info = parse_trial_dir_name(trial_dir.name)
+    info = parse_trial_dir_info(trial_dir, raw_root)
 
     due_path = find_single_file(trial_dir, DUE_PATTERNS)
     ether_path = find_single_file(trial_dir, ETHERMOTION_PATTERNS)
@@ -979,6 +1043,7 @@ def process_trial_dir(
     summary["trial_id"] = info["trial_id"]
     summary["material"] = info["material"]
     summary["indenter_diameter_mm"] = info["indenter_diameter_mm"]
+    summary["z_max_indentation_mm"] = info["z_max_indentation_mm"]
     summary["experiment_no"] = info["experiment_no"]
     summary["align_mode"] = align_mode
     summary["window_ms"] = float(window_ms)
@@ -992,9 +1057,9 @@ def process_trial_dir(
 
     export_df = build_export_frame(merged, force_round_dp=None if force_round_dp is None else force_round_dp)
 
-    merged_csv = trial_dir / f"{trial_dir.name}_merged.csv"
-    baseline_json = trial_dir / f"{trial_dir.name}_baseline.json"
-    summary_json = trial_dir / f"{trial_dir.name}_merge_summary.json"
+    merged_csv = trial_dir / f"{info['trial_id']}_merged.csv"
+    baseline_json = trial_dir / f"{info['trial_id']}_baseline.json"
+    summary_json = trial_dir / f"{info['trial_id']}_merge_summary.json"
 
     export_df.to_csv(merged_csv, index=False)
     with open(baseline_json, "w", encoding="utf-8") as f:
@@ -1002,7 +1067,7 @@ def process_trial_dir(
     with open(summary_json, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
-    print(f"[{trial_dir.name}] done")
+    print(f"[{info['trial_id']}] done")
     print(f"  merged:   {merged_csv}")
     print(f"  baseline: {baseline_json}")
     print(f"  summary:  {summary_json}")
@@ -1022,7 +1087,7 @@ def process_trial_dir(
     if min_ratio < min_match_ratio:
         raise RuntimeError(
             f"match ratio {min_ratio:.3f} < min-match-ratio {min_match_ratio:.3f} "
-            f"(trial {trial_dir.name})"
+            f"(trial {info['trial_id']})"
         )
 
 
@@ -1033,7 +1098,7 @@ def main() -> None:
     if not args.raw_root.exists():
         raise FileNotFoundError(f"raw-root not found: {args.raw_root}")
 
-    trial_dirs = sorted([p for p in args.raw_root.iterdir() if p.is_dir()])
+    trial_dirs = discover_trial_dirs(args.raw_root)
     if not trial_dirs:
         raise RuntimeError(f"No trial directories found under {args.raw_root}")
 
@@ -1042,6 +1107,7 @@ def main() -> None:
         try:
             process_trial_dir(
                 trial_dir=trial_dir,
+                raw_root=args.raw_root,
                 align_mode=args.align_mode,
                 sync_ref=args.sync_ref,
                 resample_hz=args.resample_hz,

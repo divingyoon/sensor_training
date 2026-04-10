@@ -8,11 +8,9 @@ Features
 - Computes MAE for x,y,z and saves optional overlay PNGs.
 """
 
-import os
 import argparse
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
 
 from training.models.multi_head_field_model import MultiHeadFieldModel
 from training.pipelines.train_comparison import (
@@ -20,30 +18,10 @@ from training.pipelines.train_comparison import (
     _resolve_zarr_path,
     _build_soft_heatmap,
     _decode_xy_from_heatmap,
+    _save_overlay,
     GRID_MIN,
     GRID_STEP,
 )
-
-
-def save_overlay(fmap_logits, target_map, out_dir, prefix, max_samples=4):
-    os.makedirs(out_dir, exist_ok=True)
-    prob = torch.sigmoid(fmap_logits).detach().cpu()
-    tgt = target_map.detach().cpu()
-    b = min(prob.size(0), max_samples)
-    for i in range(b):
-        plt.figure(figsize=(5, 2.2))
-        plt.subplot(1, 2, 1)
-        plt.title("pred")
-        plt.imshow(prob[i, 0], origin="lower", cmap="inferno", vmin=0, vmax=1)
-        plt.colorbar(fraction=0.046, pad=0.04)
-        plt.subplot(1, 2, 2)
-        plt.title("target")
-        plt.imshow(tgt[i, 0], origin="lower", cmap="viridis", vmin=0, vmax=1)
-        plt.colorbar(fraction=0.046, pad=0.04)
-        plt.tight_layout()
-        path = os.path.join(out_dir, f"{prefix}_i{i}.png")
-        plt.savefig(path)
-        plt.close()
 
 
 def main():
@@ -141,7 +119,16 @@ def main():
                     fallback_depth_mm=args.depth_fallback_mm,
                     sigma_scale=args.heatmap_sigma_scale,
                 )
-                save_overlay(fmap, target_map, args.overlay_dir, prefix=f"batch{b}", max_samples=args.overlay_samples)
+                _save_overlay(
+                    b,
+                    fmap,
+                    target_map,
+                    args.overlay_dir,
+                    prefix="batch",
+                    max_samples=args.overlay_samples,
+                    pred_values=pred_concat,
+                    target_values=tgt[:, :4],
+                )
 
     if not all_preds:
         print("No samples passed depth_min_for_label; nothing to report.")

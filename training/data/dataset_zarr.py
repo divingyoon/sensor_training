@@ -20,6 +20,46 @@ except ImportError:
     ZARR_AVAILABLE = False
 
 
+def _same_path(left: Union[str, Path], right: Union[str, Path]) -> bool:
+    return Path(left).expanduser().resolve() == Path(right).expanduser().resolve()
+
+
+def _index_candidates(zarr_path: Path) -> List[Path]:
+    return [
+        zarr_path / "dataset_index.json",
+        zarr_path.parent / f"{zarr_path.stem}_index.json",
+        zarr_path.parent / "dataset_index.json",
+    ]
+
+
+def _load_zarr_index(zarr_path: Path, zg) -> List[Dict]:
+    index_path = next((p for p in _index_candidates(zarr_path) if p.exists()), None)
+    if index_path is None:
+        searched = ", ".join(str(p) for p in _index_candidates(zarr_path))
+        raise FileNotFoundError(f"No dataset index found for {zarr_path}. Searched: {searched}")
+
+    with open(index_path, "r", encoding="utf-8") as f:
+        index_data = json.load(f)
+
+    all_samples = index_data.get("samples", [])
+    if not isinstance(all_samples, list):
+        raise ValueError(f"Invalid dataset index format: {index_path}")
+
+    for sample in all_samples:
+        sample_zarr = sample.get("zarr_path")
+        if sample_zarr and not _same_path(sample_zarr, zarr_path):
+            raise ValueError(
+                f"Index {index_path} references a different zarr: {sample_zarr} != {zarr_path}"
+            )
+        zarr_index = int(sample["zarr_index"])
+        n_rows = int(zg["tactile_lr_norm"].shape[0])
+        if zarr_index < 0 or zarr_index >= n_rows:
+            raise ValueError(
+                f"Index {index_path} has zarr_index={zarr_index} outside {zarr_path} row count {n_rows}"
+            )
+    return all_samples
+
+
 class ZarrDataset(Dataset):
     """
     preprocess.py에서 생성한 .zarr 데이터를 로드하는 PyTorch Dataset.
@@ -55,12 +95,7 @@ class ZarrDataset(Dataset):
         zg = zarr.open_group(str(self.zarr_path), mode='r')
         self.aux_last_field = zg.attrs.get("aux_last_field", "diameter_mm")
         
-        # 인덱스 파일 로드
-        index_path = self.zarr_path.parent / "dataset_index.json"
-        with open(index_path, "r", encoding="utf-8") as f:
-            index_data = json.load(f)
-        
-        all_samples = index_data["samples"]
+        all_samples = _load_zarr_index(self.zarr_path, zg)
         
         # 1. Phase 필터링
         if phase != "all":

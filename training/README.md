@@ -35,7 +35,7 @@ training/
   - 디코드/시각화: `--decode-xy softargmax|argmax_refine`, `--save-heatmap-overlay`, `--overlay-batches`, `--overlay-samples`
   - 지표 bin: `--depth-bins "0.8,1.1,1.4,1.7"`
 - 출력: `xy_heatmap logits`, `z_depth`, `fz`; decode 옵션 사용 시 xy는 heatmap에서 softargmax/argmax_refine로 계산해 검증.
-- ckpt/tag: `dlabel-<kernel>-<radius>_xy*_z*_fz*_dec*_hnorm` 형태로 자동 부여, metrics JSON도 동일 태그로 저장.
+- ckpt/tag: `stageN_<point|dlabel-kernel-radius>_xy*_z*_fz*_dec*` 형태로 자동 부여, `--normalize-heatmap` 사용 시 `_hnorm`이 추가됩니다. metrics JSON도 동일 태그로 저장됩니다.
 
 ## 권장 실험 순서 (Ablation)
 1) Baseline: point label + xy only (`--use-depth-aware-label` off)
@@ -47,13 +47,18 @@ training/
 - Stage1 (baseline, point label)
 ```
 python -m training.pipelines.train_comparison \
+  --data-dir preprocessing/processed_data \
+  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
   --models multi_head_field \
-  --epochs 100 --batch-size 512 --seq-len 50 \
+  --epochs 100 --batch-size 1024 --seq-len 50 \
+  --lambda-z 0.0 --lambda-fz 0.0 \
   --decode-xy none
 ```
 - Stage2 (soft label, xy만)
 ```
 python -m training.pipelines.train_comparison \
+  --data-dir preprocessing/processed_data \
+  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
   --models multi_head_field \
   --use-depth-aware-label \
   --depth-label-kernel gaussian --depth-radius-model hertz \
@@ -63,13 +68,14 @@ python -m training.pipelines.train_comparison \
   --decode-xy softargmax \
   --depth-fallback-mm 1.0 \
   --depth-min-for-label 0.05 \
-  --normalize-heatmap \
   --save-heatmap-overlay --overlay-batches 1 --overlay-samples 4 \
-  --epochs 100 --batch-size 512
+  --epochs 100 --batch-size 1024
 ```
 - Stage3 (soft label + z/fz 보조 헤드)
 ```
 python -m training.pipelines.train_comparison \
+  --data-dir preprocessing/processed_data \
+  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
   --models multi_head_field \
   --use-depth-aware-label \
   --loss-xy bce --loss-z huber --loss-fz huber \
@@ -80,9 +86,8 @@ python -m training.pipelines.train_comparison \
   --decode-xy softargmax \
   --depth-fallback-mm 1.0 \
   --depth-min-for-label 0.05 \
-  --normalize-heatmap \
   --save-heatmap-overlay --overlay-batches 1 --overlay-samples 4 \
-  --epochs 100 --batch-size 512
+  --epochs 100 --batch-size 1024
 ```
 
 ## 검증 체크리스트
@@ -93,7 +98,7 @@ python -m training.pipelines.train_comparison \
 - Ablation 순서 기록: (1) point → (2) soft → (3) soft+z/fz → (4) conditioning
 
 ## 출력/로그
-- ckpt: `training/runs_comparison/best_<model>[dlabel-*].pth`
+- ckpt: `training/runs_comparison/best_<model>[_stageN_*].pth`
 - 지표: `comparison_results.json`
 - 히트맵/시각화: `runs_comparison/heatmaps/*` (evaluate_comparison_heatmap)
 
@@ -102,11 +107,11 @@ python -m training.pipelines.train_comparison \
 - 사용 예:
 ```
 python inference/run_inference.py \
-  --checkpoint training/runs_comparison/best_multi_head_field_dlabel-gaussian-hertz_xybce_zhuber_fzhuber_decsoftargmax.pth \
+  --checkpoint training/runs_comparison/best_multi_head_field_stage3_dlabel-gaussian-hertz_xybce1_zhuber0p2_fzhuber0p2_decsoftargmax.pth \
   --data-dir preprocessing/processed_data \
+  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
   --decode-xy softargmax \
   --heatmap-sigma-scale 0.35 \
-  --normalize-heatmap \
   --depth-fallback-mm 1.0 --depth-min-for-label 0.05 \
   --batch-size 256 --max-batches 2 \
   --save-heatmap-overlay --overlay-batches 1 --overlay-samples 4
