@@ -5,7 +5,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import zarr
+try:
+    import zarr
+except ModuleNotFoundError as exc:
+    raise unittest.SkipTest("zarr is not installed") from exc
 
 from preprocessing.preprocess import export_to_zarr
 from training.data.dataset_zarr import ZarrDataset
