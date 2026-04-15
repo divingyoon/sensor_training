@@ -13,7 +13,7 @@ import math
 from typing import Literal
 
 
-RadiusModel = Literal["hertz", "geo"]
+RadiusModel = Literal["hertz", "geo", "geom"]
 KernelType = Literal["gaussian", "linear"]
 
 
@@ -23,7 +23,7 @@ def contact_radius(depth_mm: float, R_mm: float = 2.5, model: RadiusModel = "her
     Args:
         depth_mm: 압입 깊이 (mm). 음수면 0으로 취급.
         R_mm: 인덴터 반경 (mm). 기본 2.5 (지름 5mm).
-        model: "hertz" → a = sqrt(R·δ), "geo" → a = sqrt(2Rδ − δ²).
+        model: "hertz" → a = sqrt(R·δ), "geo"/"geom" → a = sqrt(2Rδ − δ²).
 
     Returns:
         접촉 반경 a [mm]. 깊이가 0 이하인 경우 0.
@@ -32,7 +32,7 @@ def contact_radius(depth_mm: float, R_mm: float = 2.5, model: RadiusModel = "her
     if depth_mm <= 0 or R_mm <= 0:
         return 0.0
 
-    if model == "geo":
+    if model in {"geo", "geom"}:
         val = 2 * R_mm * depth_mm - depth_mm * depth_mm
         return math.sqrt(val) if val > 0 else 0.0
 
@@ -46,13 +46,13 @@ def contact_radius_tensor(depth_mm, R_mm: float = 2.5, model: RadiusModel = "her
     Args:
         depth_mm: torch.Tensor 또는 숫자. 음수는 0으로 클램프.
         R_mm: 인덴터 반경(mm)
-        model: "hertz" 또는 "geo"
+        model: "hertz" 또는 "geo"/"geom"
     """
 
     import torch
 
     depth = torch.clamp(depth_mm, min=0.0)
-    if model == "geo":
+    if model in {"geo", "geom"}:
         a_sq = torch.clamp(2 * R_mm * depth - depth * depth, min=0.0)
     else:
         a_sq = torch.clamp(R_mm * depth, min=0.0)

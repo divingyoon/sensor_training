@@ -1,138 +1,236 @@
-# Tactile Sensor Training (2026-04-09)
+# Training Pipeline
 
-16ch 촉각 센서로 다음을 학습·검증하기 위한 파이프라인입니다.
-- XY 위치(0.5 mm grid), Z depth, Fz 회귀
-- 선택적 depth-aware soft heatmap + z/fz 보조 헤드 (옵션 B)
-- Force Field 재구성(heatmap) 멀티태스크
+이 디렉토리는 전처리된 tactile dataset으로 XY heatmap, contact 기준 Z depth, Fz를 학습하고 평가하는 스크립트를 담고 있습니다.  
+현재 실험 흐름에서 우선순위는 `train_z_fz_regressor.py`이고, `train_comparison.py` Stage1/2/3는 XY checkpoint 생성 및 비교 실험용입니다.
 
-## 구조
-```
-training/
-├─ data/       # Dataset 로더 (zarr/csv)
-├─ models/     # MLP, CNN/LSTM, SATS, Transformer, GNN, Multi-head 등
-├─ pipelines/  # 학습/평가 스크립트
-├─ utils/      # 기하/라벨/시각화 유틸
-└─ runs*/      # 결과 저장 경로
-```
+## Main Pipelines
+- `pipelines/train_z_fz_regressor.py`
+  - GT XY 조건 기반 Z/Fz 전용 시퀀스 회귀, 기본 trial-aware 5-fold CV
+- `pipelines/train_comparison.py`
+  - 여러 모델 동시 비교, `multi_head_field` Stage1/2/3 포함, 기본 trial-aware 5-fold CV
+- `pipelines/evaluate_comparison_heatmap.py`
+  - fold metadata를 재사용하는 모델별 XY/Z/Fz heatmap 평가
 
-## 주요 파이프라인
-- `pipelines/train_comparison.py` : 여러 모델 동시 학습/비교 (zarr 또는 csv)
-- `pipelines/train_z_fz_regressor.py` : XY 조건부 Z/Fz 전용 시퀀스 회귀 (zarr)
-- `pipelines/train_sr_zarr.py`   : SR 회귀(x,y,z) 단일 모델 (zarr)
-- `pipelines/train_ff_zarr.py`   : Force Field/Fz 전용 (zarr)
-- `pipelines/train_unified.py`   : 시퀀스 기반 통합 모델
-- `pipelines/evaluate_comparison_heatmap.py`, `evaluate_sr.py` : 평가/히트맵 출력
+## Legacy Surface
+- `pipelines/train_sr_zarr.py`
+- `pipelines/train_ff_zarr.py`
+- `pipelines/train_sr_class_zarr.py`
+- `pipelines/train_unified.py`
+- `pipelines/evaluate_zarr_sr.py`
+- `pipelines/evaluate_sr.py`
 
-## 데이터 요구
-- 기본 경로: `preprocessing/processed_data/` 또는 `preprocessing/zarr_data/*.zarr`
-- Zarr 필수 필드: `tactile_lr_norm`(N,16), `aux_feat[:,3]=diameter`, `cx, cy, depth_mm, fz`
-- CSV 경로 사용 시 `x_mm, y_mm, z_mm, Fz` 컬럼 포함 권장
+위 스크립트들은 legacy/experimental surface입니다. 공식 경로로 취급하지 않습니다.
 
-## 옵션 B (depth-aware soft heatmap) 사용법
-- 플래그 (multi_head_field 전용):
-  - 라벨 옵션: `--use-depth-aware-label`, `--depth-label-kernel gaussian|linear`, `--depth-radius-model hertz|geom`, `--heatmap-size 40`, `--depth-fallback-mm 1.0`, `--normalize-heatmap`
-  - 손실/가중치: `--loss-xy bce|wmse --loss-z huber|mse --loss-fz huber|mse`, `--lambda-xy 1.0 --lambda-z 0.2 --lambda-fz 0.2`, `--fg-weight 5.0`, `--huber-delta 1.0`
-  - 보조헤드 정규화: `--z-mean/--z-std`, `--fz-mean/--fz-std`
-  - 디코드/시각화: `--decode-xy softargmax|argmax_refine`, `--save-heatmap-overlay`, `--overlay-batches`, `--overlay-samples`
-  - 지표 bin: `--depth-bins "0.8,1.1,1.4,1.7"`
-- 출력: `xy_heatmap logits`, `z_depth`, `fz`; decode 옵션 사용 시 xy는 heatmap에서 softargmax/argmax_refine로 계산해 검증.
-- depth-aware soft heatmap은 Zarr sequence target에 포함된 샘플별 인덴터 반경을 우선 사용합니다. 없으면 `--indenter-radius-mm`로 폴백합니다.
-- ckpt/tag: `stageN_<point|dlabel-kernel-radius>_xy*_z*_fz*_dec*` 형태로 자동 부여, `--normalize-heatmap` 사용 시 `_hnorm`이 추가됩니다. metrics JSON도 동일 태그로 저장됩니다.
+## 1. Z/Fz Regressor
+목적:
+XY는 주어진 조건으로 두고 tactile sequence에서 contact 기준 Z/Fz만 분리 학습합니다. 이 경로는 hysteresis 보존을 위해 loading phase만 사용합니다.
 
-## 권장 실험 순서 (Ablation)
-1) Baseline: point label + xy only (`--use-depth-aware-label` off)
-2) Stage2: depth-aware soft label + xy only (`--use-depth-aware-label` on, λ_z=λ_fz=0 또는 헤드 off)
-3) Stage3: soft label + z/fz heads (멀티태스크, λ=1/0.2/0.2)
-4) Z/Fz separate: frozen XY heatmap 또는 GT XY를 조건으로 z/fz 전용 회귀 학습
-5) Optional: depth/force 입력 conditioning 추가 후 비교
-
-## 예시 명령 (추천)
-- Stage1 (baseline, point label)
-```
-python -m training.pipelines.train_comparison \
-  --data-dir preprocessing/processed_data \
-  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
-  --models multi_head_field \
-  --epochs 100 --batch-size 1024 --seq-len 50 \
-  --lambda-z 0.0 --lambda-fz 0.0 \
-  --decode-xy none
-```
-- Stage2 (soft label, xy만)
-```
-python -m training.pipelines.train_comparison \
-  --data-dir preprocessing/processed_data \
-  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
-  --models multi_head_field \
-  --use-depth-aware-label \
-  --depth-label-kernel gaussian --depth-radius-model hertz \
-  --heatmap-size 40 --fg-weight 8.0 \
-  --heatmap-sigma-scale 0.35 \
-  --lambda-z 0.0 --lambda-fz 0.0 \
-  --decode-xy softargmax \
-  --depth-fallback-mm 1.0 \
-  --depth-min-for-label 0.05 \
-  --save-heatmap-overlay --overlay-batches 1 --overlay-samples 4 \
-  --epochs 100 --batch-size 1024
-```
-- Stage3 (soft label + z/fz 보조 헤드)
-```
-python -m training.pipelines.train_comparison \
-  --data-dir preprocessing/processed_data \
-  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
-  --models multi_head_field \
-  --use-depth-aware-label \
-  --loss-xy bce --loss-z huber --loss-fz huber \
-  --lambda-xy 1.0 --lambda-z 0.2 --lambda-fz 0.2 \
-  --depth-label-kernel gaussian --depth-radius-model hertz \
-  --heatmap-size 40 --fg-weight 8.0 \
-  --heatmap-sigma-scale 0.35 \
-  --decode-xy softargmax \
-  --depth-fallback-mm 1.0 \
-  --depth-min-for-label 0.05 \
-  --save-heatmap-overlay --overlay-batches 1 --overlay-samples 4 \
-  --epochs 100 --batch-size 1024
-```
-
-- Z/Fz 전용 회귀 (GT XY upper-bound + 선택적 frozen XY end-to-end 평가)
-```
+대표 명령:
+```bash
 python -m training.pipelines.train_z_fz_regressor \
   --data-dir preprocessing/processed_data \
   --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
   --out-dir training/runs_z_fz \
-  --xy-checkpoint training/runs_comparison/best_multi_head_field_stage2_dlabel-gaussian-hertz_xybce1_zoff_fzoff_decsoftargmax.pth \
+  --xy-checkpoint training/runs_comparison/folds/fold_0/best_multi_head_field_stage2_dlabel-gaussian-hertz_xybce1_zoff_fzoff_decsoftargmax.pth \
   --decode-xy softargmax \
   --xy-noise-std-mm 0.5 \
-  --epochs 100 --batch-size 1024 --device cuda
+  --cv-folds 5 \
+  --optimizer adamw \
+  --weight-decay 1e-4 \
+  --dropout 0.1 \
+  --epochs 100 \
+  --batch-size 1024 \
+  --device cuda
 ```
 
-## 검증 체크리스트
-- A/B: 기존 라벨 vs depth-aware 라벨 (동일 모델)
-- 깊이 구간별 지표: MAE/RMSE, 성공률(≤1 cell), `metrics_*.json`에 bin별 기록
-- 히트맵 overlay PNG 저장(`out_dir/overlays`)
-- 데이터 순서 무작위화, 드리프트 보정 여부 확인
-- Ablation 순서 기록: (1) point → (2) soft → (3) soft+z/fz → (4) conditioning
+실제 semantics:
+- 학습은 항상 GT XY를 condition으로 사용합니다.
+- 전처리 zarr의 `depth_mm`는 현재 `z_contact_mm`를 뜻합니다.
+- Z/Fz sequence 회귀는 loading phase만 사용합니다. unloading/all은 이 스크립트에서 허용하지 않습니다.
+- `--xy-checkpoint`는 학습 경로에 들어가지 않습니다.
+- `--xy-checkpoint`를 주면 validation에서 frozen XY heatmap checkpoint를 decode한 `predicted_xy` 지표를 추가 계산합니다.
+- validation은 두 세트를 기록합니다.
+  - `gt_xy`: GT XY + GT radius
+  - `predicted_xy`: frozen XY decode + GT radius
+- 따라서 현재 `predicted_xy`는 완전한 end-to-end 평가가 아닙니다. radius는 여전히 GT를 사용합니다.
+- best checkpoint 선택 기준은 validation `predicted_xy`의 `z_mae + fz_mae`입니다.
+- `--test-trials`를 줘도 test metric을 별도로 계산하지는 않고 split metadata만 저장합니다.
 
-## 출력/로그
-- ckpt: `training/runs_comparison/best_<model>[_stageN_*].pth`
-- 지표: `comparison_results.json`
-- 히트맵/시각화: `runs_comparison/heatmaps/*` (evaluate_comparison_heatmap)
+주요 옵션:
+- `--zarr-path`
+  - 사용할 dataset을 명시합니다. `.zarr`가 여러 개면 필수입니다.
+- `--xy-checkpoint`
+  - frozen XY checkpoint를 써서 `predicted_xy` validation을 활성화합니다.
+  - 5-fold 실행에서는 `fold_0` template 경로를 넣어도 현재 fold에 맞는 checkpoint로 자동 치환합니다.
+- `--decode-xy {softargmax,argmax_refine}`
+  - XY checkpoint heatmap을 실제 XY로 바꾸는 방법
+- `--heatmap-size`
+  - XY checkpoint 구조와 맞아야 합니다.
+- `--xy-noise-std-mm`
+  - 학습 시 GT XY에 넣는 gaussian noise 크기
+- `--seq-len`, `--stride`
+  - depth sequence를 윈도우로 자르는 규칙
+- `--phase loading`
+  - hysteresis 보존을 위해 loading phase만 허용합니다.
+- `--val-trials`, `--test-trials`, `--seed`
+  - 수동 split 제어. 이 옵션을 주면 k-fold 대신 단일 split을 사용합니다.
+- `--cv-folds`, `--fold-index`
+  - 기본 5-fold trial-aware CV. `--fold-index`를 주면 특정 fold만 실행합니다.
+- `--loss {huber,mse}`, `--huber-delta`
+  - Z/Fz 회귀 손실 정의
+- `--optimizer {adam,adamw}`, `--weight-decay`, `--dropout`
+  - 공식 regularization surface
+- `--max-samples`
+  - 빠른 smoke run용 trial-balanced sample cap
+- `--device`
+  - `cuda`일 때는 preloaded dataset 전체를 VRAM으로 옮깁니다.
 
-## 추론(inference)
-- 스크립트: `inference/run_inference.py`
-- 사용 예:
+출력:
+- `best_z_fz_regressor.pth`
+- `metrics_z_fz_regressor.json`
+- `history_z_fz_regressor.json`
+
+운영 팁:
+- `--xy-noise-std-mm`는 GT upper-bound와 현실 추론 사이의 간극을 줄이기 위한 강건성 옵션입니다.
+- `--max-samples`를 이용하면 작은 smoke run을 빠르게 돌릴 수 있습니다.
+
+## 2. multi_head_field Comparison
+목적:
+XY heatmap checkpoint 생성, depth-aware label 비교, multi-model ablation을 수행합니다.
+
+권장 순서:
+1. Stage1: point label + xy only
+2. Stage2: depth-aware soft label + xy only
+3. Stage3: soft label + z/fz auxiliary heads
+4. 필요 시 Stage2 checkpoint를 `train_z_fz_regressor.py`의 `--xy-checkpoint`로 사용
+
+Stage1:
+```bash
+python -m training.pipelines.train_comparison \
+  --data-dir preprocessing/processed_data \
+  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
+  --models multi_head_field \
+  --cv-folds 5 \
+  --optimizer adamw \
+  --weight-decay 1e-4 \
+  --dropout 0.1 \
+  --epochs 100 \
+  --batch-size 1024 \
+  --seq-len 50 \
+  --lambda-z 0.0 \
+  --lambda-fz 0.0 \
+  --decode-xy none
 ```
+
+Stage2:
+```bash
+python -m training.pipelines.train_comparison \
+  --data-dir preprocessing/processed_data \
+  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
+  --models multi_head_field \
+  --use-depth-aware-label \
+  --depth-label-kernel gaussian \
+  --depth-radius-model hertz \
+  --heatmap-size 40 \
+  --fg-weight 8.0 \
+  --heatmap-sigma-scale 0.35 \
+  --lambda-z 0.0 \
+  --lambda-fz 0.0 \
+  --decode-xy softargmax \
+  --depth-fallback-mm 1.0 \
+  --depth-min-for-label 0.05 \
+  --save-heatmap-overlay \
+  --overlay-batches 1 \
+  --overlay-samples 4 \
+  --epochs 100 \
+  --batch-size 1024
+```
+
+Stage3:
+```bash
+python -m training.pipelines.train_comparison \
+  --data-dir preprocessing/processed_data \
+  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
+  --models multi_head_field \
+  --use-depth-aware-label \
+  --loss-xy bce \
+  --loss-z huber \
+  --loss-fz huber \
+  --lambda-xy 1.0 \
+  --lambda-z 0.2 \
+  --lambda-fz 0.2 \
+  --depth-label-kernel gaussian \
+  --depth-radius-model hertz \
+  --heatmap-size 40 \
+  --fg-weight 8.0 \
+  --heatmap-sigma-scale 0.35 \
+  --decode-xy softargmax \
+  --depth-fallback-mm 1.0 \
+  --depth-min-for-label 0.05 \
+  --save-heatmap-overlay \
+  --overlay-batches 1 \
+  --overlay-samples 4 \
+  --epochs 100 \
+  --batch-size 1024
+```
+
+주요 옵션:
+- `--use-depth-aware-label`
+  - point label 대신 depth-aware soft label 사용
+- `--depth-label-kernel {gaussian,linear}`
+  - heatmap label kernel
+- `--depth-radius-model {hertz,geom}`
+  - label radius 생성 모델
+- `--heatmap-size`
+  - output heatmap 해상도
+- `--heatmap-sigma-scale`
+  - gaussian label 폭
+- `--fg-weight`
+  - foreground 가중치
+- `--decode-xy {softargmax,argmax_refine,none}`
+  - XY decode 방식
+- `--cv-folds`, `--fold-index`
+  - 기본 5-fold trial-aware CV
+- `--optimizer {adam,adamw}`, `--weight-decay`, `--dropout`
+  - 공식 regularization surface
+- `--save-heatmap-overlay`, `--overlay-batches`, `--overlay-samples`
+  - overlay sanity check PNG 저장
+
+주의:
+- `preprocess.py`의 radius model 옵션은 `geo`, `train_comparison.py`의 depth label 옵션은 `geom`입니다. 이름이 다르므로 그대로 복사할 때 구분해야 합니다.
+
+## 3. Evaluation
+heatmap 평가:
+```bash
+python3 -m training.pipelines.evaluate_comparison_heatmap \
+  --runs-dir training/runs_comparison \
+  --models multi_head_field \
+  --batch-size 512 \
+  --device cuda \
+  --eval-split all \
+  --decode-xy softargmax \
+  --fill-missing neighbor
+```
+
+일반 체크포인트 추론 예시:
+```bash
 python inference/run_inference.py \
-  --checkpoint training/runs_comparison/best_multi_head_field_stage3_dlabel-gaussian-hertz_xybce1_zhuber0p2_fzhuber0p2_decsoftargmax.pth \
+  --checkpoint training/runs_comparison/folds/fold_0/best_multi_head_field_stage3_dlabel-gaussian-hertz_xybce1_zhuber0p2_fzhuber0p2_decsoftargmax.pth \
   --data-dir preprocessing/processed_data \
   --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
   --decode-xy softargmax \
   --heatmap-sigma-scale 0.35 \
-  --depth-fallback-mm 1.0 --depth-min-for-label 0.05 \
-  --batch-size 256 --max-batches 2 \
-  --save-heatmap-overlay --overlay-batches 1 --overlay-samples 4
+  --depth-fallback-mm 1.0 \
+  --depth-min-for-label 0.05 \
+  --batch-size 256 \
+  --max-batches 2 \
+  --save-heatmap-overlay \
+  --overlay-batches 1 \
+  --overlay-samples 4
 ```
-- 출력: 표준출력에 MAE/RMSE[x,y,z,fz], `training/runs_comparison/inference_overlays/`에 pred/target heatmap PNG 저장.
 
-## 버전
-- Last Updated: 2026-04-09
-- Version: 4.1 (Depth-Aware Option B)
+출력:
+- comparison checkpoint: `training/runs_comparison/best_<model>*.pth`
+- comparison summary: `training/runs_comparison/comparison_results.json`
+- CV manifest: `training/runs_comparison/cv_manifest_comparison.json`
+- heatmap 시각화: `training/runs_comparison/heatmaps/`

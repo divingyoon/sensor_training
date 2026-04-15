@@ -11,7 +11,7 @@ except ModuleNotFoundError as exc:
     raise unittest.SkipTest("zarr is not installed") from exc
 
 from preprocessing.preprocess import export_to_zarr
-from training.data.dataset_zarr import ZarrDataset
+from training.data.dataset_zarr import ZarrDataset, _compact_index_path
 from training.pipelines.train_comparison import _resolve_zarr_path
 
 
@@ -89,6 +89,22 @@ class ZarrIndexResolutionTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "references a different zarr"):
                 ZarrDataset(a_zarr, split="all", phase="all")
+
+    def test_loader_rebuilds_stale_compact_index_when_row_count_mismatches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            zarr_path = Path(tmp) / "dataset_ecemesh.zarr"
+            export_to_zarr(_feature_frame("ecemesh_d5_1"), zarr_path)
+            compact_path = _compact_index_path(zarr_path)
+            np.savez(
+                compact_path,
+                trial_codes=np.array([0, 0, 0], dtype=np.int32),
+                phase_codes=np.array([0, 0, 0], dtype=np.uint8),
+                trial_vocab=np.array(["ecemesh_d5_1"], dtype=object),
+            )
+
+            ds = ZarrDataset(zarr_path, split="all", phase="all")
+
+            self.assertEqual(len(ds), 2)
 
 
 if __name__ == "__main__":

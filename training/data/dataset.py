@@ -19,7 +19,7 @@ SkinDataset: preprocessing_data 디렉토리에서 샘플을 로드하는 PyTorc
   "cy"         scalar float32 — contact center y (mm)
   "x_bounds"   (2,) float32  — canvas x bounds
   "y_bounds"   (2,) float32  — canvas y bounds
-  "depth_mm"   scalar float32
+  "depth_mm"   scalar float32  — 우선순위: z_contact_mm, fallback: depth_mm
 """
 
 import json
@@ -183,7 +183,10 @@ class SkinDataset(Dataset):
             else:
                 cx = float(zg["cx"][zi])
                 cy = float(zg["cy"][zi])
-            depth_mm = float(zg["depth_mm"][zi])
+            if "z_contact_mm" in zg:
+                depth_mm = float(zg["z_contact_mm"][zi])
+            else:
+                depth_mm = float(zg["depth_mm"][zi])
             if "z_command_mm" in zg:
                 z_cmd_mm = float(zg["z_command_mm"][zi])
             else:
@@ -228,6 +231,8 @@ class SkinDataset(Dataset):
 
 
 def _safe_depth(sample: Dict) -> float:
+    if "z_contact_mm" in sample:
+        return float(sample["z_contact_mm"])
     return float(sample.get("depth_bin_mm", 0.0))
 
 

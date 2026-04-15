@@ -38,8 +38,9 @@ from training.models.isoline_gnn import IsolineGNN
 from training.models.tactile_gnn_gat import TactileGAT
 from training.models.multi_head_field_model import MultiHeadFieldModel
 from training.utils.contact_geometry import contact_radius_tensor
+from training.pipelines import runtime_common as rt
 
-def get_model(name, seq_len=50, heatmap_size=40):
+def get_model(name, seq_len=50, heatmap_size=40, dropout: float = 0.1):
     if name == "unified": return UnifiedSensorModel(seq_len=seq_len)
     elif name == "mlp": return MLPBaseline()
     elif name == "cnn": return CNNSR()
@@ -50,7 +51,7 @@ def get_model(name, seq_len=50, heatmap_size=40):
     elif name == "transformer": return TactileTransformer()
     elif name == "isoline_gnn": return IsolineGNN()
     elif name == "tactile_gnn_gat": return TactileGAT()
-    elif name == "multi_head_field": return MultiHeadFieldModel(seq_len=seq_len, heatmap_size=heatmap_size)
+    elif name == "multi_head_field": return MultiHeadFieldModel(seq_len=seq_len, heatmap_size=heatmap_size, dropout=dropout)
     else: raise ValueError(f"Unknown model: {name}")
 
 GRID_STEP = 0.5
@@ -308,6 +309,12 @@ def _resolve_device(force: str) -> torch.device:
         return torch.device("cpu")
     # auto
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _build_optimizer(model: nn.Module, args):
+    if args.optimizer == "adamw":
+        return optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    return optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
 
 def _decode_xy_from_heatmap(fmap_logits: torch.Tensor, decode: str):
@@ -570,7 +577,10 @@ class ZarrSequenceDataset(Dataset):
 
         zds = ZarrDataset(zarr_path=zarr_path, split="all", phase=phase)
         tactile = zds.tactile_data.float()  # (N,16)
-        radius = (zds.aux_data[:, 3:4] / 2.0).float()  # (N,1)
+        if getattr(zds, "aux_last_field", "diameter_mm") == "contact_radius_mm":
+            radius = zds.aux_data[:, 3:4].float()
+        else:
+            radius = (zds.aux_data[:, 3:4] / 2.0).float()
         cx = zds.cx_data.float()
         cy = zds.cy_data.float()
         depth = zds.depth_data.float()
@@ -783,10 +793,10 @@ def _format_trials(trials: Sequence[str]) -> str:
 def build_shared_data(args, device: torch.device):
     base_ds = None
     if args.data_source in ["auto", "zarr"]:
-        zarr_path = _resolve_zarr_path(args.data_dir, args.zarr_path)
+        zarr_path = rt.resolve_zarr_path(args.data_dir, args.zarr_path)
         if zarr_path:
             print(f"[INFO] data source: zarr ({zarr_path})")
-            base_ds = ZarrSequenceDataset(
+            base_ds = rt.ZarrSequenceDataset(
                 zarr_path=zarr_path,
                 seq_len=args.seq_len,
                 stride=args.stride,
@@ -803,12 +813,18 @@ def build_shared_data(args, device: torch.device):
         raise RuntimeError(f"Dataset at {args.data_dir} is empty. Check your data path!")
 
     total = len(base_ds)
-    split = _split_indices_by_trial(
+    splits = rt.build_cv_splits(
         base_ds,
         seed=args.seed,
-        val_trials=_parse_trial_list(getattr(args, "val_trials", None)),
-        test_trials=_parse_trial_list(getattr(args, "test_trials", None)),
+        cv_folds=args.cv_folds,
+        val_trials=rt.parse_trial_list(getattr(args, "val_trials", None)),
+        test_trials=rt.parse_trial_list(getattr(args, "test_trials", None)),
     )
+    if args.fold_index is not None:
+        splits = [split for split in splits if split.fold_index == args.fold_index]
+        if not splits:
+            raise RuntimeError(f"Requested --fold-index {args.fold_index} but no such fold exists.")
+    rt.save_cv_manifest(Path(args.out_dir) / "cv_manifest_comparison.json", splits)
     preload_indices = np.arange(total, dtype=np.int64)
 
     if args.preload_vram and device.type != "cuda":
@@ -826,18 +842,15 @@ def build_shared_data(args, device: torch.device):
         preload_batch_size=args.preload_batch_size,
     )
 
-    idx_device = preload_device
-    train_idx = torch.as_tensor(split.train_indices, dtype=torch.long, device=idx_device)
-    val_idx = torch.as_tensor(split.val_indices, dtype=torch.long, device=idx_device)
-    print(
-        f"[INFO] Trial-level split samples: train={len(split.train_indices):,}, "
-        f"val={len(split.val_indices):,}, test={len(split.test_indices):,} | "
-        f"batch_size={args.batch_size}, preload_vram={args.preload_vram}, direct_batching=True"
-    )
-    print(f"[INFO] Train trials: {_format_trials(split.train_trials)}")
-    print(f"[INFO] Val trials: {_format_trials(split.val_trials)}")
-    print(f"[INFO] Test trials: {_format_trials(split.test_trials)}")
-    return preloaded_ds, train_idx, val_idx
+    for split in splits:
+        print(
+            f"[INFO] Fold {split.fold_index+1}/{split.num_folds} samples: "
+            f"train={len(split.train_indices):,}, val={len(split.val_indices):,}, test={len(split.test_indices):,}"
+        )
+        print(f"[INFO] Train trials: {_format_trials(split.train_trials)}")
+        print(f"[INFO] Val trials: {_format_trials(split.val_trials)}")
+        print(f"[INFO] Test trials: {_format_trials(split.test_trials)}")
+    return preloaded_ds, splits
 
 
 def _iter_batches(preloaded_ds, index_tensor, batch_size, shuffle, device, augment):
@@ -877,16 +890,16 @@ def _iter_batches(preloaded_ds, index_tensor, batch_size, shuffle, device, augme
         yield grid, iso, tgt, num_batches
 
 
-def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
+def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx, out_dir: str):
     print(f"\n--- Training Model: {model_name} ---")
     print(f"  [INFO] device: {device}")
     effective_bs = _effective_batch_size(model_name, args.batch_size)
     if effective_bs != args.batch_size:
         print(f"  [INFO] batch_size override for {model_name}: {args.batch_size} -> {effective_bs} (OOM prevention)")
 
-    model = get_model(model_name, args.seq_len, args.heatmap_size).to(device)
+    model = get_model(model_name, args.seq_len, args.heatmap_size, dropout=args.dropout).to(device)
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = _build_optimizer(model, args)
     bce_pos_weight = torch.tensor(args.fg_weight, device=device) if args.fg_weight > 0 else None
     bce_heatmap = None
     huber = None
@@ -1049,17 +1062,18 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx):
             best_val_mae = avg_mae
             best_metrics = metrics
             tag = _multi_head_run_tag(model_name, args)
-            save_path = os.path.join(args.out_dir, f"best_{model_name}{tag}.pth")
+            save_path = os.path.join(out_dir, f"best_{model_name}{tag}.pth")
             torch.save({
                 "state_dict": model.state_dict(),
                 "metrics": metrics,
-                "model_name": model_name
+                "model_name": model_name,
+                "args": vars(args),
             }, save_path)
-            with open(os.path.join(args.out_dir, f"metrics_{model_name}{tag}.json"), "w") as f:
+            with open(os.path.join(out_dir, f"metrics_{model_name}{tag}.json"), "w") as f:
                 json.dump(metrics, f, indent=2)
             if model_name == "multi_head_field":
                 _write_fz_summary_csv(
-                    Path(args.out_dir) / f"fz_summary_{model_name}{tag}.csv",
+                    Path(out_dir) / f"fz_summary_{model_name}{tag}.csv",
                     all_preds,
                     all_targets,
                 )
@@ -1090,6 +1104,9 @@ if __name__ == "__main__":
     parser.add_argument("--preload-batch-size", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--optimizer", choices=["adam", "adamw"], default="adamw")
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--seq-len", type=int, default=50)
     parser.add_argument("--stride", type=int, default=5)
     parser.add_argument("--phase", choices=["loading", "unloading", "all"], default="all")
@@ -1117,6 +1134,8 @@ if __name__ == "__main__":
         default=None,
         help="Explicit test trial_id list to exclude from train/val. Accepts space-separated or comma-separated values.",
     )
+    parser.add_argument("--cv-folds", type=int, default=5)
+    parser.add_argument("--fold-index", type=int, default=None, help="Run only one fold index from the CV manifest.")
     parser.add_argument("--preload-vram", action="store_true", default=True, help="Preload all samples into VRAM")
     parser.add_argument("--no-preload-vram", dest="preload_vram", action="store_false", help="Preload all samples into RAM")
     parser.add_argument(
@@ -1168,24 +1187,46 @@ if __name__ == "__main__":
 
     device = _resolve_device(args.device)
     print(f"[INFO] device: {device}")
-    preloaded_ds, train_idx, val_idx = build_shared_data(args, device)
+    preloaded_ds, splits = build_shared_data(args, device)
 
-    results = {}
-    for m in args.models:
-        results[m] = train_one_model(m, args, device, preloaded_ds, train_idx, val_idx)
+    results: dict[str, list[dict]] = {m: [] for m in args.models}
+    for split in splits:
+        train_idx = torch.as_tensor(split.train_indices, dtype=torch.long, device=preloaded_ds.grid.device)
+        val_idx = torch.as_tensor(split.val_indices, dtype=torch.long, device=preloaded_ds.grid.device)
+        fold_out_dir = os.path.join(args.out_dir, "folds", f"fold_{split.fold_index}")
+        os.makedirs(fold_out_dir, exist_ok=True)
 
-        # quick smoke: flag off path still runs when depth-aware enabled
-        if args.smoke_off_baseline and args.use_depth_aware_label and m == "multi_head_field":
-            args.use_depth_aware_label = False
-            try:
-                # use a tiny subset to avoid heavy compute
-                small_iter = _iter_batches(preloaded_ds, train_idx[:1], batch_size=1, shuffle=False, device=device, augment=False)
-                grid, iso, tgt, _ = next(small_iter)
-                _ = _forward_model(m, get_model(m, args.seq_len, args.heatmap_size).to(device), grid, iso)
-                print("[SMOKE] flag-off forward pass succeeded.")
-            except Exception as e:
-                print(f"[SMOKE] flag-off forward failed: {e}")
-            args.use_depth_aware_label = True
-    
+        for m in args.models:
+            metrics = train_one_model(m, args, device, preloaded_ds, train_idx, val_idx, fold_out_dir)
+            metrics["fold_index"] = split.fold_index
+            metrics["train_trials"] = split.train_trials
+            metrics["val_trials"] = split.val_trials
+            metrics["test_trials"] = split.test_trials
+            results[m].append(metrics)
+
+            if args.smoke_off_baseline and args.use_depth_aware_label and m == "multi_head_field":
+                args.use_depth_aware_label = False
+                try:
+                    small_iter = _iter_batches(preloaded_ds, train_idx[:1], batch_size=1, shuffle=False, device=device, augment=False)
+                    grid, iso, tgt, _ = next(small_iter)
+                    _ = _forward_model(m, get_model(m, args.seq_len, args.heatmap_size, dropout=args.dropout).to(device), grid, iso)
+                    print("[SMOKE] flag-off forward pass succeeded.")
+                except Exception as e:
+                    print(f"[SMOKE] flag-off forward failed: {e}")
+                args.use_depth_aware_label = True
+
+    summary = {}
+    for model_name, folds in results.items():
+        if not folds:
+            continue
+        mae = np.array([fold["mae"] for fold in folds], dtype=np.float64)
+        rmse = np.array([fold["rmse"] for fold in folds], dtype=np.float64)
+        summary[model_name] = {
+            "num_folds": len(folds),
+            "per_fold": folds,
+            "mae": {"mean": mae.mean(axis=0).tolist(), "std": mae.std(axis=0, ddof=0).tolist()},
+            "rmse": {"mean": rmse.mean(axis=0).tolist(), "std": rmse.std(axis=0, ddof=0).tolist()},
+        }
+
     with open(os.path.join(args.out_dir, "comparison_results.json"), "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(summary, f, indent=2)

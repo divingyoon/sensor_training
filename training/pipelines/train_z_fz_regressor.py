@@ -2,6 +2,8 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
+import time
+import re
 
 import numpy as np
 import torch
@@ -10,18 +12,22 @@ import torch.optim as optim
 
 from training.models.multi_head_field_model import MultiHeadFieldModel
 from training.models.z_fz_sequence_regressor import ZFzSequenceRegressor
-from training.pipelines.train_comparison import (
+from training.pipelines.runtime_common import (
     ZarrSequenceDataset,
-    _decode_xy_from_heatmap,
-    _parse_trial_list,
-    _resolve_device,
-    _resolve_zarr_path,
-    _split_indices_by_trial,
+    build_cv_splits,
+    parse_trial_list,
+    resolve_zarr_path,
+    save_cv_manifest,
 )
+from training.pipelines.train_comparison import _decode_xy_from_heatmap, _resolve_device
 
 
 XY_SCALE_MM = 10.0
 RADIUS_SCALE_MM = 5.0
+
+
+def _log(message: str) -> None:
+    print(message, flush=True)
 
 
 @dataclass(frozen=True)
@@ -93,11 +99,51 @@ def metric_dict(preds: torch.Tensor, targets: torch.Tensor) -> dict:
     }
 
 
-def _load_xy_model(args, device: torch.device) -> MultiHeadFieldModel | None:
+def _resolve_fold_xy_checkpoint(raw_path: str, fold_index: int) -> Path:
+    requested = Path(raw_path)
+    fold_token = f"fold_{fold_index}"
+    has_fold_segment = any(re.fullmatch(r"fold_\d+", part) for part in requested.parts)
+
+    def _replace_fold(path: Path) -> Path:
+        parts = list(path.parts)
+        for i, part in enumerate(parts):
+            if re.fullmatch(r"fold_\d+", part):
+                parts[i] = fold_token
+                return Path(*parts)
+        return path
+
+    direct_fold = _replace_fold(requested)
+    if has_fold_segment and direct_fold.exists():
+        return direct_fold
+    if requested.exists() and (has_fold_segment or fold_index == 0):
+        return requested
+
+    basename = requested.name
+    candidate = requested.parent / "folds" / fold_token / basename
+    if candidate.exists():
+        return candidate
+
+    recursive = sorted(requested.parent.glob(f"**/{basename}"))
+    fold_matches = [path for path in recursive if f"/{fold_token}/" in str(path)]
+    if len(fold_matches) == 1:
+        return fold_matches[0]
+
+    searched = [str(direct_fold), str(candidate)] + [str(path) for path in fold_matches[:5]]
+    if requested.exists() and not has_fold_segment:
+        raise FileNotFoundError(
+            f"Resolved base XY checkpoint {requested}, but could not derive a fold-specific checkpoint for fold {fold_index}. "
+            f"Refusing to reuse one checkpoint across folds. Searched: {searched}"
+        )
+    raise FileNotFoundError(f"Could not resolve XY checkpoint for fold {fold_index}: {raw_path}. Searched: {searched}")
+
+
+def _load_xy_model(args, device: torch.device, fold_index: int) -> MultiHeadFieldModel | None:
     if not args.xy_checkpoint:
         return None
-    model = MultiHeadFieldModel(seq_len=args.seq_len, heatmap_size=args.heatmap_size).to(device)
-    ckpt = torch.load(args.xy_checkpoint, map_location=device)
+    ckpt_path = _resolve_fold_xy_checkpoint(args.xy_checkpoint, fold_index)
+    _log(f"[INFO] Using XY checkpoint for fold {fold_index+1}: {ckpt_path}")
+    model = MultiHeadFieldModel(seq_len=args.seq_len, heatmap_size=args.heatmap_size, dropout=args.dropout).to(device)
+    ckpt = torch.load(str(ckpt_path), map_location=device)
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
     return model
@@ -141,6 +187,8 @@ def _evaluate(model, dataset, indices, normalizer, xy_model, args, device, use_p
 
 
 def _preload_dataset(ds: ZarrSequenceDataset, device: torch.device):
+    start = time.perf_counter()
+    _log(f"[INFO] Preloading {len(ds):,} sequence samples to {device.type.upper()}...")
     index_matrix = torch.zeros((len(ds), ds.seq_len), dtype=torch.long)
     valid_mask = torch.zeros((len(ds), ds.seq_len), dtype=torch.bool)
     last_indices = torch.zeros(len(ds), dtype=torch.long)
@@ -164,6 +212,8 @@ def _preload_dataset(ds: ZarrSequenceDataset, device: torch.device):
         ],
         dim=1,
     ).to(device)
+    elapsed = time.perf_counter() - start
+    _log(f"[INFO] Preload complete in {elapsed:.1f}s")
     return ds
 
 
@@ -197,40 +247,43 @@ def _limit_samples_for_smoke(ds: ZarrSequenceDataset, max_samples: int) -> ZarrS
     return ds
 
 
-def train(args) -> dict:
-    device = _resolve_device(args.device)
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    zarr_path = _resolve_zarr_path(args.data_dir, args.zarr_path)
-    if not zarr_path:
-        raise RuntimeError(f"No .zarr found under {args.data_dir}")
+def _build_optimizer(model: nn.Module, args):
+    if args.optimizer == "adamw":
+        return optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    return optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    ds = ZarrSequenceDataset(zarr_path=zarr_path, seq_len=args.seq_len, stride=args.stride, phase=args.phase)
-    ds = _limit_samples_for_smoke(ds, args.max_samples)
-    split = _split_indices_by_trial(
-        ds,
-        seed=args.seed,
-        val_trials=_parse_trial_list(args.val_trials),
-        test_trials=_parse_trial_list(args.test_trials),
-    )
-    ds = _preload_dataset(ds, device)
-    train_idx = torch.tensor(split.train_indices, dtype=torch.long, device=device)
-    val_idx = torch.tensor(split.val_indices, dtype=torch.long, device=device)
 
-    normalizer = ScalarNormalizer.fit(ds.tgt[train_idx, 2:4]).to(device)
-    xy_model = _load_xy_model(args, device)
-    model = ZFzSequenceRegressor(seq_len=args.seq_len).to(device)
+def _mean_std_metrics(per_fold: list[dict]) -> dict:
+    metric_keys = ["mse", "rmse", "mae"]
+    summary = {}
+    for key in metric_keys:
+        arr = np.array([fold["predicted_xy"][key] for fold in per_fold], dtype=np.float64)
+        summary[key] = {
+            "mean": arr.mean(axis=0).tolist(),
+            "std": arr.std(axis=0, ddof=0).tolist(),
+        }
+    return summary
+
+
+def _train_one_fold(args, ds: ZarrSequenceDataset, split, normalizer_device: torch.device) -> dict:
+    train_idx = torch.tensor(split.train_indices, dtype=torch.long, device=normalizer_device)
+    val_idx = torch.tensor(split.val_indices, dtype=torch.long, device=normalizer_device)
+
+    normalizer = ScalarNormalizer.fit(ds.tgt[train_idx, 2:4]).to(normalizer_device)
+    xy_model = _load_xy_model(args, normalizer_device, split.fold_index)
+    model = ZFzSequenceRegressor(seq_len=args.seq_len, dropout=args.dropout).to(normalizer_device)
     criterion = nn.SmoothL1Loss(beta=args.huber_delta) if args.loss == "huber" else nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = _build_optimizer(model, args)
     best_metric = float("inf")
     best_metrics = {}
-
     history = {"train_loss": [], "val_gt_xy_mae": [], "val_pred_xy_mae": []}
+
     for epoch in range(1, args.epochs + 1):
         model.train()
         losses = []
         for batch_idx in _batch_indices(train_idx, args.batch_size, shuffle=True):
-            grid = ds.grid[batch_idx].to(device)
-            tgt = ds.tgt[batch_idx].to(device)
+            grid = ds.grid[batch_idx].to(normalizer_device)
+            tgt = ds.tgt[batch_idx].to(normalizer_device)
             xy = tgt[:, :2]
             if args.xy_noise_std_mm > 0:
                 xy = xy + torch.randn_like(xy) * args.xy_noise_std_mm
@@ -243,7 +296,7 @@ def train(args) -> dict:
             optimizer.step()
             losses.append(float(loss.item()))
 
-        gt_metrics = _evaluate(model, ds, val_idx, normalizer, xy_model, args, device, use_predicted_xy=False)
+        gt_metrics = _evaluate(model, ds, val_idx, normalizer, xy_model, args, normalizer_device, use_predicted_xy=False)
         pred_metrics = _evaluate(
             model,
             ds,
@@ -251,7 +304,7 @@ def train(args) -> dict:
             normalizer,
             xy_model,
             args,
-            device,
+            normalizer_device,
             use_predicted_xy=xy_model is not None,
         )
         history["train_loss"].append(float(np.mean(losses)))
@@ -270,25 +323,104 @@ def train(args) -> dict:
                     "history": history,
                     "args": vars(args),
                     "split": {
+                        "fold_index": split.fold_index,
+                        "num_folds": split.num_folds,
+                        "split_mode": split.split_mode,
                         "train_trials": split.train_trials,
                         "val_trials": split.val_trials,
                         "test_trials": split.test_trials,
                     },
                 },
-                args.out_dir / "best_z_fz_regressor.pth",
+                args.current_out_dir / "best_z_fz_regressor.pth",
             )
-            with (args.out_dir / "metrics_z_fz_regressor.json").open("w", encoding="utf-8") as f:
+            with (args.current_out_dir / "metrics_z_fz_regressor.json").open("w", encoding="utf-8") as f:
                 json.dump(best_metrics, f, indent=2)
 
         print(
+            f"[FOLD {split.fold_index+1}/{split.num_folds}] "
             f"[EPOCH {epoch:03d}/{args.epochs}] "
             f"loss={history['train_loss'][-1]:.6f} "
             f"gt_xy_mae[z,fz]={gt_metrics['mae']} pred_xy_mae[z,fz]={pred_metrics['mae']}"
         )
 
-    with (args.out_dir / "history_z_fz_regressor.json").open("w", encoding="utf-8") as f:
+    with (args.current_out_dir / "history_z_fz_regressor.json").open("w", encoding="utf-8") as f:
         json.dump(history, f, indent=2)
-    return best_metrics
+
+    return {
+        "fold_index": split.fold_index,
+        "split_mode": split.split_mode,
+        "train_trials": split.train_trials,
+        "val_trials": split.val_trials,
+        "test_trials": split.test_trials,
+        "gt_xy": best_metrics["gt_xy"],
+        "predicted_xy": best_metrics["predicted_xy"],
+    }
+
+
+def train(args) -> dict:
+    overall_start = time.perf_counter()
+    device = _resolve_device(args.device)
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    zarr_path = resolve_zarr_path(args.data_dir, args.zarr_path)
+    if not zarr_path:
+        raise RuntimeError(f"No .zarr found under {args.data_dir}")
+    if args.phase != "loading":
+        raise RuntimeError(
+            "train_z_fz_regressor.py is restricted to loading-phase data to preserve hysteresis semantics. "
+            "Use --phase loading."
+        )
+
+    _log(f"[INFO] device: {device}")
+    _log(f"[INFO] data source: zarr ({zarr_path})")
+    _log(
+        f"[INFO] Building loading-phase sequences (seq_len={args.seq_len}, stride={args.stride}, "
+        f"cv_folds={args.cv_folds}, batch_size={args.batch_size})"
+    )
+    ds_build_start = time.perf_counter()
+    ds = ZarrSequenceDataset(zarr_path=zarr_path, seq_len=args.seq_len, stride=args.stride, phase=args.phase)
+    _log(f"[INFO] Sequence build complete in {time.perf_counter() - ds_build_start:.1f}s: {len(ds):,} samples")
+    ds = _limit_samples_for_smoke(ds, args.max_samples)
+    if args.max_samples > 0:
+        _log(f"[INFO] Smoke sample cap applied: {len(ds):,} samples")
+    splits = build_cv_splits(
+        ds,
+        seed=args.seed,
+        cv_folds=args.cv_folds,
+        val_trials=parse_trial_list(args.val_trials),
+        test_trials=parse_trial_list(args.test_trials),
+    )
+    if args.fold_index is not None:
+        splits = [split for split in splits if split.fold_index == args.fold_index]
+        if not splits:
+            raise RuntimeError(f"Requested --fold-index {args.fold_index} but no such fold exists.")
+    save_cv_manifest(args.out_dir / "cv_manifest_z_fz_regressor.json", splits)
+    _log(f"[INFO] Saved CV manifest with {len(splits)} fold(s): {args.out_dir / 'cv_manifest_z_fz_regressor.json'}")
+    for split in splits:
+        _log(
+            f"[INFO] Fold {split.fold_index+1}/{split.num_folds} samples: "
+            f"train={len(split.train_indices):,} val={len(split.val_indices):,} test={len(split.test_indices):,}"
+        )
+
+    ds = _preload_dataset(ds, device)
+    per_fold = []
+    for split in splits:
+        args.current_out_dir = args.out_dir / "folds" / f"fold_{split.fold_index}"
+        args.current_out_dir.mkdir(parents=True, exist_ok=True)
+        _log(
+            f"[INFO] Fold {split.fold_index+1}/{split.num_folds} "
+            f"train={split.train_trials} val={split.val_trials} test={split.test_trials}"
+        )
+        per_fold.append(_train_one_fold(args, ds, split, device))
+
+    summary = {
+        "num_folds": len(per_fold),
+        "per_fold": per_fold,
+        "predicted_xy_summary": _mean_std_metrics(per_fold),
+    }
+    with (args.out_dir / "cv_summary_z_fz_regressor.json").open("w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+    _log(f"[INFO] Training complete in {time.perf_counter() - overall_start:.1f}s")
+    return summary
 
 
 def parse_args() -> argparse.Namespace:
@@ -302,13 +434,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--seq-len", type=int, default=50)
     parser.add_argument("--stride", type=int, default=5)
-    parser.add_argument("--phase", choices=["loading", "unloading", "all"], default="all")
+    parser.add_argument(
+        "--phase",
+        choices=["loading"],
+        default="loading",
+        help="Z/Fz 회귀는 hysteresis 보존을 위해 loading phase만 사용합니다.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-trials", nargs="*", default=None)
     parser.add_argument("--test-trials", nargs="*", default=None)
+    parser.add_argument("--cv-folds", type=int, default=5)
+    parser.add_argument("--fold-index", type=int, default=None, help="Run only one fold index from the CV manifest.")
     parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="cuda")
     parser.add_argument("--loss", choices=["huber", "mse"], default="huber")
     parser.add_argument("--huber-delta", type=float, default=1.0)
+    parser.add_argument("--optimizer", choices=["adam", "adamw"], default="adamw")
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--xy-noise-std-mm", type=float, default=0.5)
     parser.add_argument("--decode-xy", choices=["softargmax", "argmax_refine"], default="softargmax")
     parser.add_argument("--heatmap-size", type=int, default=40)

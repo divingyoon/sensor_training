@@ -9,7 +9,7 @@ SRSeqDataset  : depth-axis sequence (CNN-LSTM용)
 반환 dict 공통:
   s16     (16,)  float32  - 16채널 s_norm 전체
   diam    (1,)   float32  - diameter_norm
-  target  (4,)   float32  - [x_mm, y_mm, z_depth_mm, fz]
+  target  (4,)   float32  - [x_mm, y_mm, z_contact_mm, fz]
   x_mm, y_mm     float    - 평가용 그리드 좌표
 
 SRSeqDataset 추가:
@@ -26,7 +26,18 @@ from torch.utils.data import Dataset
 
 # ── 상수 ────────────────────────────────────────────────────────────────────
 S_NORM_COLS  = [f"s_norm_{i}" for i in range(1, 17)]   # s_norm_1 .. s_norm_16
-TARGET_COLS  = ["x_mm", "y_mm", "z_depth_mm", "fz"]
+TARGET_COLS  = ["x_mm", "y_mm", "z_mm", "fz"]
+
+
+def _prepare_depth_columns(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "z_contact_mm" in out.columns:
+        out["z_mm"] = out["z_contact_mm"]
+    elif "z_depth_mm" in out.columns:
+        out["z_mm"] = out["z_depth_mm"]
+    else:
+        raise KeyError("Expected one of z_contact_mm or z_depth_mm in features.csv")
+    return out
 
 
 # ── 데이터 로드 + 분할 ──────────────────────────────────────────────────────
@@ -39,7 +50,7 @@ def load_split(
     phase_filter: int = 0,      # 0=loading, 1=unloading, None=전체
 ) -> pd.DataFrame:
     """CSV → phase 필터 → trial-based split → DataFrame 반환"""
-    df = pd.read_csv(features_csv)
+    df = _prepare_depth_columns(pd.read_csv(features_csv))
 
     if phase_filter is not None:
         df = df[df["phase"] == phase_filter].copy()
@@ -115,7 +126,7 @@ class SRDataset(Dataset):
 class SRSeqDataset(Dataset):
     """
     (trial_id, x_mm, y_mm) 그룹별 depth-axis 시퀀스.
-    z_depth_mm 오름차순으로 정렬 → [0:seq_len] 사용, 부족하면 zero-pad.
+    z_contact_mm 기준 오름차순으로 정렬 → [0:seq_len] 사용, 부족하면 zero-pad.
     CNN-LSTM 학습에 사용.
     """
 
@@ -124,7 +135,7 @@ class SRSeqDataset(Dataset):
         self.seqs: list = []
 
         for _, grp in df.groupby(["trial_id", "x_mm", "y_mm"], sort=False):
-            grp = grp.sort_values("z_depth_mm").reset_index(drop=True)
+            grp = grp.sort_values("z_mm").reset_index(drop=True)
             s16   = grp[S_NORM_COLS].values.astype(np.float32)         # (T, 16)
             diam  = grp["diameter_norm"].values.astype(np.float32)[:, None]  # (T,1)
             tgt   = grp[TARGET_COLS].values.astype(np.float32)         # (T, 4)

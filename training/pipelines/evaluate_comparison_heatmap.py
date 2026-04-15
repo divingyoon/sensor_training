@@ -2,6 +2,7 @@ import argparse
 import json
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
@@ -11,7 +12,8 @@ from tqdm import tqdm
 from sklearn.metrics import r2_score
 
 from training.data.dataset_unified import UnifiedTactileDataset
-from training.pipelines.train_comparison import _forward_model, get_model, ZarrSequenceDataset, _resolve_zarr_path
+from training.pipelines.train_comparison import _forward_model, _multi_head_metric_tensors, get_model
+from training.pipelines import runtime_common as rt
 
 
 GRID_STEP = 0.5
@@ -39,9 +41,47 @@ def to_grid_idx(v: np.ndarray) -> np.ndarray:
     return np.clip(idx, 0, N_GRID - 1)
 
 
-def evaluate_one(model_name: str, ckpt_path: Path, ds: UnifiedTactileDataset, val_idx: np.ndarray, batch_size: int, device: torch.device, args):
+def _resolve_checkpoint(
+    runs_dir: Path,
+    fold_index: int,
+    model_name: str,
+    checkpoint_tag: str = "",
+) -> Path | None:
+    fold_dir = runs_dir / "folds" / f"fold_{fold_index}"
+    candidates = sorted(fold_dir.glob(f"best_{model_name}*.pth"))
+    if not candidates:
+        return None
+    if checkpoint_tag:
+        expected_name = f"best_{model_name}{checkpoint_tag}.pth"
+        exact_matches = [path for path in candidates if path.name == expected_name]
+        if not exact_matches:
+            available = ", ".join(path.name for path in candidates)
+            raise RuntimeError(
+                f"Fold {fold_index} model {model_name} is missing checkpoint tag {checkpoint_tag!r}. "
+                f"Available: {available}"
+            )
+        return exact_matches[0]
+    if len(candidates) > 1:
+        available = ", ".join(path.name for path in candidates)
+        raise RuntimeError(
+            f"Fold {fold_index} model {model_name} has multiple checkpoints. "
+            f"Pass --checkpoint-tag to select one explicitly. Available: {available}"
+        )
+    return candidates[0]
+
+
+def _resolve_eval_indices(ds, fold: dict[str, Any], eval_split: str) -> np.ndarray:
+    if eval_split == "all":
+        return np.arange(0, len(ds), dtype=np.int64)
+
+    sample_trials = rt.dataset_split_ids(ds)
+    val_set = set(str(t) for t in fold["val_trials"])
+    return np.array([i for i, trial in enumerate(sample_trials) if trial in val_set], dtype=np.int64)
+
+
+def evaluate_one(model_name: str, ckpt_path: Path, ds, val_idx: np.ndarray, batch_size: int, device: torch.device, args):
     ckpt = torch.load(ckpt_path, map_location=device)
-    model = get_model(model_name).to(device)
+    model = get_model(model_name, seq_len=args.seq_len, heatmap_size=args.heatmap_size, dropout=args.dropout).to(device)
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
 
@@ -53,6 +93,8 @@ def evaluate_one(model_name: str, ckpt_path: Path, ds: UnifiedTactileDataset, va
     bucket = defaultdict(list)
     pred_list = []
     tgt_list = []
+    pred_full_list = []
+    tgt_full_list = []
     with torch.no_grad():
         for s in tqdm(range(0, len(val_idx), batch_size), desc=f"{model_name} eval"):
             e = min(s + batch_size, len(val_idx))
@@ -62,18 +104,42 @@ def evaluate_one(model_name: str, ckpt_path: Path, ds: UnifiedTactileDataset, va
             iso = torch.stack([b[1] for b in batch], dim=0).to(device)
             tgt = torch.stack([b[2] for b in batch], dim=0).to(device)
 
-            pred = _forward_model(model_name, model, grid, iso)
-            pred = apply_linear_calib(pred, args)
-            err = (pred[:, :3] - tgt[:, :3]).abs().cpu().numpy()
-            tgt_np = tgt[:, :3].cpu().numpy()
-            pred_np = pred[:, :3].cpu().numpy()
+            if model_name == "multi_head_field":
+                depth_mask = tgt[:, 2] > args.depth_min_for_label
+                if not depth_mask.any():
+                    continue
+                grid = grid[depth_mask]
+                iso = iso[depth_mask]
+                tgt = tgt[depth_mask]
+                scalar_pred, fmap = _forward_model(model_name, model, grid, iso, return_field=True)
+                pred_use, target_use = _multi_head_metric_tensors(scalar_pred, fmap, tgt, args)
+            else:
+                pred_use = _forward_model(model_name, model, grid, iso)
+                pred_use = apply_linear_calib(pred_use, args)
+                target_use = tgt[:, : pred_use.shape[1]]
+
+            pred_width = min(pred_use.shape[1], target_use.shape[1])
+            pred_eval = pred_use[:, :pred_width]
+            tgt_eval = target_use[:, :pred_width]
+
+            err = (pred_eval[:, :3] - tgt_eval[:, :3]).abs().cpu().numpy()
+            tgt_np = tgt_eval[:, :3].cpu().numpy()
+            pred_np = pred_eval[:, :3].cpu().numpy()
             pred_list.append(pred_np)
             tgt_list.append(tgt_np)
+            pred_full_list.append(pred_eval.cpu().numpy())
+            tgt_full_list.append(tgt_eval.cpu().numpy())
             xi = to_grid_idx(tgt_np[:, 0])
             yi = to_grid_idx(tgt_np[:, 1])
 
             for i in range(err.shape[0]):
                 bucket[(yi[i], xi[i])].append(err[i])
+
+    if not pred_list:
+        raise RuntimeError(
+            f"No evaluation samples remained for model={model_name}. "
+            f"Check --phase, --eval-split, and --depth-min-for-label."
+        )
 
     rows = []
     for (yy, xx), vals in bucket.items():
@@ -102,6 +168,8 @@ def evaluate_one(model_name: str, ckpt_path: Path, ds: UnifiedTactileDataset, va
 
     pred_all = np.concatenate(pred_list, axis=0)
     tgt_all = np.concatenate(tgt_list, axis=0)
+    pred_all_full = np.concatenate(pred_full_list, axis=0)
+    tgt_all_full = np.concatenate(tgt_full_list, axis=0)
     diff = pred_all - tgt_all
     mse = np.mean(diff ** 2, axis=0)
     rmse = np.sqrt(mse)
@@ -126,6 +194,17 @@ def evaluate_one(model_name: str, ckpt_path: Path, ds: UnifiedTactileDataset, va
         "xy_err_p95": float(np.percentile(xy_err, 95)),
         "n_eval_samples": int(pred_all.shape[0]),
     }
+    if pred_all_full.shape[1] >= 4 and tgt_all_full.shape[1] >= 4:
+        pred_fz = pred_all_full[:, 3]
+        tgt_fz = tgt_all_full[:, 3]
+        diff_fz = pred_fz - tgt_fz
+        global_metrics.update(
+            {
+                "mse_fz": float(np.mean(diff_fz ** 2)),
+                "rmse_fz": float(np.sqrt(np.mean(diff_fz ** 2))),
+                "mae_fz": float(np.mean(np.abs(diff_fz))),
+            }
+        )
 
     return {"x_mae": x_map, "y_mae": y_map, "z_mae": z_map, "xy_err": xy_map}, rows, global_metrics
 
@@ -205,12 +284,27 @@ def main():
     p.add_argument("--models", nargs="+", default=["mlp", "cnnlstm", "sats"])
     p.add_argument("--seq-len", type=int, default=50)
     p.add_argument("--stride", type=int, default=5)
-    p.add_argument("--phase", choices=["loading", "unloading", "all"], default="loading")
+    p.add_argument("--phase", choices=["loading", "unloading", "all"], default="all")
+    p.add_argument("--heatmap-size", type=int, default=40)
+    p.add_argument("--dropout", type=float, default=0.1)
+    p.add_argument("--decode-xy", choices=["softargmax", "argmax_refine", "none"], default="softargmax")
     p.add_argument("--batch-size", type=int, default=512)
     p.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     p.add_argument("--data-source", choices=["auto", "zarr", "csv"], default="auto")
     p.add_argument("--zarr-path", type=str, default="")
     p.add_argument("--eval-split", choices=["val", "all"], default="val")
+    p.add_argument(
+        "--checkpoint-tag",
+        type=str,
+        default="",
+        help="Exact checkpoint suffix after model name, e.g. _stage3_dlabel-gaussian-hertz_xybce1_zhuber0p2_fzhuber0p2_decsoftargmax",
+    )
+    p.add_argument(
+        "--depth-min-for-label",
+        type=float,
+        default=0.05,
+        help="Ignore multi_head_field samples with z <= this threshold to match training validation.",
+    )
     p.add_argument("--fill-missing", choices=["none", "neighbor"], default="none")
     p.add_argument("--shared-scale", action="store_true", default=True)
     p.add_argument("--no-shared-scale", dest="shared_scale", action="store_false")
@@ -231,10 +325,10 @@ def main():
     device = torch.device(args.device)
     ds = None
     if args.data_source in ["auto", "zarr"]:
-        zarr_path = _resolve_zarr_path(args.data_dir, args.zarr_path)
+        zarr_path = rt.resolve_zarr_path(args.data_dir, args.zarr_path)
         if zarr_path:
             print(f"[INFO] data source: zarr ({zarr_path})")
-            ds = ZarrSequenceDataset(
+            ds = rt.ZarrSequenceDataset(
                 zarr_path=zarr_path,
                 seq_len=args.seq_len,
                 stride=args.stride,
@@ -246,76 +340,75 @@ def main():
     if ds is None:
         print(f"[INFO] data source: csv ({args.data_dir})")
         ds = UnifiedTactileDataset(args.data_dir, seq_len=args.seq_len, augment=False)
-    n = len(ds)
-    split = int(0.8 * n)
-    if args.eval_split == "all":
-        val_idx = np.arange(0, n, dtype=np.int64)
-    else:
-        val_idx = np.arange(split, n, dtype=np.int64)
+    manifest_path = Path(args.runs_dir) / "cv_manifest_comparison.json"
+    if not manifest_path.exists():
+        raise RuntimeError(f"Missing CV manifest: {manifest_path}")
+    with manifest_path.open(encoding="utf-8") as f:
+        manifest = json.load(f)
 
     out_root = Path(args.runs_dir) / "heatmaps"
     out_root.mkdir(parents=True, exist_ok=True)
-    summary = {}
-    model_maps = {}
-    model_rows = {}
-    model_global = {}
-
-    for m in args.models:
-        ckpt = Path(args.runs_dir) / f"best_{m}.pth"
-        if not ckpt.exists():
-            print(f"[WARN] skip {m}: checkpoint not found: {ckpt}")
-            continue
-        maps, rows, g = evaluate_one(m, ckpt, ds, val_idx, args.batch_size, device, args)
-        model_maps[m] = maps
-        model_rows[m] = rows
-        model_global[m] = g
-        summary[m] = {
-            "n_grid_points": len(rows),
-            "mean_xy_err_mm": float(np.nanmean(maps["xy_err"])),
-            "mean_x_mae_mm": float(np.nanmean(maps["x_mae"])),
-            "mean_y_mae_mm": float(np.nanmean(maps["y_mae"])),
-            "mean_z_mae_mm": float(np.nanmean(maps["z_mae"])),
-            **g,
+    summary = {
+        "config": {
+            "phase": args.phase,
+            "eval_split": args.eval_split,
+            "checkpoint_tag": args.checkpoint_tag,
+            "depth_min_for_label": args.depth_min_for_label,
         }
-        print(f"[INFO] done: {m}")
+    }
+    model_global = defaultdict(list)
 
-    scale_limits = None
-    if args.fixed_error_range:
-        scale_limits = {k: (args.error_vmin, args.error_vmax) for k in ["x_mae", "y_mae", "z_mae", "xy_err"]}
-    elif args.shared_scale and model_maps:
-        keys = ["x_mae", "y_mae", "z_mae", "xy_err"]
-        scale_limits = {}
-        for k in keys:
-            vals = []
-            for m in model_maps:
-                arr = model_maps[m][k]
-                if args.fill_missing == "neighbor":
-                    arr = _fill_missing_neighbor_mean(arr)
-                v = arr[~np.isnan(arr)]
-                if v.size:
-                    vals.append(v)
-            if vals:
-                vv = np.concatenate(vals)
-                scale_limits[k] = (float(np.nanmin(vv)), float(np.nanmax(vv)))
+    for fold in manifest["folds"]:
+        fold_index = int(fold["fold_index"])
+        val_idx = _resolve_eval_indices(ds, fold, args.eval_split)
 
-    import pandas as pd
-    for m in model_maps:
-        save_heatmaps(
-            model_maps[m],
-            out_root,
-            m,
-            fill_missing=args.fill_missing,
-            scale_limits=scale_limits,
-            error_vmin=args.error_vmin,
-            error_vmax=args.error_vmax,
-        )
-        pd.DataFrame(model_rows[m]).to_csv(out_root / f"metrics_grid_{m}.csv", index=False)
+        fold_out = out_root / f"fold_{fold_index}"
+        fold_out.mkdir(parents=True, exist_ok=True)
+        fold_summary = {}
+        for m in args.models:
+            ckpt = _resolve_checkpoint(Path(args.runs_dir), fold_index, m, checkpoint_tag=args.checkpoint_tag)
+            if ckpt is None:
+                print(f"[WARN] skip {m} fold {fold_index}: checkpoint not found")
+                continue
+            maps, rows, g = evaluate_one(m, ckpt, ds, val_idx, args.batch_size, device, args)
+            model_global[m].append(g)
+            fold_summary[m] = {
+                "checkpoint": str(ckpt),
+                "eval_sample_count_requested": int(val_idx.shape[0]),
+                "n_grid_points": len(rows),
+                "mean_xy_err_mm": float(np.nanmean(maps["xy_err"])),
+                "mean_x_mae_mm": float(np.nanmean(maps["x_mae"])),
+                "mean_y_mae_mm": float(np.nanmean(maps["y_mae"])),
+                "mean_z_mae_mm": float(np.nanmean(maps["z_mae"])),
+                **g,
+            }
+            save_heatmaps(
+                maps,
+                fold_out,
+                m,
+                fill_missing=args.fill_missing,
+                scale_limits=None,
+                error_vmin=args.error_vmin,
+                error_vmax=args.error_vmax,
+            )
+            import pandas as pd
+            pd.DataFrame(rows).to_csv(fold_out / f"metrics_grid_{m}.csv", index=False)
+            print(f"[INFO] done: {m} fold {fold_index}")
+        summary[f"fold_{fold_index}"] = fold_summary
 
-    if model_global:
-        rows = []
-        for m in model_global:
-            rows.append({"model": m, **model_global[m]})
-        pd.DataFrame(rows).to_csv(out_root / "comparison_metrics.csv", index=False)
+    aggregate = {}
+    for model_name, rows in model_global.items():
+        if not rows:
+            continue
+        keys = rows[0].keys()
+        aggregate[model_name] = {
+            key: {
+                "mean": float(np.mean([row[key] for row in rows])),
+                "std": float(np.std([row[key] for row in rows], ddof=0)),
+            }
+            for key in keys
+        }
+    summary["aggregate"] = aggregate
 
     with open(out_root / "summary_heatmap.json", "w") as f:
         json.dump(summary, f, indent=2)

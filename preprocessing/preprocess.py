@@ -199,6 +199,10 @@ def compute_baseline_stats(
     return baseline
 
 
+def _baseline_map_from_stats(baselines: list[dict]) -> dict[int, dict]:
+    return {int(b["baseline_id"]): b for b in baselines}
+
+
 def assign_baseline_ids(n_rows: int, segments: list[tuple[int, int]]) -> np.ndarray:
     """
     각 row에 가장 최근 baseline segment id를 할당한다.
@@ -264,6 +268,57 @@ def extract_baselines(
     return baselines, segments
 
 
+def estimate_auto_min_signal(
+    df: pd.DataFrame,
+    baselines: list[dict],
+    segments: list[tuple[int, int]],
+) -> float:
+    """Estimate a trial-specific min-signal from baseline normalized noise.
+
+    Uses baseline rows only. For each row, compute max(|s_norm_i|), then derive a
+    robust threshold via median + 6 * MAD.
+    """
+
+    if not segments or not baselines:
+        return 0.0
+
+    baseline_map = _baseline_map_from_stats(baselines)
+    baseline_peaks = []
+
+    for baseline_id, (start_idx, end_idx) in enumerate(segments):
+        rows = df.iloc[start_idx : end_idx + 1]
+        if rows.empty:
+            continue
+        stats = baseline_map.get(baseline_id)
+        if stats is None:
+            continue
+
+        norm_values = []
+        for col in SKIN_COLS:
+            mean_val = float(stats[f"{col}_mean"])
+            raw_vals = rows[col].to_numpy(dtype=np.float64)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                norm_col = np.where(mean_val == 0.0, 0.0, (raw_vals - mean_val) / mean_val)
+            norm_values.append(np.abs(norm_col))
+
+        if not norm_values:
+            continue
+        peak_per_row = np.max(np.stack(norm_values, axis=1), axis=1)
+        baseline_peaks.append(peak_per_row)
+
+    if not baseline_peaks:
+        return 0.0
+
+    peak_signal = np.concatenate(baseline_peaks).astype(np.float64, copy=False)
+    if peak_signal.size == 0:
+        return 0.0
+
+    median = float(np.median(peak_signal))
+    mad = float(np.median(np.abs(peak_signal - median)))
+    threshold = median + 6.0 * mad
+    return max(threshold, 0.0)
+
+
 # ── 그리드 행 필터링 ──────────────────────────────────────────────────────────
 def filter_grid_rows(df: pd.DataFrame) -> pd.DataFrame:
     """x_mm, y_mm가 0.5mm 그리드 포인트에 있고, 스테이지가 정지된 행만 선택."""
@@ -305,15 +360,63 @@ def filter_grid_rows(df: pd.DataFrame) -> pd.DataFrame:
 # ── z_depth 계산 ─────────────────────────────────────────────────────────────
 def compute_z_depth(
     df: pd.DataFrame,
+    baselines: list[dict] | None = None,
     contact_threshold: float = 0.01,
     n_consec: int = 3,
 ) -> pd.DataFrame:
     """
-    z_depth를 contact 보정 없이 원본 z_mm로 사용.
+    z_stage_mm와 z_contact_mm를 모두 계산한다.
+
+    - z_stage_mm: test-bed가 기록한 원본 z_mm (음수 제거)
+    - z_contact_mm: 각 (x, y) 좌표에서 첫 유효 접촉 시점의 z_mm를 0으로 맞춘 값
+
+    기존 학습 호환성을 위해 z_depth_mm는 현재 z_stage_mm와 동일하게 유지한다.
     """
     out = df.copy()
-    out["z_depth_mm"] = out["z_mm"].astype(np.float64)
-    out = out[out["z_depth_mm"] >= 0].copy()
+    out["z_stage_mm"] = out["z_mm"].astype(np.float64)
+    out = out[out["z_stage_mm"] >= 0].copy()
+    out["z_contact_mm"] = out["z_stage_mm"]
+
+    baseline_map = {int(b["baseline_id"]): b for b in (baselines or [])}
+    if "baseline_id" in out.columns and baseline_map:
+        peak_signal = np.zeros(len(out), dtype=np.float64)
+        bl_ids = out["baseline_id"].to_numpy(dtype=np.int64)
+        for i, col in enumerate(SKIN_COLS, 1):
+            raw_vals = out[col].to_numpy(dtype=np.float64)
+            bl_vals = np.array(
+                [baseline_map.get(int(bid), {}).get(f"{col}_mean", 0.0) for bid in bl_ids],
+                dtype=np.float64,
+            )
+            with np.errstate(divide="ignore", invalid="ignore"):
+                norm_vals = np.where(bl_vals == 0.0, 0.0, (raw_vals - bl_vals) / bl_vals)
+            peak_signal = np.maximum(peak_signal, np.abs(norm_vals))
+        out["_contact_signal"] = peak_signal
+
+        for (_, _), grp in out.groupby(["x_mm", "y_mm"], sort=False):
+            signal = grp["_contact_signal"].to_numpy(dtype=np.float64)
+            contact_mask = signal >= float(contact_threshold)
+            if contact_mask.any():
+                run = 0
+                contact_idx = None
+                for pos, active in enumerate(contact_mask):
+                    if active:
+                        run += 1
+                        if run >= n_consec:
+                            contact_idx = pos - n_consec + 1
+                            break
+                    else:
+                        run = 0
+                if contact_idx is None:
+                    contact_idx = int(np.flatnonzero(contact_mask)[0])
+                z0 = float(grp["z_stage_mm"].iloc[contact_idx])
+            else:
+                z0 = float(grp["z_stage_mm"].min())
+            idx = grp.index
+            out.loc[idx, "z_contact_mm"] = np.maximum(out.loc[idx, "z_stage_mm"] - z0, 0.0)
+
+        out = out.drop(columns=["_contact_signal"])
+
+    out["z_depth_mm"] = out["z_stage_mm"]
     return out.reset_index(drop=True)
 
 
@@ -340,6 +443,7 @@ def make_grid_df(
     df: pd.DataFrame,
     trial_id: str,
     info: dict,
+    baselines: list[dict] | None = None,
     contact_threshold: float = 0.01,
 ) -> pd.DataFrame:
     """그리드 필터링 + z_depth + phase 포함 raw CSV 생성."""
@@ -347,7 +451,7 @@ def make_grid_df(
     if df.empty:
         return pd.DataFrame()
 
-    df = compute_z_depth(df, contact_threshold=contact_threshold)
+    df = compute_z_depth(df, baselines=baselines, contact_threshold=contact_threshold)
     if df.empty:
         return pd.DataFrame()
 
@@ -358,9 +462,12 @@ def make_grid_df(
         "trial_id": np.full(n, trial_id),
         "material": np.full(n, info["material"]),
         "diameter_mm": np.full(n, info["diameter_mm"], dtype=np.float32),
+        "z_max_indentation_mm": np.full(n, info.get("z_max_indentation_mm"), dtype=np.float32),
         "baseline_id": df["baseline_id"].values if "baseline_id" in df.columns else np.zeros(n, dtype=int),
         "x_mm": df["x_mm"].values,
         "y_mm": df["y_mm"].values,
+        "z_stage_mm": df["z_stage_mm"].values,
+        "z_contact_mm": df["z_contact_mm"].values,
         "z_depth_mm": df["z_depth_mm"].values,
         "fz": np.round(df["Fz"].values, 2),
         "fx": np.round(df["Fx"].values, 2),
@@ -379,7 +486,7 @@ def make_features_df(
     baselines: list[dict],
     max_diameter: float,
     z_bin_mm: float,
-    min_signal: float,
+    min_signal: float | None,
     contact_radius_mm: np.ndarray | None = None,
     contact_radius_cell: np.ndarray | None = None,
 ) -> pd.DataFrame:
@@ -408,6 +515,10 @@ def make_features_df(
     # 위치 및 깊이 (SR 타겟이자 Force Field 입력)
     feat["x_mm"] = grid_df["x_mm"].values
     feat["y_mm"] = grid_df["y_mm"].values
+    if "z_stage_mm" in grid_df.columns:
+        feat["z_stage_mm"] = grid_df["z_stage_mm"].values
+    if "z_contact_mm" in grid_df.columns:
+        feat["z_contact_mm"] = grid_df["z_contact_mm"].values
     feat["z_depth_mm"] = grid_df["z_depth_mm"].values
     if contact_radius_mm is not None:
         feat["contact_radius_mm"] = contact_radius_mm
@@ -422,6 +533,7 @@ def make_features_df(
     # 메타 데이터
     feat["fz_raw"] = grid_df["fz"].values
     feat["diameter_mm"] = grid_df["diameter_mm"].values
+    feat["z_max_indentation_mm"] = grid_df["z_max_indentation_mm"].values
     feat["trial_id"] = grid_df["trial_id"].values
     feat["material"] = grid_df["material"].values
     feat["phase"] = grid_df["phase"].values
@@ -431,18 +543,40 @@ def make_features_df(
         feat["z_depth_mm"] = np.round(feat["z_depth_mm"].to_numpy(dtype=np.float64) / z_bin_mm) * z_bin_mm
         feat["z_depth_mm"] = np.maximum(feat["z_depth_mm"], 0.0)
         feat["z_depth_mm"] = np.round(feat["z_depth_mm"], 6)
-        group_cols = ["trial_id", "material", "diameter_mm", "phase", "x_mm", "y_mm", "z_depth_mm"]
+        if "z_stage_mm" in feat.columns:
+            feat["z_stage_mm"] = np.round(feat["z_stage_mm"].to_numpy(dtype=np.float64) / z_bin_mm) * z_bin_mm
+            feat["z_stage_mm"] = np.maximum(feat["z_stage_mm"], 0.0)
+            feat["z_stage_mm"] = np.round(feat["z_stage_mm"], 6)
+        if "z_contact_mm" in feat.columns:
+            feat["z_contact_mm"] = np.round(feat["z_contact_mm"].to_numpy(dtype=np.float64) / z_bin_mm) * z_bin_mm
+            feat["z_contact_mm"] = np.maximum(feat["z_contact_mm"], 0.0)
+            feat["z_contact_mm"] = np.round(feat["z_contact_mm"], 6)
+        group_cols = [
+            "trial_id",
+            "material",
+            "diameter_mm",
+            "z_max_indentation_mm",
+            "phase",
+            "x_mm",
+            "y_mm",
+            "z_depth_mm",
+        ]
         agg_spec = {c: "median" for c in NORM_SKIN_COLS}
         agg_spec["diameter_norm"] = "first"
         agg_spec["fz_bc"] = "mean"
         agg_spec["fz_raw"] = "mean"
+        agg_spec["baseline_id"] = "first"
+        if "z_stage_mm" in feat.columns:
+            agg_spec["z_stage_mm"] = "mean"
+        if "z_contact_mm" in feat.columns:
+            agg_spec["z_contact_mm"] = "mean"
         if contact_radius_mm is not None and "contact_radius_mm" in feat.columns:
             agg_spec["contact_radius_mm"] = "mean"
         if contact_radius_cell is not None and "contact_radius_cell" in feat.columns:
             agg_spec["contact_radius_cell"] = "mean"
         feat = feat.groupby(group_cols, as_index=False).agg(agg_spec)
 
-    if min_signal > 0:
+    if min_signal is not None and min_signal > 0:
         peak_signal = feat[NORM_SKIN_COLS].abs().max(axis=1)
         feat = feat.loc[peak_signal >= float(min_signal)].reset_index(drop=True)
 
@@ -471,18 +605,22 @@ def process_trial(
         json.dump(baselines, f, indent=2, ensure_ascii=False)
 
     # Grid CSV (센서 반응 기반 접촉점 기준 z_depth)
-    grid_df = make_grid_df(df, trial_id, info, contact_threshold)
+    grid_df = make_grid_df(df, trial_id, info, baselines=baselines, contact_threshold=contact_threshold)
     grid_path = out_dir / f"{trial_id}_grid.csv"
     grid_df.to_csv(grid_path, index=False)
 
     n_pts = grid_df.groupby(["x_mm", "y_mm"]).ngroups
     n_load = (grid_df["phase"] == 0).sum()
     n_unload = (grid_df["phase"] == 1).sum()
-    z_min = grid_df["z_depth_mm"].min()
-    z_max = grid_df["z_depth_mm"].max()
+    z_stage_min = grid_df["z_stage_mm"].min()
+    z_stage_max = grid_df["z_stage_mm"].max()
+    z_contact_min = grid_df["z_contact_mm"].min()
+    z_contact_max = grid_df["z_contact_mm"].max()
     print(
         f"    → baselines {len(baselines)}개 | 그리드 {n_pts}포인트 | total {len(grid_df)}행 "
-        f"(loading {n_load} / unloading {n_unload}) | z_depth [{z_min:.3f}, {z_max:.3f}]mm"
+        f"(loading {n_load} / unloading {n_unload}) | "
+        f"z_stage [{z_stage_min:.3f}, {z_stage_max:.3f}]mm | "
+        f"z_contact [{z_contact_min:.3f}, {z_contact_max:.3f}]mm"
     )
 
     return baselines, grid_df
@@ -528,8 +666,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--min-signal",
         type=float,
-        default=0.02,
-        help="max(|s_norm_i|)가 이 값 미만인 저신호 샘플 제거. 0 이하면 비활성.",
+        default=None,
+        help="저신호 샘플 제거 임계값. 미지정 시 baseline noise 기반으로 trial별 자동 추정.",
     )
     parser.add_argument(
         "--min-reliable-s",
@@ -564,19 +702,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--radius-model",
         choices=["hertz", "geo"],
         default="hertz",
-        help="접촉 반경 계산 모델: hertz(a=sqrt(R*δ)) 또는 geo(a=sqrt(2Rδ-δ^2)).",
-    )
-    parser.add_argument(
-        "--indenter-radius-mm",
-        type=float,
-        default=2.5,
-        help="인덴터 반경(mm). 기본 2.5 (지름 5mm).",
-    )
-    parser.add_argument(
-        "--max-radius-mm",
-        type=float,
-        default=None,
-        help="계산된 접촉 반경 상한(mm). None이면 제한 없음.",
+        help="접촉 반경 계산 모델. hertz=a=sqrt(R*δ), geo=a=sqrt(2Rδ-δ^2). 반경 R은 d5/d10 폴더에서 자동 추론.",
     )
     parser.add_argument(
         "--fallback-depth-mode",
@@ -636,9 +762,11 @@ def export_to_zarr(features_df: pd.DataFrame, zarr_path: Path, aux_last_field: s
     tactile_lr_norm = features_df[s_norm_cols].values.astype(np.float32)
     
     # SkinDataset 호환 aux_feat 구성: [fx_N, fy_N, depth_mm, last_field]
+    # depth_mm은 학습 기준 depth이며 현재 z_contact_mm를 우선 사용한다.
     # last_field는 diameter_mm 또는 contact_radius_mm 중 하나.
     aux_feat = np.zeros((n, 4), dtype=np.float32)
-    aux_feat[:, 2] = features_df["z_depth_mm"].values
+    depth_source_col = "z_contact_mm" if "z_contact_mm" in features_df.columns else "z_depth_mm"
+    aux_feat[:, 2] = features_df[depth_source_col].values
     if aux_last_field == "contact_radius_mm" and "contact_radius_mm" in features_df.columns:
         aux_feat[:, 3] = features_df["contact_radius_mm"].values
     else:
@@ -648,7 +776,22 @@ def export_to_zarr(features_df: pd.DataFrame, zarr_path: Path, aux_last_field: s
     fz = features_df["fz_bc"].values.astype(np.float32)
     cx = features_df["x_mm"].values.astype(np.float32)
     cy = features_df["y_mm"].values.astype(np.float32)
-    depth_mm = features_df["z_depth_mm"].values.astype(np.float32)
+    depth_mm = features_df[depth_source_col].values.astype(np.float32)
+    z_stage_mm = (
+        features_df["z_stage_mm"].values.astype(np.float32)
+        if "z_stage_mm" in features_df.columns
+        else features_df["z_depth_mm"].values.astype(np.float32)
+    )
+    z_contact_mm = (
+        features_df["z_contact_mm"].values.astype(np.float32)
+        if "z_contact_mm" in features_df.columns
+        else depth_mm
+    )
+    z_max_indentation_mm = (
+        features_df["z_max_indentation_mm"].values.astype(np.float32)
+        if "z_max_indentation_mm" in features_df.columns
+        else np.full(n, np.nan, dtype=np.float32)
+    )
     
     # Canvas bounds (SkinDataset 요구사항 대응용 더미 또는 계산값)
     x_bounds = np.tile([GRID_MIN_MM, GRID_MAX_MM], (n, 1)).astype(np.float32)
@@ -657,12 +800,20 @@ def export_to_zarr(features_df: pd.DataFrame, zarr_path: Path, aux_last_field: s
     # Zarr 그룹 생성 및 데이터 저장 (Blosc 압축 기본 적용)
     root = zarr.open_group(str(zarr_path), mode='w')
     root.attrs["aux_last_field"] = aux_last_field
+    root.attrs["has_z_max_indentation_mm"] = True
+    root.attrs["depth_source"] = depth_source_col
+    root.attrs["target_depth_source"] = "z_contact_mm" if "z_contact_mm" in features_df.columns else depth_source_col
+    root.attrs["aux_depth_source"] = depth_source_col
+    root.attrs["stage_depth_source"] = "z_stage_mm" if "z_stage_mm" in features_df.columns else "z_depth_mm"
     root.create_dataset("tactile_lr_norm", data=tactile_lr_norm, chunks=(1000, 16))
     root.create_dataset("aux_feat", data=aux_feat, chunks=(1000, 4))
     root.create_dataset("fz", data=fz, chunks=(1000,))
     root.create_dataset("cx", data=cx, chunks=(1000,))
     root.create_dataset("cy", data=cy, chunks=(1000,))
     root.create_dataset("depth_mm", data=depth_mm, chunks=(1000,))
+    root.create_dataset("z_stage_mm", data=z_stage_mm, chunks=(1000,))
+    root.create_dataset("z_contact_mm", data=z_contact_mm, chunks=(1000,))
+    root.create_dataset("z_max_indentation_mm", data=z_max_indentation_mm, chunks=(1000,))
     root.create_dataset("x_bounds", data=x_bounds, chunks=(1000, 2))
     root.create_dataset("y_bounds", data=y_bounds, chunks=(1000, 2))
     
@@ -673,12 +824,18 @@ def export_to_zarr(features_df: pd.DataFrame, zarr_path: Path, aux_last_field: s
     
     has_contact_radius = aux_last_field == "contact_radius_mm" and "contact_radius_mm" in features_df.columns
     for i in range(n):
+        z_max_value = features_df["z_max_indentation_mm"].iloc[i] if "z_max_indentation_mm" in features_df.columns else np.nan
         sample = {
             "trial_id": str(trial_ids[i]),
             "phase": "loading" if phases[i] == 0 else "unloading",
             "zarr_path": str(zarr_path),
             "zarr_index": i,
             "depth_bin_mm": float(depth_mm[i]),
+            "z_stage_mm": float(z_stage_mm[i]),
+            "z_contact_mm": float(z_contact_mm[i]),
+            "material": str(features_df["material"].iloc[i]) if "material" in features_df.columns else "",
+            "diameter_mm": float(features_df["diameter_mm"].iloc[i]) if "diameter_mm" in features_df.columns else float(aux_feat[i, 3]),
+            "z_max_indentation_mm": None if pd.isna(z_max_value) else float(z_max_value),
         }
         if has_contact_radius:
             sample["radius_mm"] = float(features_df["contact_radius_mm"].iloc[i])
@@ -700,9 +857,7 @@ def _trial_options_from_args(args: argparse.Namespace) -> dict:
         "use_depth_aware_radius": args.use_depth_aware_radius,
         "fallback_depth_mode": args.fallback_depth_mode,
         "fallback_depth_mm": args.fallback_depth_mm,
-        "indenter_radius_mm": args.indenter_radius_mm,
         "radius_model": args.radius_model,
-        "max_radius_mm": args.max_radius_mm,
         "z_bin_mm": args.z_bin_mm,
         "min_signal": args.min_signal,
     }
@@ -741,7 +896,13 @@ def _process_trial_csv(
     with open(bl_path, "w", encoding="utf-8") as f:
         json.dump(baselines, f, indent=2, ensure_ascii=False)
 
-    grid_df = make_grid_df(df, trial_id, info, options["contact_threshold"])
+    grid_df = make_grid_df(
+        df,
+        trial_id,
+        info,
+        baselines=baselines,
+        contact_threshold=options["contact_threshold"],
+    )
     if grid_df.empty:
         log_lines.append("    [건너뜀] 그리드 데이터가 없습니다.")
         return {"skipped": True, "trial_id": trial_id, "logs": log_lines}
@@ -751,8 +912,16 @@ def _process_trial_csv(
 
     contact_radius_arr = None
     contact_radius_cell = None
+    resolved_min_signal = options["min_signal"]
     if options["use_depth_aware_radius"]:
-        depth_arr = grid_df["z_depth_mm"].to_numpy(dtype=np.float64)
+        diameter_mm = info.get("diameter_mm")
+        if diameter_mm is None or diameter_mm <= 0:
+            raise ValueError(
+                f"[{trial_id}] depth-aware radius 계산에는 폴더명 기반 diameter_mm가 필요합니다."
+            )
+        indenter_radius_mm = float(diameter_mm) / 2.0
+        depth_source_col = "z_contact_mm" if "z_contact_mm" in grid_df.columns else "z_depth_mm"
+        depth_arr = grid_df[depth_source_col].to_numpy(dtype=np.float64)
         if options["fallback_depth_mode"] != "none":
             pos_depth = depth_arr[depth_arr > 0]
             fallback = options["fallback_depth_mm"]
@@ -761,24 +930,34 @@ def _process_trial_csv(
             depth_arr = np.where(depth_arr > 0, depth_arr, fallback)
         contact_radius_arr = np.array(
             [
-                contact_radius(float(d), R_mm=options["indenter_radius_mm"], model=options["radius_model"])
+                contact_radius(float(d), R_mm=indenter_radius_mm, model=options["radius_model"])
                 for d in depth_arr
             ],
             dtype=np.float64,
         )
-        if options["max_radius_mm"] is not None:
-            contact_radius_arr = np.minimum(contact_radius_arr, options["max_radius_mm"])
         contact_radius_cell = contact_radius_arr / GRID_STEP_MM
         grid_df = grid_df.copy()
         grid_df["contact_radius_mm"] = contact_radius_arr
         grid_df["contact_radius_cell"] = contact_radius_cell
+        log_lines.append(
+            f"    → depth-aware radius: diameter={diameter_mm:g}mm, radius={indenter_radius_mm:g}mm, "
+            f"model={options['radius_model']}, depth_source={depth_source_col}"
+        )
+
+    if resolved_min_signal is None:
+        resolved_min_signal = estimate_auto_min_signal(df, baselines, segments)
+        log_lines.append(
+            f"    → auto min_signal={resolved_min_signal:.6f} (baseline noise 기반)"
+        )
+    else:
+        log_lines.append(f"    → manual min_signal={resolved_min_signal:.6f}")
 
     feat_df = make_features_df(
         grid_df,
         baselines,
         max_diameter,
         z_bin_mm=options["z_bin_mm"],
-        min_signal=options["min_signal"],
+        min_signal=resolved_min_signal,
         contact_radius_mm=contact_radius_arr,
         contact_radius_cell=contact_radius_cell,
     )
@@ -791,9 +970,33 @@ def _process_trial_csv(
         "skipped": False,
         "trial_id": trial_id,
         "material": mat,
+        "resolved_min_signal": resolved_min_signal,
         "feature_path": feat_path,
         "logs": log_lines,
     }
+
+
+def build_peak_summary(all_feat: pd.DataFrame) -> pd.DataFrame:
+    peak_summary = (
+        all_feat.groupby(
+            ["material", "diameter_mm", "z_max_indentation_mm", "x_mm", "y_mm"],
+            dropna=False,
+            as_index=False,
+        )
+        .agg(
+            max_depth_mm=("z_depth_mm", "max"),
+            max_z_stage_mm=("z_stage_mm", "max"),
+            max_z_contact_mm=("z_contact_mm", "max"),
+            max_fz_bc=("fz_bc", "max"),
+            max_fz_raw=("fz_raw", "max"),
+            n_trials=("trial_id", "nunique"),
+            n_samples=("trial_id", "size"),
+        )
+    )
+    return peak_summary.sort_values(
+        ["material", "diameter_mm", "z_max_indentation_mm", "x_mm", "y_mm"],
+        kind="stable",
+    ).reset_index(drop=True)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -806,7 +1009,8 @@ def main():
         "baselines": base_out / "baselines",
         "grid": base_out / "grid",
         "features": base_out / "features",
-        "zarr": base_out / "zarr_data"
+        "zarr": base_out / "zarr_data",
+        "peak_summary": base_out / "peak_summary",
     }
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
@@ -897,6 +1101,10 @@ def main():
         # 통합 CSV 저장
         all_feat.drop(columns=["max_s"], inplace=True)
         all_feat.to_csv(base_out / f"{mat}_features.csv", index=False)
+
+        peak_summary = build_peak_summary(all_feat)
+        peak_summary.to_csv(dirs["peak_summary"] / f"{mat}_peak_summary.csv", index=False)
+        print(f"    → peak summary 저장: {dirs['peak_summary'] / f'{mat}_peak_summary.csv'}")
         
         # Zarr 저장
         if not args.no_zarr:

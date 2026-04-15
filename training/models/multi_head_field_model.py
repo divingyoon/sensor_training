@@ -9,9 +9,10 @@ class MultiHeadFieldModel(nn.Module):
     - heatmap 출력은 logits로 내보내 BCEWithLogitsLoss에 바로 사용할 수 있게 함.
     """
 
-    def __init__(self, seq_len: int = 50, heatmap_size: int = 40):
+    def __init__(self, seq_len: int = 50, heatmap_size: int = 40, dropout: float = 0.1):
         super().__init__()
         self.heatmap_size = heatmap_size
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
         # Backbone (Spatial-Temporal)
         self.cnn = nn.Sequential(
@@ -25,6 +26,7 @@ class MultiHeadFieldModel(nn.Module):
         self.head_scalar = nn.Sequential(
             nn.Linear(128, 128),
             nn.ReLU(),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
             nn.Linear(128, 2)
         )
         
@@ -32,6 +34,7 @@ class MultiHeadFieldModel(nn.Module):
         self.head_field = nn.Sequential(
             nn.Linear(128, 256),
             nn.ReLU(),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
             nn.Linear(256, heatmap_size * heatmap_size),
         )
 
@@ -40,7 +43,7 @@ class MultiHeadFieldModel(nn.Module):
         B, T, C, H, W = grid_seq.shape
         cnn_out = self.cnn(grid_seq.view(B * T, C, H, W)).view(B, T, -1)
         lstm_out, _ = self.lstm(cnn_out)
-        feat = lstm_out[:, -1, :]  # Last hidden state
+        feat = self.dropout(lstm_out[:, -1, :])  # Last hidden state
         
         scalar_vec = self.head_scalar(feat)
         field_map = self.head_field(feat).view(B, 1, self.heatmap_size, self.heatmap_size)

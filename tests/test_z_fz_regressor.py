@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import torch
 
@@ -8,6 +10,7 @@ from training.pipelines.train_z_fz_regressor import (
     build_condition_features,
     metric_dict,
     _limit_samples_for_smoke,
+    _resolve_fold_xy_checkpoint,
 )
 
 
@@ -61,6 +64,29 @@ class ZFzRegressorTest(unittest.TestCase):
 
         self.assertEqual(len(limited.samples), 4)
         self.assertEqual(set(limited.sample_trial_ids), {"a", "b"})
+
+    def test_resolve_fold_xy_checkpoint_rejects_reusing_single_base_checkpoint_for_other_fold(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            requested = base / "best_multi_head_field_stage2.pth"
+            requested.write_text("", encoding="utf-8")
+
+            with self.assertRaisesRegex(FileNotFoundError, "Refusing to reuse one checkpoint across folds"):
+                _resolve_fold_xy_checkpoint(str(requested), fold_index=1)
+
+    def test_resolve_fold_xy_checkpoint_swaps_fold_segment(self) -> None:
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            fold0 = base / "folds" / "fold_0"
+            fold1 = base / "folds" / "fold_1"
+            fold0.mkdir(parents=True)
+            fold1.mkdir(parents=True)
+            requested = fold0 / "best_multi_head_field_stage2.pth"
+            resolved = fold1 / "best_multi_head_field_stage2.pth"
+            requested.write_text("", encoding="utf-8")
+            resolved.write_text("", encoding="utf-8")
+
+            self.assertEqual(_resolve_fold_xy_checkpoint(str(requested), fold_index=1), resolved)
 
 
 if __name__ == "__main__":
