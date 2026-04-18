@@ -1,7 +1,5 @@
 ## Specification of Skin Sensor
 
-![image.png](image.png)
-
 FPCB 회로판에 BMP384(Bosh) 16개가  4x4 array, 센서 간의 간격이 센서의 중심 기준으로 6.5mm 간격으로 배치됨.
 
 BMP384 SPI 통신을 사용하며, Arduino DUE와 연결되고, DUE를 통해 컴퓨터로 raw count 값을 출력함.

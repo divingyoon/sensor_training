@@ -115,7 +115,6 @@ def evaluate_one(model_name: str, ckpt_path: Path, ds, val_idx: np.ndarray, batc
                 pred_use, target_use = _multi_head_metric_tensors(scalar_pred, fmap, tgt, args)
             else:
                 pred_use = _forward_model(model_name, model, grid, iso)
-                pred_use = apply_linear_calib(pred_use, args)
                 target_use = tgt[:, : pred_use.shape[1]]
 
             pred_width = min(pred_use.shape[1], target_use.shape[1])
@@ -205,6 +204,27 @@ def evaluate_one(model_name: str, ckpt_path: Path, ds, val_idx: np.ndarray, batc
                 "mae_fz": float(np.mean(np.abs(diff_fz))),
             }
         )
+    if args.apply_linear_calib:
+        calibrated_all = apply_linear_calib(torch.from_numpy(pred_all_full).float(), args).cpu().numpy()
+        calibrated_diff = calibrated_all[:, :3] - tgt_all_full[:, :3]
+        calibrated_mae = np.mean(np.abs(calibrated_diff), axis=0)
+        calibrated_rmse = np.sqrt(np.mean(calibrated_diff ** 2, axis=0))
+        global_metrics["metric_variants"] = {
+            "raw": {
+                "mae_x": float(mae[0]),
+                "mae_y": float(mae[1]),
+                "mae_z": float(mae[2]),
+            },
+            "calibrated": {
+                "mae_x": float(calibrated_mae[0]),
+                "mae_y": float(calibrated_mae[1]),
+                "mae_z": float(calibrated_mae[2]),
+                "rmse_x": float(calibrated_rmse[0]),
+                "rmse_y": float(calibrated_rmse[1]),
+                "rmse_z": float(calibrated_rmse[2]),
+            },
+        }
+    global_metrics["selection_metric_source"] = "raw"
 
     return {"x_mae": x_map, "y_mae": y_map, "z_mae": z_map, "xy_err": xy_map}, rows, global_metrics
 

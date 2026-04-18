@@ -256,12 +256,15 @@ def _build_optimizer(model: nn.Module, args):
 def _mean_std_metrics(per_fold: list[dict]) -> dict:
     metric_keys = ["mse", "rmse", "mae"]
     summary = {}
-    for key in metric_keys:
-        arr = np.array([fold["predicted_xy"][key] for fold in per_fold], dtype=np.float64)
-        summary[key] = {
-            "mean": arr.mean(axis=0).tolist(),
-            "std": arr.std(axis=0, ddof=0).tolist(),
-        }
+    for condition_key in ("gt_xy", "predicted_xy"):
+        condition_summary = {}
+        for key in metric_keys:
+            arr = np.array([fold[condition_key][key] for fold in per_fold], dtype=np.float64)
+            condition_summary[key] = {
+                "mean": arr.mean(axis=0).tolist(),
+                "std": arr.std(axis=0, ddof=0).tolist(),
+            }
+        summary[condition_key] = condition_summary
     return summary
 
 
@@ -276,6 +279,7 @@ def _train_one_fold(args, ds: ZarrSequenceDataset, split, normalizer_device: tor
     optimizer = _build_optimizer(model, args)
     best_metric = float("inf")
     best_metrics = {}
+    best_ckpt_path = args.current_out_dir / "best_z_fz_regressor.pth"
     history = {"train_loss": [], "val_gt_xy_mae": [], "val_pred_xy_mae": []}
 
     for epoch in range(1, args.epochs + 1):
@@ -331,7 +335,7 @@ def _train_one_fold(args, ds: ZarrSequenceDataset, split, normalizer_device: tor
                         "test_trials": split.test_trials,
                     },
                 },
-                args.current_out_dir / "best_z_fz_regressor.pth",
+                best_ckpt_path,
             )
             with (args.current_out_dir / "metrics_z_fz_regressor.json").open("w", encoding="utf-8") as f:
                 json.dump(best_metrics, f, indent=2)
@@ -342,6 +346,37 @@ def _train_one_fold(args, ds: ZarrSequenceDataset, split, normalizer_device: tor
             f"loss={history['train_loss'][-1]:.6f} "
             f"gt_xy_mae[z,fz]={gt_metrics['mae']} pred_xy_mae[z,fz]={pred_metrics['mae']}"
         )
+
+    if split.test_indices:
+        best_model = ZFzSequenceRegressor(seq_len=args.seq_len, dropout=args.dropout).to(normalizer_device)
+        checkpoint = torch.load(best_ckpt_path, map_location=normalizer_device)
+        best_model.load_state_dict(checkpoint["state_dict"])
+        best_model.eval()
+        normalizer = ScalarNormalizer.from_dict(checkpoint["target_norm"], device=normalizer_device)
+        xy_model = _load_xy_model(args, normalizer_device, split.fold_index)
+        test_idx = torch.tensor(split.test_indices, dtype=torch.long, device=normalizer_device)
+        best_metrics["test_gt_xy"] = _evaluate(
+            best_model,
+            ds,
+            test_idx,
+            normalizer,
+            xy_model,
+            args,
+            normalizer_device,
+            use_predicted_xy=False,
+        )
+        best_metrics["test_predicted_xy"] = _evaluate(
+            best_model,
+            ds,
+            test_idx,
+            normalizer,
+            xy_model,
+            args,
+            normalizer_device,
+            use_predicted_xy=xy_model is not None,
+        )
+        with (args.current_out_dir / "metrics_z_fz_regressor.json").open("w", encoding="utf-8") as f:
+            json.dump(best_metrics, f, indent=2)
 
     with (args.current_out_dir / "history_z_fz_regressor.json").open("w", encoding="utf-8") as f:
         json.dump(history, f, indent=2)
@@ -354,6 +389,8 @@ def _train_one_fold(args, ds: ZarrSequenceDataset, split, normalizer_device: tor
         "test_trials": split.test_trials,
         "gt_xy": best_metrics["gt_xy"],
         "predicted_xy": best_metrics["predicted_xy"],
+        "test_gt_xy": best_metrics.get("test_gt_xy"),
+        "test_predicted_xy": best_metrics.get("test_predicted_xy"),
     }
 
 
@@ -388,12 +425,22 @@ def train(args) -> dict:
         cv_folds=args.cv_folds,
         val_trials=parse_trial_list(args.val_trials),
         test_trials=parse_trial_list(args.test_trials),
+        depth_bin_edges=args.depth_bin_edges,
+        stratify_diameter_depth=args.stratify_diameter_depth,
+        auto_test_trials=args.auto_test_trials,
     )
     if args.fold_index is not None:
         splits = [split for split in splits if split.fold_index == args.fold_index]
         if not splits:
             raise RuntimeError(f"Requested --fold-index {args.fold_index} but no such fold exists.")
-    save_cv_manifest(args.out_dir / "cv_manifest_z_fz_regressor.json", splits)
+    save_cv_manifest(
+        args.out_dir / "cv_manifest_z_fz_regressor.json",
+        splits,
+        dataset=ds,
+        depth_bin_edges=args.depth_bin_edges,
+        min_depth_bin_samples=args.min_depth_bin_samples,
+        stratify_diameter_depth=args.stratify_diameter_depth,
+    )
     _log(f"[INFO] Saved CV manifest with {len(splits)} fold(s): {args.out_dir / 'cv_manifest_z_fz_regressor.json'}")
     for split in splits:
         _log(
@@ -412,10 +459,12 @@ def train(args) -> dict:
         )
         per_fold.append(_train_one_fold(args, ds, split, device))
 
+    metric_summary = _mean_std_metrics(per_fold)
     summary = {
         "num_folds": len(per_fold),
         "per_fold": per_fold,
-        "predicted_xy_summary": _mean_std_metrics(per_fold),
+        "gt_xy_summary": metric_summary["gt_xy"],
+        "predicted_xy_summary": metric_summary["predicted_xy"],
     }
     with (args.out_dir / "cv_summary_z_fz_regressor.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
@@ -443,7 +492,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-trials", nargs="*", default=None)
     parser.add_argument("--test-trials", nargs="*", default=None)
+    parser.add_argument("--auto-test-trials", type=int, default=1, help="Automatically hold out this many full trials when --test-trials is omitted.")
     parser.add_argument("--cv-folds", type=int, default=5)
+    parser.add_argument("--stratify-diameter-depth", action="store_true", default=True, help="Balance folds using per-trial diameter and dominant depth regime.")
+    parser.add_argument("--no-stratify-diameter-depth", dest="stratify_diameter_depth", action="store_false")
+    parser.add_argument("--depth-bins", type=str, default="0.8,1.1,1.4,1.7", help="comma-separated depth bin edges (mm) used for split stratification/reporting")
+    parser.add_argument("--min-depth-bin-samples", type=int, default=16, help="Minimum target count reported per depth bin for held-out coverage checks.")
     parser.add_argument("--fold-index", type=int, default=None, help="Run only one fold index from the CV manifest.")
     parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="cuda")
     parser.add_argument("--loss", choices=["huber", "mse"], default="huber")
@@ -455,7 +509,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decode-xy", choices=["softargmax", "argmax_refine"], default="softargmax")
     parser.add_argument("--heatmap-size", type=int, default=40)
     parser.add_argument("--max-samples", type=int, default=0, help="Optional balanced sample cap for quick smoke runs. 0 uses all samples.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    try:
+        edges = [float(x) for x in args.depth_bins.split(",") if x.strip() != ""]
+        args.depth_bin_edges = edges + [float("inf")] if edges else [0.0, float("inf")]
+    except Exception:
+        args.depth_bin_edges = [0.0, float("inf")]
+    return args
 
 
 if __name__ == "__main__":

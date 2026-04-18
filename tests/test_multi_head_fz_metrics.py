@@ -15,6 +15,7 @@ from training.pipelines.train_comparison import (
     _multi_head_run_tag,
     _save_overlay,
     _write_fz_summary_csv,
+    build_metric_report,
     calculate_metrics,
 )
 
@@ -220,6 +221,26 @@ class MultiHeadFzMetricsTest(unittest.TestCase):
         self.assertIn("zoff_fzoff", _multi_head_run_tag("multi_head_field", stage2_args))
         self.assertIn("stage3", _multi_head_run_tag("multi_head_field", stage3_args))
         self.assertIn("zhuber0p2_fzhuber0p2", _multi_head_run_tag("multi_head_field", stage3_args))
+
+    def test_build_metric_report_separates_raw_and_calibrated_metrics(self) -> None:
+        args = SimpleNamespace(
+            depth_bin_edges=[0.0, float("inf")],
+            apply_linear_calib=True,
+            calib_x_ax=2.0,
+            calib_x_by=0.0,
+            calib_x_bias=0.0,
+            calib_y_ax=0.0,
+            calib_y_by=1.0,
+            calib_y_bias=0.0,
+        )
+        raw_preds = np.array([[1.0, 2.0, 0.5], [2.0, 1.0, 1.5]], dtype=np.float32)
+        targets = np.array([[2.0, 2.0, 0.5], [4.0, 1.0, 1.5]], dtype=np.float32)
+
+        report = build_metric_report(raw_preds, targets, args)
+
+        self.assertEqual(report["metric_selection"]["primary"], "raw")
+        self.assertAlmostEqual(report["metric_variants"]["raw"]["mae"][0], 1.5)
+        self.assertAlmostEqual(report["metric_variants"]["calibrated"]["mae"][0], 0.0)
 
 
 if __name__ == "__main__":

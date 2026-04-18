@@ -99,6 +99,31 @@ def calculate_metrics(preds, targets):
     }
 
 
+def build_metric_report(raw_preds: np.ndarray, targets: np.ndarray, args) -> dict:
+    raw_metrics = calculate_metrics(raw_preds, targets)
+    raw_metrics["depth_bins"] = depth_bin_metrics(raw_preds, targets, args.depth_bin_edges)
+    raw_metrics["selection_mae_xyz"] = float(np.mean(raw_metrics["mae"][:3]))
+
+    calibrated_preds = raw_preds
+    if raw_preds.shape[1] >= 2:
+        calibrated_preds = apply_linear_calib(torch.from_numpy(raw_preds).float(), args).cpu().numpy()
+
+    calibrated_metrics = calculate_metrics(calibrated_preds, targets)
+    calibrated_metrics["depth_bins"] = depth_bin_metrics(calibrated_preds, targets, args.depth_bin_edges)
+    calibrated_metrics["selection_mae_xyz"] = float(np.mean(calibrated_metrics["mae"][:3]))
+
+    report = dict(raw_metrics)
+    report["metric_selection"] = {
+        "primary": "raw",
+        "secondary": "calibrated",
+    }
+    report["metric_variants"] = {
+        "raw": raw_metrics,
+        "calibrated": calibrated_metrics,
+    }
+    return report
+
+
 def depth_bin_metrics(preds, targets, bin_edges):
     """
     preds, targets: np arrays (N,3) where [:,2]=depth
@@ -163,8 +188,7 @@ def _multi_head_metric_tensors(
         ],
         dim=1,
     )
-    pred_use = apply_linear_calib(pred_concat, args)
-    return pred_use, targets[:, :4]
+    return pred_concat, targets[:, :4]
 
 
 def _loss_component_tag(weight: float, loss_name: str) -> str:
@@ -819,12 +843,22 @@ def build_shared_data(args, device: torch.device):
         cv_folds=args.cv_folds,
         val_trials=rt.parse_trial_list(getattr(args, "val_trials", None)),
         test_trials=rt.parse_trial_list(getattr(args, "test_trials", None)),
+        depth_bin_edges=args.depth_bin_edges,
+        stratify_diameter_depth=args.stratify_diameter_depth,
+        auto_test_trials=args.auto_test_trials,
     )
     if args.fold_index is not None:
         splits = [split for split in splits if split.fold_index == args.fold_index]
         if not splits:
             raise RuntimeError(f"Requested --fold-index {args.fold_index} but no such fold exists.")
-    rt.save_cv_manifest(Path(args.out_dir) / "cv_manifest_comparison.json", splits)
+    rt.save_cv_manifest(
+        Path(args.out_dir) / "cv_manifest_comparison.json",
+        splits,
+        dataset=base_ds,
+        depth_bin_edges=args.depth_bin_edges,
+        min_depth_bin_samples=args.min_depth_bin_samples,
+        stratify_diameter_depth=args.stratify_diameter_depth,
+    )
     preload_indices = np.arange(total, dtype=np.int64)
 
     if args.preload_vram and device.type != "cuda":
@@ -890,7 +924,55 @@ def _iter_batches(preloaded_ds, index_tensor, batch_size, shuffle, device, augme
         yield grid, iso, tgt, num_batches
 
 
-def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx, out_dir: str):
+def _evaluate_model_metrics(model_name, model, args, device, preloaded_ds, index_tensor, effective_bs):
+    all_raw_preds, all_targets = [], []
+    with torch.no_grad():
+        eval_iter = _iter_batches(
+            preloaded_ds,
+            index_tensor,
+            batch_size=effective_bs,
+            shuffle=False,
+            device=device,
+            augment=False,
+        )
+        for batch_idx, (grid, iso, tgt, _) in enumerate(eval_iter):
+            if model_name == "multi_head_field":
+                depth_mask = tgt[:, 2] > args.depth_min_for_label
+                if not depth_mask.any():
+                    continue
+                grid_m = grid[depth_mask]
+                iso_m = iso[depth_mask]
+                tgt_m = tgt[depth_mask]
+
+                pred, fmap = _forward_model(model_name, model, grid_m, iso_m, return_field=True)
+                if args.save_heatmap_overlay and batch_idx < args.overlay_batches:
+                    target_map = _build_multi_head_target_map(tgt_m, args)
+                    raw_pred_use, target_use = _multi_head_metric_tensors(pred, fmap, tgt_m, args)
+                    _save_overlay(
+                        batch_idx,
+                        fmap,
+                        target_map,
+                        os.path.join(args.out_dir, "overlays"),
+                        prefix=f"{model_name}_eval",
+                        max_samples=args.overlay_samples,
+                        pred_values=apply_linear_calib(raw_pred_use, args),
+                        target_values=target_use,
+                    )
+                raw_pred_use, target_use = _multi_head_metric_tensors(pred, fmap, tgt_m, args)
+            else:
+                pred = _forward_model(model_name, model, grid, iso)
+                raw_pred_use = pred[:, :3]
+                target_use = tgt[:, :3]
+
+            all_raw_preds.append(raw_pred_use.cpu().numpy())
+            all_targets.append(target_use.cpu().numpy())
+
+    raw_preds = np.concatenate(all_raw_preds)
+    targets = np.concatenate(all_targets)
+    return build_metric_report(raw_preds, targets, args)
+
+
+def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx, test_idx, out_dir: str):
     print(f"\n--- Training Model: {model_name} ---")
     print(f"  [INFO] device: {device}")
     effective_bs = _effective_batch_size(model_name, args.batch_size)
@@ -911,6 +993,7 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx, 
 
     best_val_mae = float('inf')
     best_metrics = {}
+    best_save_path = None
 
     for epoch in range(args.epochs):
         model.train()
@@ -981,7 +1064,6 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx, 
 
         # Validation & Metrics
         model.eval()
-        all_preds, all_targets = [], []
         with torch.no_grad():
             val_iter = _iter_batches(
                 preloaded_ds,
@@ -998,6 +1080,7 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx, 
                 leave=False,
             )
             val_losses = []
+            all_raw_preds, all_targets = [], []
             for batch_idx, (grid, iso, tgt, _) in enumerate(val_bar):
                 if model_name == "multi_head_field":
                     depth_mask = tgt[:, 2] > args.depth_min_for_label
@@ -1041,28 +1124,26 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx, 
                     val_loss = criterion(pred[:, :3], tgt[:, :3])
 
                 if model_name == "multi_head_field":
-                    pred_use, target_use = _multi_head_metric_tensors(pred, fmap, tgt_m, args)
+                    raw_pred_use, target_use = _multi_head_metric_tensors(pred, fmap, tgt_m, args)
                 else:
-                    pred_concat = pred[:, :3]
-                    pred_use = apply_linear_calib(pred_concat, args)
+                    raw_pred_use = pred[:, :3]
                     target_use = tgt[:, :3]
 
-                all_preds.append(pred_use.cpu().numpy())
+                all_raw_preds.append(raw_pred_use.cpu().numpy())
                 all_targets.append(target_use.cpu().numpy())
                 val_losses.append(val_loss.item())
 
-        all_preds = np.concatenate(all_preds)
+        all_preds = np.concatenate(all_raw_preds)
         all_targets = np.concatenate(all_targets)
-        metrics = calculate_metrics(all_preds, all_targets)
-        metrics["depth_bins"] = depth_bin_metrics(all_preds, all_targets, args.depth_bin_edges)
-        avg_mae = float(np.mean(metrics["mae"][:3]))
-        metrics["selection_mae_xyz"] = avg_mae
+        metrics = build_metric_report(all_preds, all_targets, args)
+        avg_mae = float(metrics["selection_mae_xyz"])
 
         if avg_mae < best_val_mae:
             best_val_mae = avg_mae
             best_metrics = metrics
             tag = _multi_head_run_tag(model_name, args)
             save_path = os.path.join(out_dir, f"best_{model_name}{tag}.pth")
+            best_save_path = save_path
             torch.save({
                 "state_dict": model.state_dict(),
                 "metrics": metrics,
@@ -1090,6 +1171,24 @@ def train_one_model(model_name, args, device, preloaded_ds, train_idx, val_idx, 
     del optimizer
     if device.type == "cuda":
         torch.cuda.empty_cache()
+
+    if best_save_path and test_idx.numel() > 0:
+        best_model = get_model(model_name, args.seq_len, args.heatmap_size, dropout=args.dropout).to(device)
+        checkpoint = torch.load(best_save_path, map_location=device)
+        best_model.load_state_dict(checkpoint["state_dict"])
+        best_model.eval()
+        best_metrics["test_metrics"] = _evaluate_model_metrics(
+            model_name,
+            best_model,
+            args,
+            device,
+            preloaded_ds,
+            test_idx,
+            effective_bs,
+        )
+        tag = _multi_head_run_tag(model_name, args)
+        with open(os.path.join(out_dir, f"metrics_{model_name}{tag}.json"), "w") as f:
+            json.dump(best_metrics, f, indent=2)
 
     return best_metrics
 
@@ -1134,7 +1233,11 @@ if __name__ == "__main__":
         default=None,
         help="Explicit test trial_id list to exclude from train/val. Accepts space-separated or comma-separated values.",
     )
+    parser.add_argument("--auto-test-trials", type=int, default=1, help="Automatically hold out this many full trials when --test-trials is omitted.")
     parser.add_argument("--cv-folds", type=int, default=5)
+    parser.add_argument("--stratify-diameter-depth", action="store_true", default=True, help="Balance folds using per-trial diameter and dominant depth regime.")
+    parser.add_argument("--no-stratify-diameter-depth", dest="stratify_diameter_depth", action="store_false")
+    parser.add_argument("--min-depth-bin-samples", type=int, default=16, help="Minimum target count reported per depth bin for held-out coverage checks.")
     parser.add_argument("--fold-index", type=int, default=None, help="Run only one fold index from the CV manifest.")
     parser.add_argument("--preload-vram", action="store_true", default=True, help="Preload all samples into VRAM")
     parser.add_argument("--no-preload-vram", dest="preload_vram", action="store_false", help="Preload all samples into RAM")
@@ -1193,11 +1296,12 @@ if __name__ == "__main__":
     for split in splits:
         train_idx = torch.as_tensor(split.train_indices, dtype=torch.long, device=preloaded_ds.grid.device)
         val_idx = torch.as_tensor(split.val_indices, dtype=torch.long, device=preloaded_ds.grid.device)
+        test_idx = torch.as_tensor(split.test_indices, dtype=torch.long, device=preloaded_ds.grid.device)
         fold_out_dir = os.path.join(args.out_dir, "folds", f"fold_{split.fold_index}")
         os.makedirs(fold_out_dir, exist_ok=True)
 
         for m in args.models:
-            metrics = train_one_model(m, args, device, preloaded_ds, train_idx, val_idx, fold_out_dir)
+            metrics = train_one_model(m, args, device, preloaded_ds, train_idx, val_idx, test_idx, fold_out_dir)
             metrics["fold_index"] = split.fold_index
             metrics["train_trials"] = split.train_trials
             metrics["val_trials"] = split.val_trials

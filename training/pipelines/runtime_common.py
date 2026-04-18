@@ -27,6 +27,17 @@ class TrialSplit:
     split_mode: str = "manual"
 
 
+@dataclass(frozen=True)
+class TrialMetadata:
+    trial_id: str
+    sample_count: int
+    diameter_mm: Optional[float]
+    min_depth_mm: Optional[float]
+    max_depth_mm: Optional[float]
+    depth_bin_counts: dict[str, int]
+    stratify_label: str
+
+
 def resolve_zarr_path(data_dir: str, zarr_path: str = "") -> str:
     if zarr_path:
         return str(Path(zarr_path))
@@ -78,6 +89,139 @@ def dataset_split_ids(dataset: Dataset) -> list[str]:
         else:
             raise RuntimeError(f"Cannot infer trial id for dataset sample: {sample!r}")
     return split_ids
+
+
+def _dataset_optional_array(dataset: Dataset, attr_name: str) -> Optional[list[float]]:
+    values = getattr(dataset, attr_name, None)
+    if values is None:
+        return None
+    if len(values) != len(dataset):
+        raise RuntimeError(
+            f"Dataset metadata length mismatch for {attr_name}: {len(values)} values for {len(dataset)} samples"
+        )
+    if torch.is_tensor(values):
+        return [float(x) for x in values.detach().cpu().view(-1).tolist()]
+    return [float(x) for x in values]
+
+
+def dataset_diameter_values(dataset: Dataset) -> Optional[list[float]]:
+    for attr_name in ("sample_diameter_mm",):
+        values = _dataset_optional_array(dataset, attr_name)
+        if values is not None:
+            return values
+
+    radius_values = _dataset_optional_array(dataset, "sample_radius_mm")
+    if radius_values is not None:
+        return [float(x) * 2.0 for x in radius_values]
+
+    samples = getattr(dataset, "samples", None)
+    if samples is None:
+        return None
+
+    out: list[float] = []
+    for sample in samples:
+        if isinstance(sample, dict) and "diameter_mm" in sample:
+            out.append(float(sample["diameter_mm"]))
+        elif isinstance(sample, tuple) and len(sample) >= 3:
+            out.append(float(sample[2]))
+        else:
+            return None
+    return out
+
+
+def dataset_depth_values(dataset: Dataset) -> Optional[list[float]]:
+    for attr_name in ("sample_depth_mm",):
+        values = _dataset_optional_array(dataset, attr_name)
+        if values is not None:
+            return values
+
+    samples = getattr(dataset, "samples", None)
+    if samples is None:
+        return None
+
+    out: list[float] = []
+    for sample in samples:
+        if isinstance(sample, dict) and "depth_mm" in sample:
+            out.append(float(sample["depth_mm"]))
+        else:
+            return None
+    return out
+
+
+def format_depth_bin_label(lo: float, hi: float) -> str:
+    hi_text = "inf" if np.isinf(hi) else f"{hi:g}"
+    return f"[{lo:g},{hi_text})"
+
+
+def normalize_depth_bin_edges(depth_bin_edges: Optional[Sequence[float]]) -> list[float]:
+    if not depth_bin_edges:
+        return [0.0, float("inf")]
+
+    finite = sorted(float(edge) for edge in depth_bin_edges if not np.isinf(float(edge)))
+    if not finite:
+        return [0.0, float("inf")]
+
+    if finite[0] > 0.0:
+        finite = [0.0] + finite
+    if not np.isinf(finite[-1]):
+        finite.append(float("inf"))
+    return finite
+
+
+def depth_bin_index(depth_mm: float, depth_bin_edges: Sequence[float]) -> int:
+    for idx in range(len(depth_bin_edges) - 1):
+        lo = depth_bin_edges[idx]
+        hi = depth_bin_edges[idx + 1]
+        if depth_mm >= lo and depth_mm < hi:
+            return idx
+    return max(0, len(depth_bin_edges) - 2)
+
+
+def collect_trial_metadata(dataset: Dataset, depth_bin_edges: Optional[Sequence[float]] = None) -> dict[str, TrialMetadata]:
+    trial_ids = dataset_split_ids(dataset)
+    diameter_values = dataset_diameter_values(dataset)
+    depth_values = dataset_depth_values(dataset)
+    edges = normalize_depth_bin_edges(depth_bin_edges)
+
+    grouped_indices: dict[str, list[int]] = defaultdict(list)
+    for idx, trial_id in enumerate(trial_ids):
+        grouped_indices[str(trial_id)].append(idx)
+
+    metadata: dict[str, TrialMetadata] = {}
+    for trial_id, indices in grouped_indices.items():
+        diameter_mm = None
+        if diameter_values is not None:
+            unique_diameters = sorted({round(float(diameter_values[i]), 6) for i in indices})
+            diameter_mm = unique_diameters[0] if unique_diameters else None
+
+        min_depth_mm = None
+        max_depth_mm = None
+        depth_counts: dict[str, int] = {}
+        depth_label = "depth-unknown"
+        if depth_values is not None:
+            trial_depths = [float(depth_values[i]) for i in indices]
+            min_depth_mm = min(trial_depths)
+            max_depth_mm = max(trial_depths)
+            raw_counts = defaultdict(int)
+            for depth_mm in trial_depths:
+                bin_idx = depth_bin_index(depth_mm, edges)
+                label = format_depth_bin_label(edges[bin_idx], edges[bin_idx + 1])
+                raw_counts[label] += 1
+            depth_counts = dict(sorted(raw_counts.items()))
+            dominant_bin = max(depth_counts.items(), key=lambda item: (item[1], item[0]))[0]
+            depth_label = f"depth-{dominant_bin}"
+
+        diameter_label = "diameter-unknown" if diameter_mm is None else f"diameter-{diameter_mm:g}"
+        metadata[trial_id] = TrialMetadata(
+            trial_id=trial_id,
+            sample_count=len(indices),
+            diameter_mm=diameter_mm,
+            min_depth_mm=min_depth_mm,
+            max_depth_mm=max_depth_mm,
+            depth_bin_counts=depth_counts,
+            stratify_label=f"{diameter_label}|{depth_label}",
+        )
+    return metadata
 
 
 def split_indices_for_trials(dataset: Dataset, train_trials: Sequence[str], val_trials: Sequence[str], test_trials: Sequence[str]) -> TrialSplit:
@@ -166,6 +310,9 @@ def build_cv_splits(
     cv_folds: int,
     val_trials: Optional[Sequence[str]] = None,
     test_trials: Optional[Sequence[str]] = None,
+    depth_bin_edges: Optional[Sequence[float]] = None,
+    stratify_diameter_depth: bool = False,
+    auto_test_trials: int = 0,
 ) -> list[TrialSplit]:
     if val_trials is not None or test_trials is not None:
         return [split_indices_by_trial(dataset, seed, val_trials=val_trials, test_trials=test_trials)]
@@ -175,16 +322,55 @@ def build_cv_splits(
     if len(trial_ids) < 2:
         raise RuntimeError(f"Trial-aware CV needs at least 2 distinct trials. Found: {trial_ids}")
 
-    num_folds = max(2, min(cv_folds, len(trial_ids)))
+    metadata = collect_trial_metadata(dataset, depth_bin_edges)
     rng = np.random.default_rng(seed)
-    shuffled = np.array(trial_ids, dtype=object)
-    rng.shuffle(shuffled)
-    trial_folds = [sorted(str(t) for t in fold.tolist()) for fold in np.array_split(shuffled, num_folds) if len(fold) > 0]
+    available_trials = list(trial_ids)
+
+    selected_test_trials: list[str] = []
+    max_auto_test_trials = max(0, len(trial_ids) - 2)
+    auto_test_trials = max(0, min(int(auto_test_trials), max_auto_test_trials))
+    if auto_test_trials > 0:
+        grouped_trials: dict[str, list[str]] = defaultdict(list)
+        for trial_id in available_trials:
+            grouped_trials[metadata[trial_id].stratify_label].append(trial_id)
+        for group in grouped_trials.values():
+            rng.shuffle(group)
+        labels = sorted(grouped_trials)
+        rng.shuffle(labels)
+        cursor = 0
+        while len(selected_test_trials) < auto_test_trials and labels:
+            label = labels[cursor % len(labels)]
+            if grouped_trials[label]:
+                selected_test_trials.append(grouped_trials[label].pop())
+            cursor += 1
+            labels = [name for name in labels if grouped_trials[name]]
+        available_trials = [trial_id for trial_id in trial_ids if trial_id not in set(selected_test_trials)]
+
+    num_folds = max(2, min(cv_folds, len(available_trials)))
+    rng = np.random.default_rng(seed)
+    trial_folds: list[list[str]]
+    if stratify_diameter_depth:
+        grouped_trials: dict[str, list[str]] = defaultdict(list)
+        for trial_id in available_trials:
+            grouped_trials[metadata[trial_id].stratify_label].append(trial_id)
+        trial_folds = [[] for _ in range(num_folds)]
+        fold_cursor = 0
+        for label in sorted(grouped_trials):
+            group = grouped_trials[label]
+            rng.shuffle(group)
+            for trial_id in group:
+                trial_folds[fold_cursor % num_folds].append(str(trial_id))
+                fold_cursor += 1
+        trial_folds = [sorted(fold) for fold in trial_folds if fold]
+    else:
+        shuffled = np.array(available_trials, dtype=object)
+        rng.shuffle(shuffled)
+        trial_folds = [sorted(str(t) for t in fold.tolist()) for fold in np.array_split(shuffled, num_folds) if len(fold) > 0]
 
     splits: list[TrialSplit] = []
     for fold_index, val_fold in enumerate(trial_folds):
-        train_trials = sorted(str(t) for t in trial_ids if str(t) not in set(val_fold))
-        base = split_indices_for_trials(dataset, train_trials, val_fold, [])
+        train_trials = sorted(str(t) for t in available_trials if str(t) not in set(val_fold))
+        base = split_indices_for_trials(dataset, train_trials, val_fold, selected_test_trials)
         splits.append(
             TrialSplit(
                 train_indices=base.train_indices,
@@ -201,9 +387,61 @@ def build_cv_splits(
     return splits
 
 
-def save_cv_manifest(path: Path, splits: Sequence[TrialSplit]) -> None:
+def _bucket_counts(values: Optional[list[float]]) -> Optional[dict[str, int]]:
+    if values is None:
+        return None
+    counts = defaultdict(int)
+    for value in values:
+        counts[f"{float(value):g}"] += 1
+    return dict(sorted(counts.items()))
+
+
+def _depth_bin_counts(values: Optional[list[float]], depth_bin_edges: Sequence[float]) -> Optional[dict[str, int]]:
+    if values is None:
+        return None
+    counts = defaultdict(int)
+    for value in values:
+        idx = depth_bin_index(float(value), depth_bin_edges)
+        label = format_depth_bin_label(depth_bin_edges[idx], depth_bin_edges[idx + 1])
+        counts[label] += 1
+    return dict(sorted(counts.items()))
+
+
+def _split_metadata_counts(split: TrialSplit, diameter_values: Optional[list[float]], depth_values: Optional[list[float]], depth_bin_edges: Sequence[float]) -> dict:
+    def _select(values: Optional[list[float]], indices: list[int]) -> Optional[list[float]]:
+        if values is None:
+            return None
+        return [float(values[idx]) for idx in indices]
+
+    return {
+        "train_diameter_counts": _bucket_counts(_select(diameter_values, split.train_indices)),
+        "val_diameter_counts": _bucket_counts(_select(diameter_values, split.val_indices)),
+        "test_diameter_counts": _bucket_counts(_select(diameter_values, split.test_indices)),
+        "train_depth_bin_counts": _depth_bin_counts(_select(depth_values, split.train_indices), depth_bin_edges),
+        "val_depth_bin_counts": _depth_bin_counts(_select(depth_values, split.val_indices), depth_bin_edges),
+        "test_depth_bin_counts": _depth_bin_counts(_select(depth_values, split.test_indices), depth_bin_edges),
+    }
+
+
+def save_cv_manifest(
+    path: Path,
+    splits: Sequence[TrialSplit],
+    dataset: Optional[Dataset] = None,
+    depth_bin_edges: Optional[Sequence[float]] = None,
+    min_depth_bin_samples: int = 0,
+    stratify_diameter_depth: bool = False,
+) -> None:
+    normalized_depth_bins = normalize_depth_bin_edges(depth_bin_edges)
+    diameter_values = dataset_diameter_values(dataset) if dataset is not None else None
+    depth_values = dataset_depth_values(dataset) if dataset is not None else None
     payload = {
         "num_folds": len(splits),
+        "split_policy": {
+            "train_val_test": True,
+            "stratify_diameter_depth": bool(stratify_diameter_depth),
+            "depth_bin_edges": normalized_depth_bins,
+            "min_depth_bin_samples": int(min_depth_bin_samples),
+        },
         "folds": [
             {
                 "fold_index": split.fold_index,
@@ -215,6 +453,7 @@ def save_cv_manifest(path: Path, splits: Sequence[TrialSplit]) -> None:
                 "train_count": len(split.train_indices),
                 "val_count": len(split.val_indices),
                 "test_count": len(split.test_indices),
+                **_split_metadata_counts(split, diameter_values, depth_values, normalized_depth_bins),
             }
             for split in splits
         ],
@@ -263,6 +502,9 @@ class ZarrSequenceDataset(Dataset):
 
         self.samples = []
         self.sample_trial_ids = []
+        self.sample_radius_mm = []
+        self.sample_diameter_mm = []
+        self.sample_depth_mm = []
         for key, idxs in groups.items():
             idxs = sorted(idxs, key=lambda j: float(depth[j].item()))
             trial_id = key[0]
@@ -272,11 +514,22 @@ class ZarrSequenceDataset(Dataset):
             if t <= seq_len:
                 self.samples.append(idxs)
                 self.sample_trial_ids.append(trial_id)
+                last_i = idxs[-1]
+                radius_mm = float(radius[last_i].item())
+                self.sample_radius_mm.append(radius_mm)
+                self.sample_diameter_mm.append(radius_mm * 2.0)
+                self.sample_depth_mm.append(float(depth[last_i].item()))
             else:
                 max_start = t - seq_len
                 for s in range(0, max_start + 1, stride):
-                    self.samples.append(idxs[s : s + seq_len])
+                    seq = idxs[s : s + seq_len]
+                    self.samples.append(seq)
                     self.sample_trial_ids.append(trial_id)
+                    last_i = seq[-1]
+                    radius_mm = float(radius[last_i].item())
+                    self.sample_radius_mm.append(radius_mm)
+                    self.sample_diameter_mm.append(radius_mm * 2.0)
+                    self.sample_depth_mm.append(float(depth[last_i].item()))
 
         self.tactile = tactile
         self.radius = radius
