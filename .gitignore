@@ -1,10 +1,17 @@
+sats/preprocessing/processed_data/
+sats/preprocessing/gt_output_v1/
+processed_data/
+hitmap/preprocessing/processed_sweeps/
+hitmap/preprocessing/processed_data/
+raw_data/
 pytorch/
 
-preprocessing/preprocessing_data/
-preprocessing/raw_data/
-preprocessing/processed_data/
-preprocessing/processed_sweeps/
-processed_data/
+# Media and large documents
+*.pdf
+*.mp4
+*.png
+*.jpg
+*.jpeg
 
 # Local env and artifacts
 skin/

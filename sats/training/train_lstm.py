@@ -1,0 +1,356 @@
+#!/usr/bin/env python3
+"""
+sats/training/train_lstm.py
+
+SATS LSTM 인코더 단독 학습 스크립트.
+
+학습 전략
+----------
+입력  : sensor_seq [B, T, 16]   s_norm 시계열
+타겟  : peak GT map  [B, 40, 40]
+         시퀀스 내 GT 총합이 최대인 timestep의 40×40 압력맵
+         (= 압입 최대 접촉 시점의 GT)
+손실  : MSELoss(pred_map, peak_gt)
+
+이후 단계
+----------
+Self-Attention, Local Map 모듈을 추가할 때
+SATSLSTMStage.encoder 가중치를 그대로 재사용한다.
+
+실행
+----
+python3 -m sats.training.train_lstm
+python3 -m sats.training.train_lstm --epochs 100 --hidden-dim 128 --batch-size 32
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import math
+import time
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.optim import Adam
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+from .config import SATSConfig
+from .dataset import build_dataloaders
+from .lstm_module import SATSLSTMStage
+
+log = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 유틸리티
+# ─────────────────────────────────────────────────────────────────────────────
+
+def set_seed(seed: int) -> None:
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def find_peak_gt(
+    gt_batch: torch.Tensor,   # [B, T_max, 40, 40]
+    lengths: torch.Tensor,    # [B]
+) -> torch.Tensor:
+    """
+    각 샘플에서 GT 총합이 최대인 timestep의 40×40 맵을 반환한다.
+
+    패딩 영역(GT=0)은 자동으로 배제된다.
+    모든 GT가 0인 샘플(비접촉 시퀀스)은 timestep 0을 사용한다.
+
+    Returns
+    -------
+    peak_gt : Tensor[B, 40, 40]
+    """
+    B, T_max = gt_batch.shape[:2]
+    device = gt_batch.device
+
+    # 각 timestep의 GT 총합 [B, T_max]
+    gt_sum = gt_batch.sum(dim=(-2, -1))
+
+    # 패딩 timestep 마스킹 (유효 범위 밖은 -inf)
+    time_idx = torch.arange(T_max, device=device).unsqueeze(0)   # [1, T_max]
+    pad_mask  = time_idx >= lengths.unsqueeze(1)                  # [B, T_max]
+    gt_sum = gt_sum.masked_fill(pad_mask, -1.0)
+
+    peak_t = gt_sum.argmax(dim=1)                               # [B]
+    peak_gt = gt_batch[torch.arange(B, device=device), peak_t]  # [B, 40, 40]
+    return peak_gt
+
+
+def compute_rmse(pred: torch.Tensor, target: torch.Tensor) -> float:
+    """MSE의 제곱근 (스칼라)."""
+    return math.sqrt(F.mse_loss(pred, target).item())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 체크포인트
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_checkpoint(
+    path: Path,
+    epoch: int,
+    model: nn.Module,
+    optimizer,
+    scheduler,
+    metrics: dict,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "epoch":      epoch,
+            "model":      model.state_dict(),
+            "optimizer":  optimizer.state_dict(),
+            "scheduler":  scheduler.state_dict(),
+            "metrics":    metrics,
+        },
+        path,
+    )
+    log.info("체크포인트 저장: %s", path)
+
+
+def load_checkpoint(path: Path, model: nn.Module, optimizer=None, scheduler=None):
+    ckpt = torch.load(path, map_location="cpu")
+    model.load_state_dict(ckpt["model"])
+    if optimizer is not None:
+        optimizer.load_state_dict(ckpt["optimizer"])
+    if scheduler is not None:
+        scheduler.load_state_dict(ckpt["scheduler"])
+    log.info("체크포인트 로드: %s (epoch %d)", path, ckpt["epoch"])
+    return ckpt["epoch"], ckpt.get("metrics", {})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 학습 / 검증 루프
+# ─────────────────────────────────────────────────────────────────────────────
+
+def train_epoch(
+    model: SATSLSTMStage,
+    loader,
+    optimizer,
+    device: str,
+    cfg: SATSConfig,
+) -> dict:
+    model.train()
+    total_loss = 0.0
+    n_batches  = 0
+
+    for sensor_b, gt_b, lengths in loader:
+        sensor_b = sensor_b.to(device, non_blocking=True)    # [B, T, 16]
+        gt_b     = gt_b.to(device, non_blocking=True)        # [B, T, 40, 40]
+        lengths  = lengths.to(device, non_blocking=True)     # [B]
+
+        # 타겟: 압입 최대 접촉 시점의 GT
+        target = find_peak_gt(gt_b, lengths).detach()        # [B, 40, 40]
+
+        # 순전파
+        pred_map, _ = model(sensor_b, lengths)               # [B, 40, 40]
+        loss = F.mse_loss(pred_map, target)
+
+        # 역전파
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        if cfg.clip_grad:
+            nn.utils.clip_grad_norm_(model.parameters(), cfg.clip_grad)
+        optimizer.step()
+
+        total_loss += loss.item()
+        n_batches  += 1
+
+    return {"loss": total_loss / max(n_batches, 1)}
+
+
+@torch.no_grad()
+def val_epoch(
+    model: SATSLSTMStage,
+    loader,
+    device: str,
+) -> dict:
+    model.eval()
+    total_mse  = 0.0
+    n_batches  = 0
+
+    for sensor_b, gt_b, lengths in loader:
+        sensor_b = sensor_b.to(device, non_blocking=True)
+        gt_b     = gt_b.to(device, non_blocking=True)
+        lengths  = lengths.to(device, non_blocking=True)
+
+        target = find_peak_gt(gt_b, lengths)
+        pred_map, _ = model(sensor_b, lengths)
+
+        total_mse += F.mse_loss(pred_map, target).item()
+        n_batches += 1
+
+    mse  = total_mse / max(n_batches, 1)
+    rmse = math.sqrt(mse)
+    return {"mse": mse, "rmse": rmse}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 메인 학습 루프
+# ─────────────────────────────────────────────────────────────────────────────
+
+def train(cfg: SATSConfig) -> None:
+    # ── 초기화 ────────────────────────────────────────────────────────────
+    set_seed(cfg.seed)
+    device = cfg.effective_device()
+    log.info("device: %s", device)
+
+    run_dir = cfg.run_dir()
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # config 저장
+    cfg_path = run_dir / "config.json"
+    cfg_dict = {k: v for k, v in vars(cfg).items() if not k.startswith("_")}
+    cfg_path.write_text(json.dumps(cfg_dict, indent=2, default=str))
+    log.info("설정 저장: %s", cfg_path)
+
+    # ── 데이터 로더 ───────────────────────────────────────────────────────
+    log.info("데이터 로더 구성 중...")
+    train_loader, val_loader = build_dataloaders(cfg)
+
+    # ── 모델 ──────────────────────────────────────────────────────────────
+    model = SATSLSTMStage(cfg).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    log.info("모델 파라미터: %d", n_params)
+
+    # ── 옵티마이저 / 스케줄러 ─────────────────────────────────────────────
+    optimizer = Adam(
+        model.parameters(),
+        lr=cfg.lr,
+        weight_decay=cfg.weight_decay,
+    )
+    scheduler = ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=cfg.lr_factor,
+        patience=cfg.lr_patience,
+    )
+
+    # ── 학습 이력 ─────────────────────────────────────────────────────────
+    history   = []
+    best_rmse = float("inf")
+    best_ckpt = run_dir / "best_model.pt"
+    last_ckpt = run_dir / "last_model.pt"
+
+    # ── 학습 루프 ──────────────────────────────────────────────────────────
+    log.info("학습 시작 (epochs=%d)", cfg.epochs)
+    for epoch in range(1, cfg.epochs + 1):
+        t0 = time.time()
+
+        train_metrics = train_epoch(model, train_loader, optimizer, device, cfg)
+        val_metrics   = val_epoch(model, val_loader, device)
+
+        lr_now = optimizer.param_groups[0]["lr"]
+        scheduler.step(val_metrics["mse"])
+
+        elapsed = time.time() - t0
+        row = {
+            "epoch":      epoch,
+            "train_loss": train_metrics["loss"],
+            "val_mse":    val_metrics["mse"],
+            "val_rmse":   val_metrics["rmse"],
+            "lr":         lr_now,
+            "elapsed_s":  elapsed,
+        }
+        history.append(row)
+
+        log.info(
+            "Epoch %3d/%d  train_loss=%.6f  val_rmse=%.6f  lr=%.2e  (%.1fs)",
+            epoch, cfg.epochs,
+            row["train_loss"], row["val_rmse"], lr_now, elapsed,
+        )
+
+        # best 체크포인트
+        if val_metrics["rmse"] < best_rmse:
+            best_rmse = val_metrics["rmse"]
+            save_checkpoint(best_ckpt, epoch, model, optimizer, scheduler, row)
+            log.info("  ★ best val_rmse=%.6f → %s", best_rmse, best_ckpt)
+
+        # 주기 체크포인트
+        if epoch % cfg.save_every == 0:
+            ckpt_path = run_dir / f"epoch_{epoch:04d}.pt"
+            save_checkpoint(ckpt_path, epoch, model, optimizer, scheduler, row)
+
+    # 마지막 체크포인트
+    save_checkpoint(last_ckpt, cfg.epochs, model, optimizer, scheduler, history[-1])
+
+    # 이력 저장
+    hist_path = run_dir / "history.json"
+    hist_path.write_text(json.dumps(history, indent=2))
+    log.info("학습 이력 저장: %s", hist_path)
+    log.info("완료. best val_rmse=%.6f", best_rmse)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="SATS LSTM 학습")
+    p.add_argument("--raw-dir",      default="raw_data",
+                   help="raw_data 루트 디렉터리")
+    p.add_argument("--gt-dir",       default="sats/preprocessing/gt_output_v1",
+                   help="GT npy 디렉터리")
+    p.add_argument("--out-dir",      default="sats/training/runs",
+                   help="결과 저장 디렉터리")
+    p.add_argument("--run-name",     default="lstm_v1")
+    p.add_argument("--epochs",       type=int,   default=50)
+    p.add_argument("--batch-size",   type=int,   default=64)
+    p.add_argument("--lr",           type=float, default=1e-3)
+    p.add_argument("--hidden-dim",   type=int,   default=64)
+    p.add_argument("--num-layers",   type=int,   default=2)
+    p.add_argument("--dropout",      type=float, default=0.1)
+    p.add_argument("--seq-len",      type=int,   default=400)
+    p.add_argument("--num-workers",  type=int,   default=4)
+    p.add_argument("--device",       default="cuda")
+    p.add_argument("--seed",         type=int,   default=42)
+    p.add_argument("--val-trials",   nargs="+",
+                   default=["ecomesh_d10_z1_test3", "ecomesh_d5_z1.5_test9"],
+                   help="검증에 사용할 trial_id 목록")
+    return p
+
+
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    args = _build_parser().parse_args()
+
+    cfg = SATSConfig(
+        raw_dir     = args.raw_dir,
+        gt_dir      = args.gt_dir,
+        out_dir     = args.out_dir,
+        run_name    = args.run_name,
+        epochs      = args.epochs,
+        batch_size  = args.batch_size,
+        lr          = args.lr,
+        hidden_dim  = args.hidden_dim,
+        num_layers  = args.num_layers,
+        dropout     = args.dropout,
+        seq_len     = args.seq_len,
+        num_workers = args.num_workers,
+        device      = args.device,
+        seed        = args.seed,
+        val_trials  = args.val_trials,
+    )
+
+    train(cfg)
+
+
+if __name__ == "__main__":
+    main()
