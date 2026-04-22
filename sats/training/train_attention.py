@@ -42,7 +42,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from .attention_module import SATSAttentionStage
 from .config import SATSConfig
 from .dataset import build_dataloaders
-from .train_lstm import find_peak_gt, set_seed, save_checkpoint, load_checkpoint
+from .train_lstm import find_peak_gt, set_seed, save_checkpoint, write_history, _progress
 
 log = logging.getLogger(__name__)
 
@@ -96,12 +96,14 @@ def train_epoch(
     optimizer,
     device: str,
     cfg: SATSConfig,
+    progress_desc: str | None = None,
 ) -> dict:
     model.train()
     total_loss = 0.0
     n_batches  = 0
 
-    for sensor_b, gt_b, lengths in loader:
+    progress_iter = _progress(loader, progress_desc)
+    for sensor_b, gt_b, lengths in progress_iter:
         sensor_b = sensor_b.to(device, non_blocking=True)
         gt_b     = gt_b.to(device, non_blocking=True)
         lengths  = lengths.to(device, non_blocking=True)
@@ -122,6 +124,8 @@ def train_epoch(
 
         total_loss += loss.item()
         n_batches  += 1
+        if progress_desc is not None:
+            progress_iter.set_postfix(loss=f"{total_loss / n_batches:.6f}")
 
     return {"loss": total_loss / max(n_batches, 1)}
 
@@ -131,12 +135,14 @@ def val_epoch(
     model: SATSAttentionStage,
     loader,
     device: str,
+    progress_desc: str | None = None,
 ) -> dict:
     model.eval()
     total_mse = 0.0
     n_batches = 0
 
-    for sensor_b, gt_b, lengths in loader:
+    progress_iter = _progress(loader, progress_desc)
+    for sensor_b, gt_b, lengths in progress_iter:
         sensor_b = sensor_b.to(device, non_blocking=True)
         gt_b     = gt_b.to(device, non_blocking=True)
         lengths  = lengths.to(device, non_blocking=True)
@@ -146,6 +152,9 @@ def val_epoch(
 
         total_mse += F.mse_loss(pred_map, target).item()
         n_batches += 1
+        if progress_desc is not None:
+            running_mse = total_mse / n_batches
+            progress_iter.set_postfix(mse=f"{running_mse:.6f}", rmse=f"{math.sqrt(running_mse):.6f}")
 
     mse  = total_mse / max(n_batches, 1)
     rmse = math.sqrt(mse)
@@ -198,13 +207,26 @@ def train(cfg: SATSConfig) -> None:
     best_rmse = float("inf")
     best_ckpt = run_dir / "best_model.pt"
     last_ckpt = run_dir / "last_model.pt"
+    hist_path = run_dir / "history.json"
 
     log.info("학습 시작 (epochs=%d)", cfg.epochs)
     for epoch in range(1, cfg.epochs + 1):
         t0 = time.time()
 
-        train_metrics = train_epoch(model, train_loader, optimizer, device, cfg)
-        val_metrics   = val_epoch(model, val_loader, device)
+        train_metrics = train_epoch(
+            model,
+            train_loader,
+            optimizer,
+            device,
+            cfg,
+            progress_desc=f"train {epoch}/{cfg.epochs}",
+        )
+        val_metrics = val_epoch(
+            model,
+            val_loader,
+            device,
+            progress_desc=f"val   {epoch}/{cfg.epochs}",
+        )
 
         lr_now = optimizer.param_groups[0]["lr"]
         scheduler.step(val_metrics["mse"])
@@ -219,6 +241,7 @@ def train(cfg: SATSConfig) -> None:
             "elapsed_s":  elapsed,
         }
         history.append(row)
+        write_history(hist_path, history)
 
         log.info(
             "Epoch %3d/%d  train_loss=%.6f  val_rmse=%.6f  lr=%.2e  (%.1fs)",
@@ -237,8 +260,6 @@ def train(cfg: SATSConfig) -> None:
 
     save_checkpoint(last_ckpt, cfg.epochs, model, optimizer, scheduler, history[-1])
 
-    hist_path = run_dir / "history.json"
-    hist_path.write_text(json.dumps(history, indent=2))
     log.info("학습 이력 저장: %s", hist_path)
     log.info("완료. best val_rmse=%.6f", best_rmse)
 

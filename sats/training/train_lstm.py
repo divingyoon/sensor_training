@@ -38,6 +38,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from tqdm.auto import tqdm
 
 from .config import SATSConfig
 from .dataset import build_dataloaders
@@ -94,6 +95,27 @@ def compute_rmse(pred: torch.Tensor, target: torch.Tensor) -> float:
     return math.sqrt(F.mse_loss(pred, target).item())
 
 
+def write_history(path: Path, history: list[dict]) -> None:
+    """Epoch 종료마다 history.json을 원자적으로 갱신한다."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(history, indent=2))
+    tmp_path.replace(path)
+
+
+def _loader_total(loader) -> int | None:
+    try:
+        return len(loader)
+    except TypeError:
+        return None
+
+
+def _progress(loader, desc: str | None):
+    if desc is None:
+        return loader
+    return tqdm(loader, total=_loader_total(loader), desc=desc, dynamic_ncols=True, leave=False)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 체크포인트
 # ─────────────────────────────────────────────────────────────────────────────
@@ -141,12 +163,14 @@ def train_epoch(
     optimizer,
     device: str,
     cfg: SATSConfig,
+    progress_desc: str | None = None,
 ) -> dict:
     model.train()
     total_loss = 0.0
     n_batches  = 0
 
-    for sensor_b, gt_b, lengths in loader:
+    progress_iter = _progress(loader, progress_desc)
+    for sensor_b, gt_b, lengths in progress_iter:
         sensor_b = sensor_b.to(device, non_blocking=True)    # [B, T, 16]
         gt_b     = gt_b.to(device, non_blocking=True)        # [B, T, 40, 40]
         lengths  = lengths.to(device, non_blocking=True)     # [B]
@@ -167,6 +191,8 @@ def train_epoch(
 
         total_loss += loss.item()
         n_batches  += 1
+        if progress_desc is not None:
+            progress_iter.set_postfix(loss=f"{total_loss / n_batches:.6f}")
 
     return {"loss": total_loss / max(n_batches, 1)}
 
@@ -176,12 +202,14 @@ def val_epoch(
     model: SATSLSTMStage,
     loader,
     device: str,
+    progress_desc: str | None = None,
 ) -> dict:
     model.eval()
     total_mse  = 0.0
     n_batches  = 0
 
-    for sensor_b, gt_b, lengths in loader:
+    progress_iter = _progress(loader, progress_desc)
+    for sensor_b, gt_b, lengths in progress_iter:
         sensor_b = sensor_b.to(device, non_blocking=True)
         gt_b     = gt_b.to(device, non_blocking=True)
         lengths  = lengths.to(device, non_blocking=True)
@@ -191,6 +219,9 @@ def val_epoch(
 
         total_mse += F.mse_loss(pred_map, target).item()
         n_batches += 1
+        if progress_desc is not None:
+            running_mse = total_mse / n_batches
+            progress_iter.set_postfix(mse=f"{running_mse:.6f}", rmse=f"{math.sqrt(running_mse):.6f}")
 
     mse  = total_mse / max(n_batches, 1)
     rmse = math.sqrt(mse)
@@ -243,14 +274,27 @@ def train(cfg: SATSConfig) -> None:
     best_rmse = float("inf")
     best_ckpt = run_dir / "best_model.pt"
     last_ckpt = run_dir / "last_model.pt"
+    hist_path = run_dir / "history.json"
 
     # ── 학습 루프 ──────────────────────────────────────────────────────────
     log.info("학습 시작 (epochs=%d)", cfg.epochs)
     for epoch in range(1, cfg.epochs + 1):
         t0 = time.time()
 
-        train_metrics = train_epoch(model, train_loader, optimizer, device, cfg)
-        val_metrics   = val_epoch(model, val_loader, device)
+        train_metrics = train_epoch(
+            model,
+            train_loader,
+            optimizer,
+            device,
+            cfg,
+            progress_desc=f"train {epoch}/{cfg.epochs}",
+        )
+        val_metrics = val_epoch(
+            model,
+            val_loader,
+            device,
+            progress_desc=f"val   {epoch}/{cfg.epochs}",
+        )
 
         lr_now = optimizer.param_groups[0]["lr"]
         scheduler.step(val_metrics["mse"])
@@ -265,6 +309,7 @@ def train(cfg: SATSConfig) -> None:
             "elapsed_s":  elapsed,
         }
         history.append(row)
+        write_history(hist_path, history)
 
         log.info(
             "Epoch %3d/%d  train_loss=%.6f  val_rmse=%.6f  lr=%.2e  (%.1fs)",
@@ -287,8 +332,6 @@ def train(cfg: SATSConfig) -> None:
     save_checkpoint(last_ckpt, cfg.epochs, model, optimizer, scheduler, history[-1])
 
     # 이력 저장
-    hist_path = run_dir / "history.json"
-    hist_path.write_text(json.dumps(history, indent=2))
     log.info("학습 이력 저장: %s", hist_path)
     log.info("완료. best val_rmse=%.6f", best_rmse)
 

@@ -16,6 +16,7 @@ pytorch/
 # Local env and artifacts
 skin/
 training/runs/
+sats/training/runs/
 **/__pycache__/
 *.pyc
 
