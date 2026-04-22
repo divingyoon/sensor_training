@@ -132,8 +132,17 @@ class SATSConfig:
     # ── Self-Attention 하이퍼파라미터 ─────────────────────────────────────────
     attn_dim: int      = 64      # GAT 선형 투영 차원 (W: hidden_dim → attn_dim)
 
+    # ── Local Map 하이퍼파라미터 ──────────────────────────────────────────────
+    local_map_size: int       = 15    # 각 센서의 local map 한 변 크기 (홀수 권장)
+    sensor_spacing_mm: float  = 6.5   # 센서 간 물리 간격 (mm)
+
+    # ── CNN 하이퍼파라미터 ────────────────────────────────────────────────────
+    cnn_hidden_channels: int = 16  # CNN Refiner 중간 채널 수 (논문 미명시 → 기본 16)
+
     # ── 체크포인트 연계 ───────────────────────────────────────────────────────
-    lstm_ckpt: str     = ""      # 사전학습된 LSTM 체크포인트 경로 (빈 문자열=미사용)
+    lstm_ckpt: str      = ""     # 사전학습된 LSTM 체크포인트 경로 (빈 문자열=미사용)
+    attn_ckpt: str      = ""     # 사전학습된 Self-Attention 체크포인트 경로
+    local_map_ckpt: str = ""     # 사전학습된 Local Map 체크포인트 경로
 
     # ── 학습 ──────────────────────────────────────────────────────────────────
     batch_size: int  = 64
