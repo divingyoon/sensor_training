@@ -11,14 +11,16 @@ h'_i    = ELU(Σ_{j∈N_i} α_{ij} · W·h_j)             (S6)
 
 센서 레이아웃 (4×4 grid, 6.5mm 간격)
 --------------------------------------
-인덱스 규칙: sensor i → row = i // 4,  col = i % 4
+인덱스 규칙: sensor i → row = i // 4,  col = 3 - (i % 4)
 
-  col→  0      1      2      3
-row 0:  S1     S2     S3     S4    (y=-9.75mm)
-row 1:  S5     S6     S7     S8    (y=-3.25mm)
-row 2:  S9    S10    S11    S12    (y=+3.25mm)
-row 3: S13    S14    S15    S16    (y=+9.75mm)
+  col→  0      1      2      3        (x 방향: -9.75 → +9.75)
+row 0:  S4     S3     S2     S1    (y=-9.75mm)
+row 1:  S8     S7     S6     S5    (y=-3.25mm)
+row 2: S12    S11    S10     S9    (y=+3.25mm)
+row 3: S16    S15    S14    S13    (y=+9.75mm)
 
+* S1~S4는 x 내림차순(S1=+9.75mm, S4=-9.75mm)이므로 col = 3-(i%4)
+* 인접 행렬은 상대 거리 기반이므로 col 방향 반전이 연결 구조에 영향 없음
 8-connected 인접 + self-loop: max(|dr|, |dc|) ≤ 1
   · 코너 센서: 4개 이웃
   · 엣지 센서: 6개 이웃

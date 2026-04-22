@@ -6,7 +6,7 @@ SATS는 sparse tactile sensor array의 16개 물리 센서 신호로부터 40x40
 
 1. `raw_data`의 실험 스트림을 trial별 `*_merged.csv`로 병합한다.
 2. 병합 CSV에서 baseline, on-grid row, 정규화 feature, Boussinesq GT 압력맵을 만든다.
-3. `sats.training` 모듈로 LSTM 인코더와 self-attention 단계를 학습한다.
+3. `sats.training` 모듈로 LSTM, self-attention, local map, CNN refining 단계를 순차 학습한다.
 
 ## 센서 및 데이터 전제
 
@@ -80,8 +80,12 @@ sats/
     ├── dataset.py
     ├── lstm_module.py
     ├── attention_module.py
+    ├── local_map_module.py
+    ├── cnn_module.py
     ├── train_lstm.py
     ├── train_attention.py
+    ├── train_local_map.py
+    ├── train_cnn.py
     ├── tests/
     └── runs/
 ```
@@ -326,7 +330,18 @@ python3 sats/preprocessing/label_preview.py \
 
 ## `sats/training`
 
-SATS 학습 모듈이다. 현재 구현은 LSTM stage와 self-attention stage를 제공한다. 논문 전체 구조의 local map module과 CNN module은 아직 별도 production training script로 연결되어 있지 않고, 두 stage 모두 임시 proxy decoder로 `40 x 40` peak GT map을 직접 예측한다.
+SATS 학습 모듈이다. 현재 구현은 논문 흐름에 맞춰 네 단계로 나뉜다.
+
+```text
+sensor_seq [B, T, 16]
+  ├── LSTM encoder
+  ├── Self-Attention
+  ├── Local Map Decoder
+  └── CNN Refiner
+      └── refined_map [B, 40, 40]
+```
+
+LSTM stage와 self-attention stage는 중간 단계 학습을 위해 proxy decoder로 `40 x 40` peak GT map을 직접 예측한다. Local map stage부터는 논문 구조에 가까운 방식으로 센서별 local pressure map을 만들고, CNN stage에서 병합된 pressure map을 2-layer CNN으로 정제한다.
 
 ### `config.py`
 
@@ -341,6 +356,8 @@ dataset_index_path = sats/preprocessing/gt_output_v1/dataset_index.json
 out_dir = sats/training/runs
 grid = 40 x 40, [-9.75, 9.75], step 0.5 mm
 seq_len = 400
+local_map_size = 15
+cnn_hidden_channels = 16
 val_trials = ecomesh_d10_z1_test3, ecomesh_d5_z1.5_test9
 device = cuda
 ```
@@ -393,6 +410,37 @@ local_feat [B, 16, hidden_dim]
 ```
 
 현재 attention stage는 LSTM encoder checkpoint를 로드하고 encoder를 freeze한 뒤, self-attention과 proxy decoder를 학습한다.
+
+### `local_map_module.py`
+
+LSTM feature와 self-attention feature를 센서별로 concat한 뒤, 공유 MLP 디코더로 센서별 local pressure map을 만든다. 16개 local map은 센서 물리 좌표에 맞춰 `40 x 40` 전체 맵에 배치되고 합산된다.
+
+```text
+local_feat [B, 16, hidden_dim]
+agg_feat   [B, 16, attn_dim]
+  └── combined_feat [B, 16, hidden_dim + attn_dim]
+      └── shared MLP g_phi
+          └── local_maps [B, 16, local_map_size, local_map_size]
+              └── placement + sum
+                  └── merged_map [B, 40, 40]
+```
+
+현재 기본 `local_map_size`는 `15`이다. 센서 중심은 6.5 mm 간격의 4x4 물리 배열을 `40 x 40` virtual grid index로 변환해 사용한다. 경계 센서의 local map이 전체 맵 범위를 벗어나는 부분은 clip하고, 실제 겹치는 영역만 합산한다.
+
+학습 시 `train_local_map.py`는 attention checkpoint에서 `encoder.*`, `attention.*` 가중치를 로드한 뒤 두 모듈을 freeze하고 `local_map_decoder`만 학습한다.
+
+### `cnn_module.py`
+
+Local Map Decoder가 만든 `merged_map`을 입력으로 받아 2-layer CNN으로 최종 pressure map을 정제한다.
+
+```text
+merged_map [B, 40, 40]
+  └── Conv2d(1 -> C, 3x3, padding=1) + LeakyReLU
+      └── Conv2d(C -> 1, 3x3, padding=1)
+          └── refined_map [B, 40, 40]
+```
+
+현재 기본 `cnn_hidden_channels`는 `16`이다. 학습 시 `train_cnn.py`는 local map checkpoint에서 `encoder.*`, `attention.*`, `local_map_decoder.*` 가중치를 로드한 뒤 세 모듈을 freeze하고 `cnn_refiner`만 학습한다.
 
 ## 학습 CLI
 
@@ -485,6 +533,89 @@ sats/training/runs/attn_v1/
 └── history.json
 ```
 
+### Local map stage 학습
+
+Self-attention stage의 `best_model.pt`를 encoder와 attention 초기값으로 사용한다.
+
+```bash
+python3 -m sats.training.train_local_map \
+  --attn-ckpt sats/training/runs/attn_v1/best_model.pt \
+  --raw-dir raw_data \
+  --gt-dir sats/preprocessing/gt_output_v1 \
+  --out-dir sats/training/runs \
+  --run-name local_map_v1 \
+  --epochs 50 \
+  --batch-size 64 \
+  --hidden-dim 64 \
+  --attn-dim 64 \
+  --local-map-size 15 \
+  --num-layers 2 \
+  --seq-len 400 \
+  --device cuda \
+  --val-trials ecomesh_d10_z1_test3 ecomesh_d5_z1.5_test9
+```
+
+추가 주요 옵션:
+
+| 옵션 | 기본값 | 설명 |
+| --- | --- | --- |
+| `--attn-ckpt` | `""` | 사전학습된 attention checkpoint. 지정하면 encoder와 attention weight를 로드하고 freeze. |
+| `--local-map-size` | `15` | 센서별 local map 한 변 크기. 중앙 정렬을 위해 홀수 권장. |
+| `--run-name` | `local_map_v1` | local map run 저장 이름. |
+
+출력:
+
+```text
+sats/training/runs/local_map_v1/
+├── config.json
+├── best_model.pt
+├── last_model.pt
+├── epoch_0010.pt
+└── history.json
+```
+
+### CNN refining stage 학습
+
+Local map stage의 `best_model.pt`를 encoder, attention, local map decoder 초기값으로 사용한다.
+
+```bash
+python3 -m sats.training.train_cnn \
+  --local-map-ckpt sats/training/runs/local_map_v1/best_model.pt \
+  --raw-dir raw_data \
+  --gt-dir sats/preprocessing/gt_output_v1 \
+  --out-dir sats/training/runs \
+  --run-name cnn_v1 \
+  --epochs 50 \
+  --batch-size 64 \
+  --hidden-dim 64 \
+  --attn-dim 64 \
+  --local-map-size 15 \
+  --cnn-hidden-channels 16 \
+  --num-layers 2 \
+  --seq-len 400 \
+  --device cuda \
+  --val-trials ecomesh_d10_z1_test3 ecomesh_d5_z1.5_test9
+```
+
+추가 주요 옵션:
+
+| 옵션 | 기본값 | 설명 |
+| --- | --- | --- |
+| `--local-map-ckpt` | `""` | 사전학습된 local map checkpoint. 지정하면 encoder, attention, local map decoder weight를 로드하고 freeze. |
+| `--cnn-hidden-channels` | `16` | CNN refiner의 중간 channel 수. |
+| `--run-name` | `cnn_v1` | CNN run 저장 이름. |
+
+출력:
+
+```text
+sats/training/runs/cnn_v1/
+├── config.json
+├── best_model.pt
+├── last_model.pt
+├── epoch_0010.pt
+└── history.json
+```
+
 ## 권장 실행 순서
 
 환경 준비:
@@ -543,7 +674,31 @@ python3 -m sats.training.train_attention \
   --device cuda
 ```
 
-5. smoke test:
+5. Local map stage 학습:
+
+```bash
+python3 -m sats.training.train_local_map \
+  --attn-ckpt sats/training/runs/attn_v1/best_model.pt \
+  --raw-dir raw_data \
+  --gt-dir sats/preprocessing/gt_output_v1 \
+  --run-name local_map_v1 \
+  --epochs 50 \
+  --device cuda
+```
+
+6. CNN refining stage 학습:
+
+```bash
+python3 -m sats.training.train_cnn \
+  --local-map-ckpt sats/training/runs/local_map_v1/best_model.pt \
+  --raw-dir raw_data \
+  --gt-dir sats/preprocessing/gt_output_v1 \
+  --run-name cnn_v1 \
+  --epochs 50 \
+  --device cuda
+```
+
+7. smoke test:
 
 ```bash
 python3 -m pytest sats/training/tests

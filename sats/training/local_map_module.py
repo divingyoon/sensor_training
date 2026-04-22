@@ -66,7 +66,7 @@ def build_sensor_grid_positions(
     positions = torch.zeros(n_sensors, 2, dtype=torch.long)
     for i in range(n_sensors):
         row_phys = i // 4
-        col_phys = i % 4
+        col_phys = 3 - (i % 4)   # S1(i=0) → col 3 → x=+9.75mm (S1~S4가 x 내림차순)
         y_mm = grid_min_mm + row_phys * sensor_spacing_mm
         x_mm = grid_min_mm + col_phys * sensor_spacing_mm
         grid_r = round((y_mm - grid_min_mm) / grid_step_mm)
