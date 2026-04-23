@@ -212,6 +212,8 @@ def compute_unit_kernel(
     따라서 prefactor = 3·z_s³·step² / (2π²·a²)
     그리고  Σᵢ 1/Rᵢ^5 를 numpy 브로드캐스팅으로 계산.
 
+    결과 맵 오리엔테이션: (row=y, col=x) 로 반환하여 모델/시각화와 호환.
+
     Parameters
     ----------
     cx, cy      : 인덴터 중심 위치 [mm]
@@ -224,7 +226,7 @@ def compute_unit_kernel(
 
     Returns
     -------
-    kernel : (G, G) float32
+    kernel : (G, G) float32  -> [y_idx, x_idx]
     """
     patch_xy = patch_tpl + np.array([cx, cy])  # (M, 2)  실제 패치 좌표
     M        = len(patch_xy)
@@ -243,9 +245,10 @@ def compute_unit_kernel(
         py = patch_xy[s:e, 1]  # (C,)
 
         # 브로드캐스팅: (G, 1, C) + (1, G, C) → (G, G, C)
+        # axis 0: y, axis 1: x 로 설정
         r_sq = (
-            (grid_x[:, None, None] - px[None, None, :]) ** 2
-          + (grid_y[None, :, None] - py[None, None, :]) ** 2
+            (grid_y[:, None, None] - py[None, None, :]) ** 2
+          + (grid_x[None, :, None] - px[None, None, :]) ** 2
           + z_sq
         )
         inv_r5_sum += np.sum(r_sq ** (-2.5), axis=2)
@@ -263,14 +266,7 @@ def compute_base_kernel(
 ) -> np.ndarray:
     """
     79×79 base kernel K₀(du, dv) 계산 (원점 기준, 직경당 1회).
-
-    K₀ 는 원점 (cx=0, cy=0) 에서의 단위 커널을 extended grid 위에서 계산한 것.
-    임의 위치 (cx, cy) 의 kernel = K₀(u-cx, v-cy) 이므로
-    base kernel 슬라이싱만으로 모든 위치의 kernel 을 구할 수 있다.
-
-    Returns
-    -------
-    base_kernel : (79, 79) float32
+    반환: [dv_idx, du_idx] (y-offset, x-offset)
     """
     ext_grid  = make_extended_grid()
     patch_tpl = make_patch_template(radius, patch_step)
@@ -284,22 +280,19 @@ def build_all_kernels(base_kernel: np.ndarray) -> np.ndarray:
     """
     (79, 79) base kernel → (40, 40, 40, 40) lookup table.
 
-    all_kernels[i_cx, j_cy, :, :] = kernel for contact at grid index (i_cx, j_cy)
-
-    슬라이싱 공식:
-        all_kernels[i, j] = base_kernel[EXT_HALF-i : EXT_HALF-i+40,
-                                        EXT_HALF-j : EXT_HALF-j+40]
-    i.e., base_kernel[39-i:79-i, 39-j:79-j]
-
-    메모리: 40^4 × 4 bytes = 10.24 MB
+    all_kernels[j_cy, i_cx, :, :] = kernel for contact at grid index (i_cx, j_cy)
+    주의: 인덱스 순서를 [y_idx, x_idx] 로 관리하여 process_trial과 맞춤.
     """
     G    = GRID_SIZE
     H    = EXT_HALF  # 39
     all_k = np.empty((G, G, G, G), dtype=np.float32)
-    for i in range(G):
-        for j in range(G):
-            all_k[i, j] = base_kernel[H - i : H - i + G, H - j : H - j + G]
+    for j in range(G):
+        for i in range(G):
+            # base_kernel is [dv, du].
+            # contact at (i, j) means du = u - grid_x[i], dv = v - grid_y[j]
+            all_k[j, i] = base_kernel[H - j : H - j + G, H - i : H - i + G]
     return all_k
+
 
 
 # ── 경로 파싱 & 파일 탐색 ──────────────────────────────────────────────────────
@@ -529,7 +522,8 @@ def process_trial(
             all_kernels = kernel_cache[kkey]["all_kernels"]
 
             sub = (zkeys == z_key)
-            kernels = all_kernels[ics[sub], jcs[sub]]  # (Kz,40,40)
+            # jcs=y_idx, ics=x_idx. all_kernels is [y_idx, x_idx]
+            kernels = all_kernels[jcs[sub], ics[sub]]  # (Kz,40,40)
             scale = (fzs[sub] * betas[sub])[:, None, None]
             targets_sub = kernels * scale
             targets[s + local_idx[sub]] = targets_sub
@@ -641,8 +635,8 @@ def parse_args() -> argparse.Namespace:
         "--fz-mode",
         type=str,
         choices=["positive_only", "abs", "signed"],
-        default="positive_only",
-        help="Fz를 GT 하중으로 변환하는 방식",
+        default="abs",
+        help="Fz를 GT 하중으로 변환하는 방식 (대부분의 센서 데이터에서 abs 가 적절함)",
     )
     parser.add_argument(
         "--fz-min-abs",

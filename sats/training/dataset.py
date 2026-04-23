@@ -181,9 +181,9 @@ def _load_trial(
 
     df_grid = df[mask].reset_index(drop=True)
 
-    # ── 5. s_norm 계산: (s_i - baseline_i) / baseline_i ─────────────────
+    # ── 5. s_norm 계산 및 100배 스케일 업 ───────────────────────────────
     s_raw  = df_grid[_SENSOR_COLS].to_numpy(dtype=np.float64)   # [N, 16]
-    s_norm = ((s_raw - baseline) / baseline).astype(np.float32)  # [N, 16]
+    s_norm = (((s_raw - baseline) / baseline) * 100.0).astype(np.float32)  # [N, 16]
 
     # ── 6. 그리드 좌표로 스냅 → (x,y) 별 그룹화 ─────────────────────────
     xg, yg = _snap_coords(
@@ -293,8 +293,8 @@ class SATSSequenceDataset(Dataset):
         row_indices = item["row_indices"]              # [T] int64
         sensor_seq  = item["sensor_seq"]               # [T, 16] float32 (pre-loaded)
 
-        # GT: mmap에서 해당 행만 읽어 복사 (mmap은 read-only이므로 copy 필요)
-        gt_seq = self._gt_mmaps[trial_id][row_indices].copy()   # [T, 40, 40]
+        # GT: mmap에서 해당 행만 읽어 복사 후 100배 스케일 업
+        gt_seq = (self._gt_mmaps[trial_id][row_indices].copy() * 100.0)   # [T, 40, 40]
 
         return (
             torch.from_numpy(sensor_seq),           # [T, 16]
