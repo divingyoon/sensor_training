@@ -41,7 +41,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from .config import SATSConfig
 from .dataset import build_dataloaders
 from .cnn_module import SATSCNNStage
-from .train_lstm import find_peak_gt, set_seed, save_checkpoint
+from .train_lstm import find_peak_gt, set_seed, save_checkpoint, weighted_mse_loss
 
 log = logging.getLogger(__name__)
 
@@ -133,7 +133,7 @@ def train_epoch(
         target = find_peak_gt(gt_b, lengths).detach()       # [B, 40, 40]
 
         refined_map, _ = model(sensor_b, lengths)            # [B, 40, 40]
-        loss = F.mse_loss(refined_map, target)
+        loss = weighted_mse_loss(refined_map, target)
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()

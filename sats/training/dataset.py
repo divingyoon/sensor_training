@@ -151,6 +151,7 @@ def _load_trial(
     # ── 2. merged CSV 로드 (필요 컬럼만) ─────────────────────────────────
     usecols = _SENSOR_COLS + ["x_mm", "y_mm", "Fz"]
     df = pd.read_csv(merged_csv, usecols=usecols, dtype=np.float64)
+    fz_all = df["Fz"].to_numpy()
 
     x_arr = df["x_mm"].to_numpy()
     y_arr = df["y_mm"].to_numpy()
@@ -199,9 +200,13 @@ def _load_trial(
         key = (round(float(xg[i]), 4), round(float(yg[i]), 4))
         groups[key].append(i)
 
+    # ── 6b. on-grid 행의 Fz 추출 ──────────────────────────────────────────
+    fz_grid = fz_all[mask]  # [n_grid]
+
     # ── 7. 시퀀스 생성 ─────────────────────────────────────────────────────
     sequences = []
     skipped_short = 0
+    skipped_no_contact = 0
     for (x, y), idxs in groups.items():
         T = len(idxs)
         if T < cfg.min_seq_len:
@@ -212,17 +217,24 @@ def _load_trial(
             idxs = idxs[: cfg.seq_len]
             T = cfg.seq_len
         row_idx = np.array(idxs, dtype=np.int64)
+
+        # Fz > 0인 timestep이 하나도 없으면 순수 비접촉 → 학습 제외
+        if fz_grid[row_idx].max() <= 0.0:
+            skipped_no_contact += 1
+            continue
+
         sequences.append({
             "trial_id":    trial_id,
             "x_mm":        x,
             "y_mm":        y,
-            "sensor_seq":  s_norm[row_idx],    # [T, 16] float32 - pre-loaded
-            "row_indices": row_idx,             # [T] int64 - for GT lookup
+            "sensor_seq":  s_norm[row_idx],             # [T, 16] float32 - pre-loaded
+            "row_indices": row_idx,                     # [T] int64 - for GT lookup
+            "fz_seq":      fz_grid[row_idx].astype(np.float32),  # [T] float32 - Fz 마스킹용
         })
 
     log.info(
-        "[%s] 시퀀스: %d개 (건너뜀=%d)",
-        trial_id, len(sequences), skipped_short,
+        "[%s] 시퀀스: %d개 (짧음=%d, 비접촉=%d)",
+        trial_id, len(sequences), skipped_short, skipped_no_contact,
     )
     return sequences, gt_mmap
 
@@ -292,9 +304,13 @@ class SATSSequenceDataset(Dataset):
         trial_id    = item["trial_id"]
         row_indices = item["row_indices"]              # [T] int64
         sensor_seq  = item["sensor_seq"]               # [T, 16] float32 (pre-loaded)
+        fz_seq      = item["fz_seq"]                   # [T] float32
 
         # GT: mmap에서 해당 행만 읽어 복사 후 100배 스케일 업
         gt_seq = (self._gt_mmaps[trial_id][row_indices].copy() * 100.0)   # [T, 40, 40]
+
+        # abs 모드 보정: Fz <= 0인 timestep은 비접촉 → GT를 zero로 강제
+        gt_seq[fz_seq <= 0.0] = 0.0
 
         return (
             torch.from_numpy(sensor_seq),           # [T, 16]

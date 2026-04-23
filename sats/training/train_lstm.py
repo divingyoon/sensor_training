@@ -95,6 +95,22 @@ def compute_rmse(pred: torch.Tensor, target: torch.Tensor) -> float:
     return math.sqrt(F.mse_loss(pred, target).item())
 
 
+def weighted_mse_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    alpha: float = 10.0,
+    threshold: float = 1e-4,
+) -> torch.Tensor:
+    """
+    접촉 영역에 가중치를 부여한 MSE loss.
+
+    target > threshold인 픽셀에 (1 + alpha) 배 가중치를 적용한다.
+    Fz < 0 구간의 노이지한 GT와 비접촉 zero-GT 픽셀의 영향을 줄이기 위함.
+    """
+    weight = 1.0 + alpha * (target > threshold).float()
+    return (weight * (pred - target) ** 2).mean()
+
+
 def write_history(path: Path, history: list[dict]) -> None:
     """Epoch 종료마다 history.json을 원자적으로 갱신한다."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -180,7 +196,7 @@ def train_epoch(
 
         # 순전파
         pred_map, _ = model(sensor_b, lengths)               # [B, 40, 40]
-        loss = F.mse_loss(pred_map, target)
+        loss = weighted_mse_loss(pred_map, target)
 
         # 역전파
         optimizer.zero_grad(set_to_none=True)
