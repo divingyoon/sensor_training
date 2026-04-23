@@ -60,34 +60,34 @@ class TestBuildSensorGridPositions:
         assert pos.dtype == torch.long
 
     def test_sensor0_top_left(self):
-        """S1(idx=0): row=0, col=0 → grid (0, 0)."""
+        """S1(idx=0): x=+9.75, y=-9.75 → grid (0, 39)."""
         pos = self._pos()
-        assert pos[0, 0].item() == 0   # grid_row
-        assert pos[0, 1].item() == 0   # grid_col
+        assert pos[0, 0].item() == 0   # grid_row (y)
+        assert pos[0, 1].item() == 39  # grid_col (x)
 
     def test_sensor5_interior(self):
-        """S6(idx=5): row=1, col=1 → grid (13, 13). sensor_spacing=6.5, step=0.5 → 6.5/0.5=13."""
+        """S6(idx=5): row=1, col=2 (phys) → grid (13, 26)."""
         pos = self._pos()
         assert pos[5, 0].item() == 13
-        assert pos[5, 1].item() == 13
+        assert pos[5, 1].item() == 26
 
     def test_sensor15_bottom_right(self):
-        """S16(idx=15): row=3, col=3 → grid (39, 39)."""
+        """S16(idx=15): x=-9.75, y=+9.75 → grid (39, 0)."""
         pos = self._pos()
         assert pos[15, 0].item() == 39
-        assert pos[15, 1].item() == 39
+        assert pos[15, 1].item() == 0
 
     def test_sensor3_top_right(self):
-        """S4(idx=3): row=0, col=3 → grid (0, 39)."""
+        """S4(idx=3): x=-9.75, y=-9.75 → grid (0, 0)."""
         pos = self._pos()
         assert pos[3, 0].item() == 0
-        assert pos[3, 1].item() == 39
+        assert pos[3, 1].item() == 0
 
     def test_sensor12_bottom_left(self):
-        """S13(idx=12): row=3, col=0 → grid (39, 0)."""
+        """S13(idx=12): x=+9.75, y=+9.75 → grid (39, 39)."""
         pos = self._pos()
         assert pos[12, 0].item() == 39
-        assert pos[12, 1].item() == 0
+        assert pos[12, 1].item() == 39
 
     def test_all_values_in_range(self):
         """모든 grid 인덱스가 [0, 39] 범위."""
@@ -155,39 +155,39 @@ class TestBuildPlacementSlices:
 
     def test_corner_sensor0_clipped(self):
         """
-        S1(idx=0): center=(0,0), half=7
-        → local_map [0:8, 0:8] (src) → dst [0:8, 0:8]
+        S1(idx=0): center=(0,39), half=7
+        → local_map row [7:15], col [0:8] (src) → dst row [0:8], col [32:40]
         """
         slices = self._slices()
         src_r, src_c, dst_r, dst_c = slices[0]
         assert src_r == (7, 15), f"S1 src_r 오류: {src_r}"
-        assert src_c == (7, 15), f"S1 src_c 오류: {src_c}"
+        assert src_c == (0, 8),  f"S1 src_c 오류: {src_c}"
         assert dst_r == (0, 8),  f"S1 dst_r 오류: {dst_r}"
-        assert dst_c == (0, 8),  f"S1 dst_c 오류: {dst_c}"
+        assert dst_c == (32, 40), f"S1 dst_c 오류: {dst_c}"
 
     def test_interior_sensor5_no_clip(self):
         """
-        S6(idx=5): center=(13,13), half=7
-        → local_map 전체 [0:15, 0:15] (src) → dst [6:21, 6:21]
+        S6(idx=5): center=(13,26), half=7
+        → local_map 전체 [0:15, 0:15] (src) → dst row [6:21], col [19:34]
         """
         slices = self._slices()
         src_r, src_c, dst_r, dst_c = slices[5]
         assert src_r == (0, 15), f"S6 src_r 오류: {src_r}"
         assert src_c == (0, 15), f"S6 src_c 오류: {src_c}"
         assert dst_r == (6, 21), f"S6 dst_r 오류: {dst_r}"
-        assert dst_c == (6, 21), f"S6 dst_c 오류: {dst_c}"
+        assert dst_c == (19, 34), f"S6 dst_c 오류: {dst_c}"
 
     def test_corner_sensor15_clipped(self):
         """
-        S16(idx=15): center=(39,39), half=7
-        → local_map [0:8, 0:8] (src) → dst [32:40, 32:40]
+        S16(idx=15): center=(39,0), half=7
+        → local_map row [0:8], col [7:15] (src) → dst row [32:40], col [0:8]
         """
         slices = self._slices()
         src_r, src_c, dst_r, dst_c = slices[15]
         assert src_r == (0, 8),   f"S16 src_r 오류: {src_r}"
-        assert src_c == (0, 8),   f"S16 src_c 오류: {src_c}"
+        assert src_c == (7, 15),  f"S16 src_c 오류: {src_c}"
         assert dst_r == (32, 40), f"S16 dst_r 오류: {dst_r}"
-        assert dst_c == (32, 40), f"S16 dst_c 오류: {dst_c}"
+        assert dst_c == (0, 8),   f"S16 dst_c 오류: {dst_c}"
 
     def test_size_positive(self):
         """모든 슬라이스 크기가 양수 (0 크기 슬라이스 없음)."""
@@ -281,27 +281,24 @@ class TestSATSLocalMapDecoder:
 
     def test_single_sensor_activation(self):
         """
-        센서 0만 non-zero일 때 S1(top-left, grid=(0,0))의 local map 영역에만 영향이 있어야 한다.
-        S1: dst_r=(0,8), dst_c=(0,8)
-        → 전체 맵의 [0:8, 0:8] 영역만 non-zero
-        (나머지 센서는 0 입력 → MLP bias로 인해 non-zero가 될 수 있으므로
-         '다른 센서 영역보다 S1 영역의 값이 더 큰지'로 완화 검증)
+        센서 3(S4, top-left, grid=(0,0)) 활성화 시 해당 영역이 더 활성화되는지 검증.
+        S4: dst_r=(0,8), dst_c=(0,8)
         """
         dec = self._make_decoder(combined_dim=32)
         dec.eval()
         # 모든 입력을 0으로 시작
         x = torch.zeros(1, 16, 32)
-        # 센서 0만 non-zero
-        x[0, 0] = torch.randn(32)
+        # 센서 3 (S4) 활성화
+        x[0, 3] = torch.randn(32).abs() + 1.0 
         with torch.no_grad():
             out = dec(x)  # [1, 40, 40]
-        # S1 영역과 비S1 영역을 구분 (dst: (0,8),(0,8))
-        s1_region = out[0, 0:8, 0:8].abs().mean()
-        # 맵의 나머지 중 S1과 겹치지 않는 영역
-        other_region = out[0, 20:40, 20:40].abs().mean()
-        # S1 영역이 더 활성화되어야 함 (bias가 있어서 완전 0은 아닐 수 있음)
-        assert s1_region >= other_region, (
-            f"S1 영역({s1_region:.4f})이 비S1 영역({other_region:.4f})보다 작음"
+        # S4 영역: (0,0) 근처 (dst: (0,8),(0,8))
+        s4_region = out[0, 0:8, 0:8].abs().mean()
+        # 반대편 영역: (32,32) 근처
+        other_region = out[0, 32:40, 32:40].abs().mean()
+        # S4 영역이 더 활성화되어야 함
+        assert s4_region >= other_region, (
+            f"S4 영역({s4_region:.4f})이 반대 영역({other_region:.4f})보다 작음"
         )
 
 

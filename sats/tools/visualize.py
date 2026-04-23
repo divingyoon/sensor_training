@@ -189,6 +189,14 @@ def main() -> None:
     print("Val 데이터 로더 구성 중...")
     _, val_loader = build_dataloaders(cfg)
 
+    # 시각화 시 다양한 위치를 보기 위해 shuffle=True 적용
+    val_loader = torch.utils.data.DataLoader(
+        val_loader.dataset,
+        batch_size=cfg.batch_size,
+        shuffle=True,  # 랜덤하게 섞음
+        collate_fn=val_loader.collate_fn
+    )
+
     count = 0
     rmse_list = []
 

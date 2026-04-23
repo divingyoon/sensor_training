@@ -272,7 +272,7 @@ python3 -m sats.preprocessing.generate_gt \
 ```bash
 python3 -m sats.preprocessing.generate_gt \
   --raw-dir raw_data \
-  --out-dir sats/preprocessing/gt_output_v2 \
+  --out-dir sats/preprocessing/gt_output_v1 \
   --z-s 2.0 \
   --patch-step 0.1 \
   --fz-mode abs \
