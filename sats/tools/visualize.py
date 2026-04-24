@@ -40,7 +40,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from sats.training.config import SATSConfig
-from sats.training.dataset import build_dataloaders
+from sats.training.dataset import build_dataloaders, sats_collate_fn
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -193,8 +193,8 @@ def main() -> None:
     val_loader = torch.utils.data.DataLoader(
         val_loader.dataset,
         batch_size=cfg.batch_size,
-        shuffle=True,  # 랜덤하게 섞음
-        collate_fn=val_loader.collate_fn
+        shuffle=True,
+        collate_fn=sats_collate_fn,
     )
 
     count = 0

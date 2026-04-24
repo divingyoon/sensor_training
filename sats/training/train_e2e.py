@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
 """
-sats/training/train_cnn.py
+sats/training/train_e2e.py
 
-SATS CNN Refining 단계 학습 스크립트.
+SATS End-to-End 학습 스크립트.
 
 학습 전략
 ----------
-1. SATSLocalMapStage 체크포인트에서 encoder + attention + local_map_decoder 가중치를 로드한다.
-2. 세 모듈을 동결(freeze)하고, CNN Refiner만 학습한다.
-3. 타겟: find_peak_gt (train_lstm.py와 동일 로직)
-4. 손실: MSELoss(refined_map, peak_gt)
+LSTM 인코더 → Self-Attention → Local Map Decoder → CNN Refiner 전체를
+처음부터(또는 staged 체크포인트 초기화 후) 함께 학습한다.
 
-실행
-----
-python3 -m sats.training.train_cnn \\
-    --local-map-ckpt sats/training/runs/local_map_v1/best_model.pt \\
-    --run-name       cnn_v1
+staged 방식(4단계 순차 frozen 학습)과 ablation 비교용으로 설계됐다.
 
-python3 -m sats.training.train_cnn \\
-    --local-map-ckpt sats/training/runs/local_map_v1/best_model.pt \\
-    --run-name       cnn_v1 --epochs 50 --cnn-hidden-channels 16
+실행 예시
+----------
+# 완전 처음부터 E2E 학습
+python3 -m sats.training.train_e2e \\
+    --run-name e2e_v1 \\
+    --epochs 100
+
+# staged 체크포인트로 초기화 후 fine-tuning
+python3 -m sats.training.train_e2e \\
+    --init-ckpt sats/training/runs/04.24-sats-test2/cnn_v2/best_model.pt \\
+    --run-name e2e_finetune_v1 \\
+    --epochs 50 --lr 1e-4
+
+# d10 제외 + d5 전용 val trial
+python3 -m sats.training.train_e2e \\
+    --run-name e2e_d5only_v1 \\
+    --exclude-diameters 10 \\
+    --val-trials ecomesh_d5_z1.5_test9 \\
+    --epochs 100
 """
 
 from __future__ import annotations
@@ -41,73 +51,27 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from .config import SATSConfig
 from .dataset import build_dataloaders
 from .cnn_module import SATSCNNStage
-from .train_lstm import find_peak_gt, get_target, set_seed, save_checkpoint, weighted_mse_loss
+from .train_lstm import find_peak_gt, get_target, set_seed, save_checkpoint, write_history
 
 log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Local Map 가중치 로드 (encoder + attention + local_map_decoder)
+# staged 체크포인트에서 전체 가중치 초기화 (선택적)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_local_map_weights(
-    ckpt_path: Union[str, Path],
-    stage: SATSCNNStage,
-    freeze: bool = True,
-) -> None:
+def init_from_staged_ckpt(ckpt_path: Union[str, Path], model: SATSCNNStage) -> None:
     """
-    SATSLocalMapStage 체크포인트에서 encoder + attention + local_map_decoder
-    가중치를 로드한다.
+    SATSCNNStage 형식의 체크포인트로 전체 모델을 초기화한다.
 
-    SATSLocalMapStage의 state_dict 키 구조:
-      encoder.*           → stage.encoder
-      attention.*         → stage.attention
-      local_map_decoder.* → stage.local_map_decoder
+    staged train_cnn.py의 best_model.pt와 동일한 키 구조를 사용하므로
+    그대로 load_state_dict 가능.
 
-    Parameters
-    ----------
-    ckpt_path : 체크포인트 파일 경로 (SATSLocalMapStage로 저장된 것)
-    stage     : 가중치를 주입할 SATSCNNStage
-    freeze    : True이면 encoder + attention + local_map_decoder 파라미터를 동결
+    모든 파라미터는 requires_grad=True 상태를 유지한다 (E2E 학습).
     """
     ckpt = torch.load(ckpt_path, map_location="cpu")
-    full_sd = ckpt["model"]
-
-    # encoder.* 추출
-    encoder_sd = {
-        k[len("encoder."):]: v
-        for k, v in full_sd.items()
-        if k.startswith("encoder.")
-    }
-    stage.encoder.load_state_dict(encoder_sd, strict=True)
-    log.info("LSTM 인코더 가중치 로드 완료: %s", ckpt_path)
-
-    # attention.* 추출
-    attention_sd = {
-        k[len("attention."):]: v
-        for k, v in full_sd.items()
-        if k.startswith("attention.")
-    }
-    stage.attention.load_state_dict(attention_sd, strict=True)
-    log.info("Self-Attention 가중치 로드 완료: %s", ckpt_path)
-
-    # local_map_decoder.* 추출
-    lmd_sd = {
-        k[len("local_map_decoder."):]: v
-        for k, v in full_sd.items()
-        if k.startswith("local_map_decoder.")
-    }
-    stage.local_map_decoder.load_state_dict(lmd_sd, strict=True)
-    log.info("Local Map Decoder 가중치 로드 완료: %s", ckpt_path)
-
-    if freeze:
-        for p in stage.encoder.parameters():
-            p.requires_grad_(False)
-        for p in stage.attention.parameters():
-            p.requires_grad_(False)
-        for p in stage.local_map_decoder.parameters():
-            p.requires_grad_(False)
-        log.info("인코더 + Attention + Local Map Decoder 동결 완료 (requires_grad=False)")
+    model.load_state_dict(ckpt["model"], strict=True)
+    log.info("staged 체크포인트로 초기화 완료: %s", ckpt_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -130,7 +94,7 @@ def train_epoch(
         gt_b     = gt_b.to(device, non_blocking=True)
         lengths  = lengths.to(device, non_blocking=True)
 
-        target = get_target(gt_b, lengths).detach()         # [B, 40, 40]
+        target = get_target(gt_b, lengths).detach()          # [B, 40, 40]
 
         refined_map, _ = model(sensor_b, lengths)            # [B, 40, 40]
         loss = F.mse_loss(refined_map, target)
@@ -138,10 +102,7 @@ def train_epoch(
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         if cfg.clip_grad:
-            nn.utils.clip_grad_norm_(
-                [p for p in model.parameters() if p.requires_grad],
-                cfg.clip_grad,
-            )
+            nn.utils.clip_grad_norm_(model.parameters(), cfg.clip_grad)
         optimizer.step()
 
         total_loss += loss.item()
@@ -180,7 +141,7 @@ def val_epoch(
 # 메인 학습 루프
 # ─────────────────────────────────────────────────────────────────────────────
 
-def train(cfg: SATSConfig) -> None:
+def train(cfg: SATSConfig, init_ckpt: str = "") -> None:
     set_seed(cfg.seed)
     device = cfg.effective_device()
     log.info("device: %s", device)
@@ -188,32 +149,23 @@ def train(cfg: SATSConfig) -> None:
     run_dir = cfg.run_dir()
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    # config 저장
-    cfg_path = run_dir / "config.json"
     cfg_dict = {k: v for k, v in vars(cfg).items() if not k.startswith("_")}
-    cfg_path.write_text(json.dumps(cfg_dict, indent=2, default=str))
-    log.info("설정 저장: %s", cfg_path)
+    (run_dir / "config.json").write_text(json.dumps(cfg_dict, indent=2, default=str))
 
-    # 데이터 로더
     log.info("데이터 로더 구성 중...")
     train_loader, val_loader = build_dataloaders(cfg)
 
-    # 모델 생성
     model = SATSCNNStage(cfg).to(device)
 
-    # Local Map 가중치 로드 + 동결
-    if cfg.local_map_ckpt:
-        load_local_map_weights(cfg.local_map_ckpt, model, freeze=True)
+    if init_ckpt:
+        init_from_staged_ckpt(init_ckpt, model)
     else:
-        log.warning("local_map_ckpt 미지정 — encoder + attention + local_map_decoder를 무작위 초기화로 학습합니다.")
+        log.info("무작위 초기화로 E2E 학습 시작")
 
-    n_total     = sum(p.numel() for p in model.parameters())
-    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    log.info("전체 파라미터: %d  학습 가능: %d", n_total, n_trainable)
+    n_total = sum(p.numel() for p in model.parameters())
+    log.info("전체 파라미터(모두 학습 가능): %d", n_total)
 
-    # 옵티마이저 (학습 가능한 파라미터만 — cnn_refiner)
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = Adam(trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay)
+    optimizer = Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     scheduler = (
         ReduceLROnPlateau(
             optimizer, mode="min", factor=cfg.lr_factor, patience=cfg.lr_patience,
@@ -227,6 +179,7 @@ def train(cfg: SATSConfig) -> None:
     best_rmse = float("inf")
     best_ckpt = run_dir / "best_model.pt"
     last_ckpt = run_dir / "last_model.pt"
+    hist_path = run_dir / "history.json"
 
     log.info("학습 시작 (epochs=%d)", cfg.epochs)
     for epoch in range(1, cfg.epochs + 1):
@@ -249,6 +202,7 @@ def train(cfg: SATSConfig) -> None:
             "elapsed_s":  elapsed,
         }
         history.append(row)
+        write_history(hist_path, history)
 
         log.info(
             "Epoch %3d/%d  train_loss=%.6f  val_rmse=%.6f  lr=%.2e  (%.1fs)",
@@ -262,14 +216,12 @@ def train(cfg: SATSConfig) -> None:
             log.info("  ★ best val_rmse=%.6f → %s", best_rmse, best_ckpt)
 
         if epoch % cfg.save_every == 0:
-            ckpt_path = run_dir / f"epoch_{epoch:04d}.pt"
-            save_checkpoint(ckpt_path, epoch, model, optimizer, scheduler, row)
+            save_checkpoint(
+                run_dir / f"epoch_{epoch:04d}.pt",
+                epoch, model, optimizer, scheduler, row,
+            )
 
     save_checkpoint(last_ckpt, cfg.epochs, model, optimizer, scheduler, history[-1])
-
-    hist_path = run_dir / "history.json"
-    hist_path.write_text(json.dumps(history, indent=2))
-    log.info("학습 이력 저장: %s", hist_path)
     log.info("완료. best val_rmse=%.6f", best_rmse)
 
 
@@ -278,14 +230,17 @@ def train(cfg: SATSConfig) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="SATS CNN Refining 학습")
-    p.add_argument("--local-map-ckpt",      default="",
-                   help="사전학습된 Local Map 체크포인트 경로 (SATSLocalMapStage)")
+    p = argparse.ArgumentParser(
+        description="SATS End-to-End 학습 (전체 파이프라인 동시 학습)",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("--init-ckpt",           default="",
+                   help="staged 체크포인트로 초기화 (SATSCNNStage 형식). 비우면 무작위 초기화.")
     p.add_argument("--raw-dir",             default="raw_data")
     p.add_argument("--gt-dir",              default="sats/preprocessing/gt_output_v1")
     p.add_argument("--out-dir",             default="sats/training/runs")
-    p.add_argument("--run-name",            default="cnn_v1")
-    p.add_argument("--epochs",              type=int,   default=50)
+    p.add_argument("--run-name",            default="e2e_v1")
+    p.add_argument("--epochs",              type=int,   default=100)
     p.add_argument("--batch-size",          type=int,   default=64)
     p.add_argument("--lr",                  type=float, default=1e-3)
     p.add_argument("--hidden-dim",          type=int,   default=64)
@@ -317,9 +272,9 @@ def main() -> None:
     args = _build_parser().parse_args()
 
     cfg = SATSConfig(
-        local_map_ckpt      = args.local_map_ckpt,
         raw_dir             = args.raw_dir,
         gt_dir              = args.gt_dir,
+        dataset_index_path  = f"{args.gt_dir}/dataset_index.json",
         out_dir             = args.out_dir,
         run_name            = args.run_name,
         epochs              = args.epochs,
@@ -341,7 +296,7 @@ def main() -> None:
         use_window_dataset  = args.use_window_dataset,
         use_lr_scheduler    = not args.no_lr_scheduler,
     )
-    train(cfg)
+    train(cfg, init_ckpt=args.init_ckpt)
 
 
 if __name__ == "__main__":

@@ -124,6 +124,7 @@ class SATSCNNStage(nn.Module):
             in_dim    = self.encoder.out_dim,
             attn_dim  = cfg.attn_dim,
             n_sensors = cfg.n_sensors,
+            n_layers  = cfg.n_gat_layers,
         )
         combined_dim = self.encoder.out_dim + cfg.attn_dim
         self.local_map_decoder = SATSLocalMapDecoder(

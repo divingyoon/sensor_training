@@ -45,7 +45,7 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
-from .config import SATSConfig
+from .config import SATSConfig, _parse_trial_id
 
 log = logging.getLogger(__name__)
 
@@ -330,6 +330,100 @@ class SATSSequenceDataset(Dataset):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Window Dataset (논문 방식: loading phase + sliding window)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SATSWindowDataset(Dataset):
+    """
+    슬라이딩 윈도우 기반 SATS 데이터셋.
+
+    논문 방식: LSTM은 window_size=10 타임스텝 윈도우를 입력받는다.
+    - 압입 loading phase(GT 합이 최대가 되는 시점까지)만 사용한다.
+    - 각 샘플 = 10 타임스텝 윈도우 + 윈도우 마지막 타임스텝의 GT 맵.
+
+    __getitem__ 반환
+    ----------------
+    sensor_window : Tensor[window_size, 16]   s_norm 윈도우
+    gt_map        : Tensor[40, 40]            윈도우 끝 타임스텝의 GT 맵
+    """
+
+    def __init__(self, trial_ids: List[str], cfg: SATSConfig) -> None:
+        super().__init__()
+        self.cfg = cfg
+
+        # _index: (trial_id, local_seq_idx, window_end_t, gt_row_idx)
+        self._index: List[Tuple[str, int, int, int]] = []
+        self._sequences: Dict[str, List[dict]] = {}
+        self._gt_mmaps: Dict[str, np.ndarray] = {}
+
+        n_failed = 0
+        for tid in trial_ids:
+            result = _load_trial(tid, cfg)
+            if result is None:
+                n_failed += 1
+                continue
+            seqs, gt_mmap = result
+            self._gt_mmaps[tid] = gt_mmap
+            self._sequences[tid] = seqs
+
+            n_windows = 0
+            n_short = 0
+            log.info("[%s] 윈도우 인덱스 생성 중 (%d 시퀀스)...", tid, len(seqs))
+            for local_idx, seq in enumerate(seqs):
+                row_indices = seq["row_indices"]   # [T] int64
+                fz_seq      = seq["fz_seq"]        # [T] float32
+                T = len(row_indices)
+
+                # loading phase end: GT 합이 최대인 타임스텝
+                gt_slice = gt_mmap[row_indices]    # [T, 40, 40] via mmap
+                gt_sums  = gt_slice.sum(axis=(1, 2)).copy()  # [T]
+                gt_sums[fz_seq <= 0.0] = -1.0
+                peak_t = int(np.argmax(gt_sums))
+
+                loading_len = peak_t + 1
+                if loading_len < cfg.window_size:
+                    n_short += 1
+                    continue
+
+                # 슬라이딩 윈도우: t = window_size-1 ... peak_t
+                for t in range(cfg.window_size - 1, loading_len):
+                    self._index.append((tid, local_idx, t, int(row_indices[t])))
+                n_windows += loading_len - cfg.window_size + 1
+
+            log.info("[%s] 윈도우 %d개 생성 (짧음=%d)", tid, n_windows, n_short)
+
+        log.info(
+            "WindowDataset 완료: %d 윈도우, %d trial 성공, %d 실패",
+            len(self._index), len(self._gt_mmaps), n_failed,
+        )
+        if len(self._index) == 0:
+            raise RuntimeError("유효한 윈도우가 없습니다. 경로와 설정을 확인하세요.")
+
+    def __len__(self) -> int:
+        return len(self._index)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        tid, local_idx, t, gt_row_idx = self._index[idx]
+        seq = self._sequences[tid][local_idx]
+        sensor_seq = seq["sensor_seq"]   # [T, 16] float32
+
+        w = self.cfg.window_size
+        sensor_window = torch.from_numpy(
+            sensor_seq[t - w + 1 : t + 1].copy()
+        )  # [window_size, 16]
+
+        gt_map = torch.from_numpy(
+            (self._gt_mmaps[tid][gt_row_idx].copy() * 100.0).astype(np.float32)
+        )  # [40, 40]
+
+        # Fz <= 0이면 비접촉 → GT zero
+        if seq["fz_seq"][t] <= 0.0:
+            gt_map = torch.zeros_like(gt_map)
+
+        return sensor_window, gt_map
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # collate_fn
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -368,6 +462,29 @@ def sats_collate_fn(
     return sensor_batch, gt_batch, lengths
 
 
+def window_collate_fn(
+    batch: List[Tuple[torch.Tensor, torch.Tensor]],
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    SATSWindowDataset 배치 구성.
+
+    모든 윈도우가 동일 길이이므로 패딩 불필요.
+    시퀀스 모드와 동일한 3-tuple (sensor, gt, lengths)을 반환하여
+    학습 루프 인터페이스를 통일한다.
+
+    Returns
+    -------
+    sensor_batch : Tensor[B, window_size, 16]
+    gt_batch     : Tensor[B, 40, 40]        (3D — 시퀀스 모드의 4D와 구분)
+    lengths      : Tensor[B]  (모두 window_size)
+    """
+    sensor_wins, gt_maps = zip(*batch)
+    B = len(sensor_wins)
+    window_size = sensor_wins[0].shape[0]
+    lengths = torch.full((B,), window_size, dtype=torch.int64)
+    return torch.stack(sensor_wins), torch.stack(gt_maps), lengths
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 팩토리 함수
 # ─────────────────────────────────────────────────────────────────────────────
@@ -393,6 +510,17 @@ def build_dataloaders(
             idx = json.load(f)
         all_trial_ids = [t["trial_id"] for t in idx["trials"]]
 
+    if cfg.exclude_diameters:
+        before = len(all_trial_ids)
+        all_trial_ids = [
+            t for t in all_trial_ids
+            if _parse_trial_id(t)["d"] not in cfg.exclude_diameters
+        ]
+        log.info(
+            "exclude_diameters=%s 적용: %d → %d trials",
+            cfg.exclude_diameters, before, len(all_trial_ids),
+        )
+
     val_set   = set(cfg.val_trials)
     train_ids = [t for t in all_trial_ids if t not in val_set]
     val_ids   = [t for t in all_trial_ids if t in val_set]
@@ -400,14 +528,21 @@ def build_dataloaders(
     log.info("Train trials (%d): %s", len(train_ids), train_ids)
     log.info("Val   trials (%d): %s", len(val_ids),   val_ids)
 
-    train_ds = SATSSequenceDataset(train_ids, cfg)
-    val_ds   = SATSSequenceDataset(val_ids,   cfg)
+    if cfg.use_window_dataset:
+        log.info("Window 데이터셋 모드 (window_size=%d, loading phase only)", cfg.window_size)
+        train_ds   = SATSWindowDataset(train_ids, cfg)
+        val_ds     = SATSWindowDataset(val_ids,   cfg)
+        collate_fn = window_collate_fn
+    else:
+        train_ds   = SATSSequenceDataset(train_ids, cfg)
+        val_ds     = SATSSequenceDataset(val_ids,   cfg)
+        collate_fn = sats_collate_fn
 
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.batch_size,
         shuffle=True,
-        collate_fn=sats_collate_fn,
+        collate_fn=collate_fn,
         num_workers=cfg.num_workers,
         pin_memory=(cfg.effective_device() == "cuda"),
         drop_last=True,
@@ -416,7 +551,7 @@ def build_dataloaders(
         val_ds,
         batch_size=cfg.batch_size,
         shuffle=False,
-        collate_fn=sats_collate_fn,
+        collate_fn=collate_fn,
         num_workers=cfg.num_workers,
         pin_memory=(cfg.effective_device() == "cuda"),
         drop_last=False,

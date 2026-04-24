@@ -91,12 +91,16 @@ class SATSConfig:
     # ── 소재 / trial 선택 ─────────────────────────────────────────────────────
     material: str = "ecomesh"
 
-    # validation에 사용할 trial_id 목록 (나머지는 train)
-    # d10 계열 1개 + d5 계열 1개를 hold-out
+    # validation에 사용할 trial_id 목록 (나머지는 train).
+    # d10 제거 시: d5 기준 두 z 조건을 모두 커버하도록 설정.
     val_trials: List[str] = field(default_factory=lambda: [
-        "ecomesh_d10_z1_test3",
+        "ecomesh_d5_z1_test3",
         "ecomesh_d5_z1.5_test9",
     ])
+
+    # 학습/검증 풀에서 제외할 인덴터 직경(mm) 목록.
+    # 예) [10] → d10 trial 전체 제거. val_trials에 포함된 d10 trial도 함께 제거됨.
+    exclude_diameters: List[int] = field(default_factory=list)
 
     # ── 데이터 필터 (GT generation과 동일 기준) ───────────────────────────────
     grid_step_mm: float  = 0.5      # 그리드 간격
@@ -130,7 +134,8 @@ class SATSConfig:
     bidirectional: bool = False  # 단방향: 실시간 추론 호환
 
     # ── Self-Attention 하이퍼파라미터 ─────────────────────────────────────────
-    attn_dim: int      = 64      # GAT 선형 투영 차원 (W: hidden_dim → attn_dim)
+    attn_dim: int      = 64      # GAT 선형 투영 차원 (논문: 125)
+    n_gat_layers: int  = 2       # GAT 레이어 수 (논문: 2)
 
     # ── Local Map 하이퍼파라미터 ──────────────────────────────────────────────
     local_map_size: int       = 15    # 각 센서의 local map 한 변 크기 (홀수 권장)
@@ -145,6 +150,7 @@ class SATSConfig:
     local_map_ckpt: str = ""     # 사전학습된 Local Map 체크포인트 경로
 
     # ── 학습 ──────────────────────────────────────────────────────────────────
+    # 논문 기준: batch_size=2048, lr=0.0064 (고정, 스케줄러 없음)
     batch_size: int  = 64
     lr: float        = 1e-3
     weight_decay: float = 1e-5
@@ -152,9 +158,15 @@ class SATSConfig:
     lr_patience: int = 5        # ReduceLROnPlateau patience
     lr_factor: float = 0.5
     clip_grad: float = 1.0      # gradient clipping (None 이면 비활성)
+    use_lr_scheduler: bool = True  # False → 고정 LR (논문 방식)
     num_workers: int = 4
     seed: int        = 42
     save_every: int  = 10       # N epoch마다 체크포인트 저장
+
+    # ── 윈도우 데이터셋 설정 ──────────────────────────────────────────────────
+    # 논문 방식: loading phase만, window_size=10 슬라이딩 윈도우
+    window_size: int = 10
+    use_window_dataset: bool = False  # True → SATSWindowDataset (논문 방식)
 
     # ── 계산 장치 ─────────────────────────────────────────────────────────────
     device: str = "cuda"        # "cuda" | "cpu"

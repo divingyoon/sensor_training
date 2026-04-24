@@ -155,8 +155,8 @@ class _LocalMapMLP(nn.Module):
     공유 MLP 디코더 g_phi.
 
     모든 센서가 동일한 MLP 가중치를 공유한다 (weight sharing).
-    논문: "the local networks solve nearly identical problems for both
-           single-point and multi-point presses"
+    논문 구조: 3-layer MLP, 250→375→500→195 (LeakyReLU).
+    우리 구조: combined_dim → ×1.5 → ×2 → local_map_pixels (LeakyReLU).
 
     Input  : [B*n_sensors, combined_dim]
     Output : [B*n_sensors, local_map_size, local_map_size]
@@ -166,13 +166,15 @@ class _LocalMapMLP(nn.Module):
         super().__init__()
         self.local_map_size = local_map_size
         out_pixels = local_map_size * local_map_size
+        h1 = int(combined_dim * 1.5)
+        h2 = combined_dim * 2
 
         self.net = nn.Sequential(
-            nn.Linear(combined_dim, 256),
-            nn.ReLU(inplace=True),
-            nn.Linear(256, 256),
-            nn.ReLU(inplace=True),
-            nn.Linear(256, out_pixels),
+            nn.Linear(combined_dim, h1),
+            nn.LeakyReLU(negative_slope=0.2, inplace=True),
+            nn.Linear(h1, h2),
+            nn.LeakyReLU(negative_slope=0.2, inplace=True),
+            nn.Linear(h2, out_pixels),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -319,6 +321,7 @@ class SATSLocalMapStage(nn.Module):
             in_dim    = self.encoder.out_dim,
             attn_dim  = cfg.attn_dim,
             n_sensors = cfg.n_sensors,
+            n_layers  = cfg.n_gat_layers,
         )
         combined_dim = self.encoder.out_dim + cfg.attn_dim
         self.local_map_decoder = SATSLocalMapDecoder(

@@ -90,6 +90,19 @@ def find_peak_gt(
     return peak_gt
 
 
+def get_target(
+    gt_b: torch.Tensor,
+    lengths: torch.Tensor,
+) -> torch.Tensor:
+    """
+    시퀀스 모드([B, T, 40, 40])는 find_peak_gt로 피크를 선택하고,
+    윈도우 모드([B, 40, 40])는 그대로 반환한다.
+    """
+    if gt_b.dim() == 4:
+        return find_peak_gt(gt_b, lengths)
+    return gt_b
+
+
 def compute_rmse(pred: torch.Tensor, target: torch.Tensor) -> float:
     """MSE의 제곱근 (스칼라)."""
     return math.sqrt(F.mse_loss(pred, target).item())
@@ -150,7 +163,7 @@ def save_checkpoint(
             "epoch":      epoch,
             "model":      model.state_dict(),
             "optimizer":  optimizer.state_dict(),
-            "scheduler":  scheduler.state_dict(),
+            "scheduler":  scheduler.state_dict() if scheduler is not None else {},
             "metrics":    metrics,
         },
         path,
@@ -163,7 +176,7 @@ def load_checkpoint(path: Path, model: nn.Module, optimizer=None, scheduler=None
     model.load_state_dict(ckpt["model"])
     if optimizer is not None:
         optimizer.load_state_dict(ckpt["optimizer"])
-    if scheduler is not None:
+    if scheduler is not None and ckpt.get("scheduler"):
         scheduler.load_state_dict(ckpt["scheduler"])
     log.info("체크포인트 로드: %s (epoch %d)", path, ckpt["epoch"])
     return ckpt["epoch"], ckpt.get("metrics", {})
@@ -191,8 +204,7 @@ def train_epoch(
         gt_b     = gt_b.to(device, non_blocking=True)        # [B, T, 40, 40]
         lengths  = lengths.to(device, non_blocking=True)     # [B]
 
-        # 타겟: 압입 최대 접촉 시점의 GT
-        target = find_peak_gt(gt_b, lengths).detach()        # [B, 40, 40]
+        target = get_target(gt_b, lengths).detach()           # [B, 40, 40]
 
         # 순전파
         pred_map, _ = model(sensor_b, lengths)               # [B, 40, 40]
@@ -230,7 +242,7 @@ def val_epoch(
         gt_b     = gt_b.to(device, non_blocking=True)
         lengths  = lengths.to(device, non_blocking=True)
 
-        target = find_peak_gt(gt_b, lengths)
+        target = get_target(gt_b, lengths)
         pred_map, _ = model(sensor_b, lengths)
 
         total_mse += F.mse_loss(pred_map, target).item()
@@ -278,12 +290,14 @@ def train(cfg: SATSConfig) -> None:
         lr=cfg.lr,
         weight_decay=cfg.weight_decay,
     )
-    scheduler = ReduceLROnPlateau(
-        optimizer,
-        mode="min",
-        factor=cfg.lr_factor,
-        patience=cfg.lr_patience,
+    scheduler = (
+        ReduceLROnPlateau(
+            optimizer, mode="min", factor=cfg.lr_factor, patience=cfg.lr_patience,
+        )
+        if cfg.use_lr_scheduler else None
     )
+    if not cfg.use_lr_scheduler:
+        log.info("고정 LR 모드 (use_lr_scheduler=False, lr=%.6f)", cfg.lr)
 
     # ── 학습 이력 ─────────────────────────────────────────────────────────
     history   = []
@@ -313,7 +327,8 @@ def train(cfg: SATSConfig) -> None:
         )
 
         lr_now = optimizer.param_groups[0]["lr"]
-        scheduler.step(val_metrics["mse"])
+        if cfg.use_lr_scheduler and scheduler is not None:
+            scheduler.step(val_metrics["mse"])
 
         elapsed = time.time() - t0
         row = {
@@ -375,9 +390,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--num-workers",  type=int,   default=4)
     p.add_argument("--device",       default="cuda")
     p.add_argument("--seed",         type=int,   default=42)
-    p.add_argument("--val-trials",   nargs="+",
-                   default=["ecomesh_d10_z1_test3", "ecomesh_d5_z1.5_test9"],
+    p.add_argument("--val-trials",        nargs="+",
+                   default=["ecomesh_d5_z1_test3", "ecomesh_d5_z1.5_test9"],
                    help="검증에 사용할 trial_id 목록")
+    p.add_argument("--exclude-diameters", nargs="+", type=int, default=[],
+                   help="학습/검증 풀에서 제외할 인덴터 직경(mm). 예: --exclude-diameters 10")
+    p.add_argument("--window-size",       type=int,   default=10,
+                   help="슬라이딩 윈도우 크기 (논문: 10)")
+    p.add_argument("--use-window-dataset", action="store_true",
+                   help="윈도우 데이터셋 사용 (논문 방식, loading phase만)")
+    p.add_argument("--no-lr-scheduler",   action="store_true",
+                   help="고정 LR 사용 (ReduceLROnPlateau 비활성)")
     return p
 
 
@@ -391,21 +414,25 @@ def main() -> None:
     args = _build_parser().parse_args()
 
     cfg = SATSConfig(
-        raw_dir     = args.raw_dir,
-        gt_dir      = args.gt_dir,
-        out_dir     = args.out_dir,
-        run_name    = args.run_name,
-        epochs      = args.epochs,
-        batch_size  = args.batch_size,
-        lr          = args.lr,
-        hidden_dim  = args.hidden_dim,
-        num_layers  = args.num_layers,
-        dropout     = args.dropout,
-        seq_len     = args.seq_len,
-        num_workers = args.num_workers,
-        device      = args.device,
-        seed        = args.seed,
-        val_trials  = args.val_trials,
+        raw_dir            = args.raw_dir,
+        gt_dir             = args.gt_dir,
+        out_dir            = args.out_dir,
+        run_name           = args.run_name,
+        epochs             = args.epochs,
+        batch_size         = args.batch_size,
+        lr                 = args.lr,
+        hidden_dim         = args.hidden_dim,
+        num_layers         = args.num_layers,
+        dropout            = args.dropout,
+        seq_len            = args.seq_len,
+        num_workers        = args.num_workers,
+        device             = args.device,
+        seed               = args.seed,
+        val_trials         = args.val_trials,
+        exclude_diameters  = args.exclude_diameters,
+        window_size        = args.window_size,
+        use_window_dataset = args.use_window_dataset,
+        use_lr_scheduler   = not args.no_lr_scheduler,
     )
 
     train(cfg)

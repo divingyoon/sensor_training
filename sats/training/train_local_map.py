@@ -41,7 +41,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from .config import SATSConfig
 from .dataset import build_dataloaders
 from .local_map_module import SATSLocalMapStage
-from .train_lstm import find_peak_gt, set_seed, save_checkpoint, weighted_mse_loss
+from .train_lstm import find_peak_gt, get_target, set_seed, save_checkpoint, weighted_mse_loss
 
 log = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ def train_epoch(
         gt_b     = gt_b.to(device, non_blocking=True)
         lengths  = lengths.to(device, non_blocking=True)
 
-        target = find_peak_gt(gt_b, lengths).detach()   # [B, 40, 40]
+        target = get_target(gt_b, lengths).detach()     # [B, 40, 40]
 
         pred_map, _ = model(sensor_b, lengths)           # [B, 40, 40]
         loss = weighted_mse_loss(pred_map, target)
@@ -152,7 +152,7 @@ def val_epoch(
         gt_b     = gt_b.to(device, non_blocking=True)
         lengths  = lengths.to(device, non_blocking=True)
 
-        target = find_peak_gt(gt_b, lengths)
+        target = get_target(gt_b, lengths)
         pred_map, _ = model(sensor_b, lengths)
 
         total_mse += F.mse_loss(pred_map, target).item()
@@ -201,9 +201,14 @@ def train(cfg: SATSConfig) -> None:
     # 옵티마이저 (학습 가능한 파라미터만)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = Adam(trainable_params, lr=cfg.lr, weight_decay=cfg.weight_decay)
-    scheduler = ReduceLROnPlateau(
-        optimizer, mode="min", factor=cfg.lr_factor, patience=cfg.lr_patience,
+    scheduler = (
+        ReduceLROnPlateau(
+            optimizer, mode="min", factor=cfg.lr_factor, patience=cfg.lr_patience,
+        )
+        if cfg.use_lr_scheduler else None
     )
+    if not cfg.use_lr_scheduler:
+        log.info("고정 LR 모드 (lr=%.6f)", cfg.lr)
 
     history   = []
     best_rmse = float("inf")
@@ -218,7 +223,8 @@ def train(cfg: SATSConfig) -> None:
         val_metrics   = val_epoch(model, val_loader, device)
 
         lr_now = optimizer.param_groups[0]["lr"]
-        scheduler.step(val_metrics["mse"])
+        if cfg.use_lr_scheduler and scheduler is not None:
+            scheduler.step(val_metrics["mse"])
 
         elapsed = time.time() - t0
         row = {
@@ -278,8 +284,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--num-workers",    type=int,   default=4)
     p.add_argument("--device",         default="cuda")
     p.add_argument("--seed",           type=int,   default=42)
-    p.add_argument("--val-trials",     nargs="+",
-                   default=["ecomesh_d10_z1_test3", "ecomesh_d5_z1.5_test9"])
+    p.add_argument("--val-trials",        nargs="+",
+                   default=["ecomesh_d5_z1_test3", "ecomesh_d5_z1.5_test9"])
+    p.add_argument("--exclude-diameters", nargs="+", type=int, default=[],
+                   help="학습/검증 풀에서 제외할 인덴터 직경(mm). 예: --exclude-diameters 10")
+    p.add_argument("--window-size",       type=int,   default=10)
+    p.add_argument("--use-window-dataset", action="store_true")
+    p.add_argument("--no-lr-scheduler",   action="store_true")
     return p
 
 
@@ -292,24 +303,28 @@ def main() -> None:
     args = _build_parser().parse_args()
 
     cfg = SATSConfig(
-        attn_ckpt       = args.attn_ckpt,
-        raw_dir         = args.raw_dir,
-        gt_dir          = args.gt_dir,
-        out_dir         = args.out_dir,
-        run_name        = args.run_name,
-        epochs          = args.epochs,
-        batch_size      = args.batch_size,
-        lr              = args.lr,
-        hidden_dim      = args.hidden_dim,
-        attn_dim        = args.attn_dim,
-        local_map_size  = args.local_map_size,
-        num_layers      = args.num_layers,
-        dropout         = args.dropout,
-        seq_len         = args.seq_len,
-        num_workers     = args.num_workers,
-        device          = args.device,
-        seed            = args.seed,
-        val_trials      = args.val_trials,
+        attn_ckpt          = args.attn_ckpt,
+        raw_dir            = args.raw_dir,
+        gt_dir             = args.gt_dir,
+        out_dir            = args.out_dir,
+        run_name           = args.run_name,
+        epochs             = args.epochs,
+        batch_size         = args.batch_size,
+        lr                 = args.lr,
+        hidden_dim         = args.hidden_dim,
+        attn_dim           = args.attn_dim,
+        local_map_size     = args.local_map_size,
+        num_layers         = args.num_layers,
+        dropout            = args.dropout,
+        seq_len            = args.seq_len,
+        num_workers        = args.num_workers,
+        device             = args.device,
+        seed               = args.seed,
+        val_trials         = args.val_trials,
+        exclude_diameters  = args.exclude_diameters,
+        window_size        = args.window_size,
+        use_window_dataset = args.use_window_dataset,
+        use_lr_scheduler   = not args.no_lr_scheduler,
     )
     train(cfg)
 
