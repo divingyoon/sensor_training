@@ -37,7 +37,7 @@ import json
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -251,39 +251,45 @@ class SATSSequenceDataset(Dataset):
 
     Parameters
     ----------
-    trial_ids : List[str]
-        학습(또는 검증)에 사용할 trial_id 목록.
-    cfg : SATSConfig
-
-    사용 예시
-    ---------
-    >>> cfg = SATSConfig()
-    >>> train_trials = [t for t in all_trials if t not in cfg.val_trials]
-    >>> train_ds = SATSSequenceDataset(train_trials, cfg)
-    >>> loader = DataLoader(train_ds, batch_size=32, collate_fn=sats_collate_fn)
+    trial_ids  : 학습/검증에 사용할 trial_id 목록. _preloaded 사용 시 무시.
+    cfg        : SATSConfig
+    _preloaded : {"sequences": List[dict], "gt_mmaps": Dict[str, ndarray]}
+                 build_dataloaders 의 val_ratio 모드에서 pre-split 데이터를 주입할 때 사용.
     """
 
-    def __init__(self, trial_ids: List[str], cfg: SATSConfig) -> None:
+    def __init__(
+        self,
+        trial_ids: List[str],
+        cfg: SATSConfig,
+        *,
+        _preloaded: Optional[Dict[str, Any]] = None,
+    ) -> None:
         super().__init__()
         self.cfg = cfg
 
-        self._index: List[dict] = []                    # 시퀀스 목록
-        self._gt_mmaps: Dict[str, np.ndarray] = {}     # trial_id → GT mmap
+        self._index: List[dict] = []
+        self._gt_mmaps: Dict[str, np.ndarray] = {}
 
-        n_failed = 0
-        for tid in trial_ids:
-            result = _load_trial(tid, cfg)
-            if result is None:
-                n_failed += 1
-                continue
-            seqs, gt_mmap = result
-            self._index.extend(seqs)
-            self._gt_mmaps[tid] = gt_mmap
+        if _preloaded is not None:
+            self._index   = _preloaded["sequences"]
+            self._gt_mmaps = _preloaded["gt_mmaps"]
+            log.info("Dataset (preloaded): %d 시퀀스", len(self._index))
+        else:
+            n_failed = 0
+            for tid in trial_ids:
+                result = _load_trial(tid, cfg)
+                if result is None:
+                    n_failed += 1
+                    continue
+                seqs, gt_mmap = result
+                self._index.extend(seqs)
+                self._gt_mmaps[tid] = gt_mmap
 
-        log.info(
-            "Dataset 완료: %d 시퀀스, %d trial 성공, %d 실패",
-            len(self._index), len(self._gt_mmaps), n_failed,
-        )
+            log.info(
+                "Dataset 완료: %d 시퀀스, %d trial 성공, %d 실패",
+                len(self._index), len(self._gt_mmaps), n_failed,
+            )
+
         if len(self._index) == 0:
             raise RuntimeError("유효한 시퀀스가 없습니다. 경로와 설정을 확인하세요.")
 
@@ -341,63 +347,83 @@ class SATSWindowDataset(Dataset):
     - 압입 loading phase(GT 합이 최대가 되는 시점까지)만 사용한다.
     - 각 샘플 = 10 타임스텝 윈도우 + 윈도우 마지막 타임스텝의 GT 맵.
 
-    __getitem__ 반환
-    ----------------
-    sensor_window : Tensor[window_size, 16]   s_norm 윈도우
-    gt_map        : Tensor[40, 40]            윈도우 끝 타임스텝의 GT 맵
+    Parameters
+    ----------
+    trial_ids  : 학습/검증에 사용할 trial_id 목록. _preloaded 사용 시 무시.
+    cfg        : SATSConfig
+    _preloaded : {"sequences_by_trial": Dict[str, List[dict]], "gt_mmaps": Dict[str, ndarray]}
+                 build_dataloaders 의 val_ratio 모드에서 pre-split 데이터를 주입할 때 사용.
     """
 
-    def __init__(self, trial_ids: List[str], cfg: SATSConfig) -> None:
+    def __init__(
+        self,
+        trial_ids: List[str],
+        cfg: SATSConfig,
+        *,
+        _preloaded: Optional[Dict[str, Any]] = None,
+    ) -> None:
         super().__init__()
         self.cfg = cfg
 
-        # _index: (trial_id, local_seq_idx, window_end_t, gt_row_idx)
         self._index: List[Tuple[str, int, int, int]] = []
         self._sequences: Dict[str, List[dict]] = {}
         self._gt_mmaps: Dict[str, np.ndarray] = {}
 
-        n_failed = 0
-        for tid in trial_ids:
-            result = _load_trial(tid, cfg)
-            if result is None:
-                n_failed += 1
-                continue
-            seqs, gt_mmap = result
-            self._gt_mmaps[tid] = gt_mmap
-            self._sequences[tid] = seqs
-
-            n_windows = 0
-            n_short = 0
-            log.info("[%s] 윈도우 인덱스 생성 중 (%d 시퀀스)...", tid, len(seqs))
-            for local_idx, seq in enumerate(seqs):
-                row_indices = seq["row_indices"]   # [T] int64
-                fz_seq      = seq["fz_seq"]        # [T] float32
-                T = len(row_indices)
-
-                # loading phase end: GT 합이 최대인 타임스텝
-                gt_slice = gt_mmap[row_indices]    # [T, 40, 40] via mmap
-                gt_sums  = gt_slice.sum(axis=(1, 2)).copy()  # [T]
-                gt_sums[fz_seq <= 0.0] = -1.0
-                peak_t = int(np.argmax(gt_sums))
-
-                loading_len = peak_t + 1
-                if loading_len < cfg.window_size:
-                    n_short += 1
+        if _preloaded is not None:
+            self._gt_mmaps  = _preloaded["gt_mmaps"]
+            self._sequences = _preloaded["sequences_by_trial"]
+            for tid, seqs in self._sequences.items():
+                self._build_windows_for_trial(tid, seqs, self._gt_mmaps[tid])
+            log.info("WindowDataset (preloaded): %d 윈도우", len(self._index))
+        else:
+            n_failed = 0
+            for tid in trial_ids:
+                result = _load_trial(tid, cfg)
+                if result is None:
+                    n_failed += 1
                     continue
+                seqs, gt_mmap = result
+                self._gt_mmaps[tid] = gt_mmap
+                self._sequences[tid] = seqs
+                self._build_windows_for_trial(tid, seqs, gt_mmap)
 
-                # 슬라이딩 윈도우: t = window_size-1 ... peak_t
-                for t in range(cfg.window_size - 1, loading_len):
-                    self._index.append((tid, local_idx, t, int(row_indices[t])))
-                n_windows += loading_len - cfg.window_size + 1
+            log.info(
+                "WindowDataset 완료: %d 윈도우, %d trial 성공, %d 실패",
+                len(self._index), len(self._gt_mmaps), n_failed,
+            )
 
-            log.info("[%s] 윈도우 %d개 생성 (짧음=%d)", tid, n_windows, n_short)
-
-        log.info(
-            "WindowDataset 완료: %d 윈도우, %d trial 성공, %d 실패",
-            len(self._index), len(self._gt_mmaps), n_failed,
-        )
         if len(self._index) == 0:
             raise RuntimeError("유효한 윈도우가 없습니다. 경로와 설정을 확인하세요.")
+
+    def _build_windows_for_trial(
+        self,
+        tid: str,
+        seqs: List[dict],
+        gt_mmap: np.ndarray,
+    ) -> None:
+        """한 trial의 시퀀스 목록으로 슬라이딩 윈도우 인덱스를 생성한다."""
+        n_windows = 0
+        n_short   = 0
+        for local_idx, seq in enumerate(seqs):
+            row_indices = seq["row_indices"]
+            fz_seq      = seq["fz_seq"]
+            T = len(row_indices)
+
+            gt_slice = gt_mmap[row_indices]
+            gt_sums  = gt_slice.sum(axis=(1, 2)).copy()
+            gt_sums[fz_seq <= 0.0] = -1.0
+            peak_t = int(np.argmax(gt_sums))
+
+            loading_len = peak_t + 1
+            if loading_len < self.cfg.window_size:
+                n_short += 1
+                continue
+
+            for t in range(self.cfg.window_size - 1, loading_len):
+                self._index.append((tid, local_idx, t, int(row_indices[t])))
+            n_windows += loading_len - self.cfg.window_size + 1
+
+        log.info("[%s] 윈도우 %d개 생성 (짧음=%d)", tid, n_windows, n_short)
 
     def __len__(self) -> int:
         return len(self._index)
@@ -496,14 +522,8 @@ def build_dataloaders(
     """
     train / val DataLoader를 생성한다.
 
-    Parameters
-    ----------
-    cfg            : SATSConfig
-    all_trial_ids  : 전체 trial_id 목록. None이면 dataset_index.json에서 자동 로드.
-
-    Returns
-    -------
-    train_loader, val_loader
+    cfg.val_ratio > 0 이면 논문 방식: 전체 시퀀스를 랜덤하게 (1-val_ratio)/val_ratio 로 분리.
+    cfg.val_ratio == 0 이면 cfg.val_trials 기반 trial-level split 사용.
     """
     if all_trial_ids is None:
         with open(cfg.dataset_index_path) as f:
@@ -521,6 +541,10 @@ def build_dataloaders(
             cfg.exclude_diameters, before, len(all_trial_ids),
         )
 
+    if cfg.val_ratio > 0:
+        return _build_dataloaders_random_split(cfg, all_trial_ids)
+
+    # ── trial-level split (기존 방식) ─────────────────────────────────────────
     val_set   = set(cfg.val_trials)
     train_ids = [t for t in all_trial_ids if t not in val_set]
     val_ids   = [t for t in all_trial_ids if t in val_set]
@@ -536,6 +560,103 @@ def build_dataloaders(
     else:
         train_ds   = SATSSequenceDataset(train_ids, cfg)
         val_ds     = SATSSequenceDataset(val_ids,   cfg)
+        collate_fn = sats_collate_fn
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+        num_workers=cfg.num_workers,
+        pin_memory=(cfg.effective_device() == "cuda"),
+        drop_last=True,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=cfg.num_workers,
+        pin_memory=(cfg.effective_device() == "cuda"),
+        drop_last=False,
+    )
+    return train_loader, val_loader
+
+
+def _build_dataloaders_random_split(
+    cfg: SATSConfig,
+    all_trial_ids: List[str],
+) -> Tuple[DataLoader, DataLoader]:
+    """
+    논문 방식: 전체 시퀀스를 랜덤하게 (1-val_ratio)/val_ratio 로 분리.
+
+    sequence 단위 split이므로 같은 trial의 다른 (x,y) 위치가 train/val에 섞일 수 있다.
+    인접 window 간 data leakage를 피하기 위해 window가 아닌 sequence 단위로 split한다.
+    """
+    log.info(
+        "랜덤 sequence-level split 모드 (val_ratio=%.2f, seed=%d)",
+        cfg.val_ratio, cfg.seed,
+    )
+
+    # ── 1. 전체 trial 로드 ────────────────────────────────────────────────────
+    all_seqs_flat: List[Tuple[str, dict]] = []   # (trial_id, seq_dict)
+    gt_mmaps: Dict[str, np.ndarray] = {}
+
+    for tid in all_trial_ids:
+        result = _load_trial(tid, cfg)
+        if result is None:
+            continue
+        seqs, gt_mmap = result
+        gt_mmaps[tid] = gt_mmap
+        for seq in seqs:
+            all_seqs_flat.append((tid, seq))
+
+    n_total = len(all_seqs_flat)
+    log.info("전체 시퀀스: %d개", n_total)
+
+    # ── 2. 랜덤 split ─────────────────────────────────────────────────────────
+    rng = np.random.default_rng(cfg.seed)
+    perm = rng.permutation(n_total)
+    n_val = max(1, int(n_total * cfg.val_ratio))
+    val_mask = set(perm[:n_val].tolist())
+
+    train_seqs: Dict[str, List[dict]] = defaultdict(list)
+    val_seqs:   Dict[str, List[dict]] = defaultdict(list)
+    for i, (tid, seq) in enumerate(all_seqs_flat):
+        if i in val_mask:
+            val_seqs[tid].append(seq)
+        else:
+            train_seqs[tid].append(seq)
+
+    log.info(
+        "Split: train=%d 시퀀스 (%d trials), val=%d 시퀀스 (%d trials)",
+        sum(len(v) for v in train_seqs.values()), len(train_seqs),
+        sum(len(v) for v in val_seqs.values()),   len(val_seqs),
+    )
+
+    # ── 3. Dataset 생성 ───────────────────────────────────────────────────────
+    if cfg.use_window_dataset:
+        log.info("Window 데이터셋 모드 (window_size=%d)", cfg.window_size)
+        train_ds = SATSWindowDataset(
+            [], cfg,
+            _preloaded={"sequences_by_trial": train_seqs, "gt_mmaps": gt_mmaps},
+        )
+        val_ds = SATSWindowDataset(
+            [], cfg,
+            _preloaded={"sequences_by_trial": val_seqs, "gt_mmaps": gt_mmaps},
+        )
+        collate_fn = window_collate_fn
+    else:
+        train_flat = [seq for seqs in train_seqs.values() for seq in seqs]
+        val_flat   = [seq for seqs in val_seqs.values()   for seq in seqs]
+        train_ds = SATSSequenceDataset(
+            [], cfg,
+            _preloaded={"sequences": train_flat, "gt_mmaps": gt_mmaps},
+        )
+        val_ds = SATSSequenceDataset(
+            [], cfg,
+            _preloaded={"sequences": val_flat, "gt_mmaps": gt_mmaps},
+        )
         collate_fn = sats_collate_fn
 
     train_loader = DataLoader(

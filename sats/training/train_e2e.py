@@ -255,6 +255,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed",                type=int,   default=42)
     p.add_argument("--val-trials",          nargs="+",
                    default=["ecomesh_d5_z1_test3", "ecomesh_d5_z1.5_test9"])
+    p.add_argument("--val-ratio",           type=float, default=0.0,
+                   help=">0: 논문 방식 랜덤 sequence-level split. 0: --val-trials 기반 trial split.")
     p.add_argument("--exclude-diameters",   nargs="+", type=int, default=[],
                    help="학습/검증 풀에서 제외할 인덴터 직경(mm). 예: --exclude-diameters 10")
     p.add_argument("--window-size",         type=int,   default=10)
@@ -295,6 +297,7 @@ def main() -> None:
         window_size         = args.window_size,
         use_window_dataset  = args.use_window_dataset,
         use_lr_scheduler    = not args.no_lr_scheduler,
+        val_ratio           = args.val_ratio,
     )
     train(cfg, init_ckpt=args.init_ckpt)
 

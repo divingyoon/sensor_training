@@ -92,11 +92,15 @@ class SATSConfig:
     material: str = "ecomesh"
 
     # validation에 사용할 trial_id 목록 (나머지는 train).
-    # d10 제거 시: d5 기준 두 z 조건을 모두 커버하도록 설정.
+    # val_ratio > 0 이면 이 값은 무시되고 랜덤 sequence-level split이 사용된다.
     val_trials: List[str] = field(default_factory=lambda: [
         "ecomesh_d5_z1_test3",
         "ecomesh_d5_z1.5_test9",
     ])
+
+    # val_ratio > 0: 전체 시퀀스를 랜덤하게 (1-val_ratio) / val_ratio 로 분리 (논문 방식).
+    # 0.0 이면 val_trials 기반 trial-level split 사용.
+    val_ratio: float = 0.0
 
     # 학습/검증 풀에서 제외할 인덴터 직경(mm) 목록.
     # 예) [10] → d10 trial 전체 제거. val_trials에 포함된 d10 trial도 함께 제거됨.
