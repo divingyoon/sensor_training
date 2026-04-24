@@ -208,7 +208,7 @@ def train_epoch(
 
         # 순전파
         pred_map, _ = model(sensor_b, lengths)               # [B, 40, 40]
-        loss = weighted_mse_loss(pred_map, target)
+        loss = F.mse_loss(pred_map, target)
 
         # 역전파
         optimizer.zero_grad(set_to_none=True)

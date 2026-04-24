@@ -111,7 +111,7 @@ def train_epoch(
         target = get_target(gt_b, lengths).detach()     # [B, 40, 40]
 
         pred_map, _ = model(sensor_b, lengths)           # [B, 40, 40]
-        loss = weighted_mse_loss(pred_map, target)
+        loss = F.mse_loss(pred_map, target)
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
