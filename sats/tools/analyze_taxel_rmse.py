@@ -6,30 +6,29 @@ sats/tools/analyze_taxel_rmse.py
 
 기능
 ----
-val_trials 전체 순회 → 각 샘플의 peak timestep에서 예측 & GT 추출
+val_trials 전체 순회 → 각 샘플에서 예측 & GT 추출
 → 40×40 per-taxel RMSE heatmap (Fig.4.b)
+→ per-taxel RMSE 3D 막대 그래프
 → RMSE 분포 히스토그램 + 통계 (Fig.4.c)
 
 지원 stage: lstm, attn, local_map, cnn, e2e (CNN 체크포인트는 cnn/e2e 모두 동일 구조)
 
 실행 예시
 ----------
-# CNN staged 모델 단일 분석
-python3 -m sats.tools.analyze_taxel_rmse \\
-    --ckpt sats/training/runs/cnn_paper/best_model.pt \\
-    --stage cnn
+# run 디렉터리 자동 로드 (권장)
+python3 -m sats.tools.analyze_taxel_rmse \
+    --run-dir sats/training/runs/04.25-sats-test4-e2e_v1
 
-# E2E 모델 단일 분석
-python3 -m sats.tools.analyze_taxel_rmse \\
-    --ckpt sats/training/runs/e2e_paper/best_model.pt \\
+# 체크포인트 직접 지정 (구형)
+python3 -m sats.tools.analyze_taxel_rmse \
+    --ckpt sats/training/runs/04.25-sats-test4-e2e_v1/best_model.pt \
     --stage e2e
 
 # 여러 모델 side-by-side 비교
-python3 -m sats.tools.analyze_taxel_rmse \\
-    --ckpts sats/training/runs/cnn_paper/best_model.pt \\
-            sats/training/runs/e2e_paper/best_model.pt \\
-    --stages cnn e2e \\
-    --labels "Staged-CNN" "E2E"
+python3 -m sats.tools.analyze_taxel_rmse \
+    --run-dirs sats/training/runs/04.24-sats-test3\ --paper\ 동일/e2e_paper \
+               sats/training/runs/04.25-sats-test4-e2e_v1 \
+    --labels "Paper-E2E" "Test4-E2E"
 """
 
 from __future__ import annotations
@@ -39,7 +38,7 @@ import dataclasses
 import json
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -47,6 +46,7 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
@@ -58,11 +58,62 @@ from sats.training.train_lstm import get_target
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 모델 로더 / config 복원
+# config 로드
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _valid_fields() -> set[str]:
+    return {f.name for f in dataclasses.fields(SATSConfig)}
+
+
+def load_cfg_from_dir(cfg_dir: Path, explicit_overrides: dict) -> SATSConfig:
+    """
+    cfg_dir/config.json 을 읽어 SATSConfig 를 복원한다.
+    explicit_overrides 에 있는 키만 덮어쓴다 (CLI 기본값은 제외).
+    """
+    cfg_path = cfg_dir / "config.json"
+    base: dict = {}
+    if cfg_path.exists():
+        raw = json.loads(cfg_path.read_text())
+        base = {k: v for k, v in raw.items() if k in _valid_fields()}
+        print(f"  config 로드: {cfg_path}")
+        print(f"  use_window_dataset : {base.get('use_window_dataset', False)}")
+        print(f"  window_size        : {base.get('window_size', 10)}")
+        print(f"  val_trials         : {base.get('val_trials')}")
+        print(f"  exclude_diameters  : {base.get('exclude_diameters', [])}")
+    else:
+        print(f"  [경고] config.json 없음: {cfg_path}  — 기본값 사용")
+    base.update(explicit_overrides)
+    return SATSConfig(**base)
+
+
+def load_cfg_from_ckpt(ckpt_path: Path, explicit_overrides: dict) -> SATSConfig:
+    return load_cfg_from_dir(ckpt_path.parent, explicit_overrides)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 모델 로더
+# ─────────────────────────────────────────────────────────────────────────────
+
+_STAGE_KEYWORDS = [
+    ("e2e",       "cnn"),
+    ("cnn",       "cnn"),
+    ("local_map", "local_map"),
+    ("attn",      "attn"),
+    ("lstm",      "lstm"),
+]
+
+
+def detect_stage(run_dir: Path, cfg: SATSConfig) -> str:
+    for text in [run_dir.name.lower(), cfg.run_name.lower()]:
+        for kw, stage in _STAGE_KEYWORDS:
+            if kw in text:
+                return stage
+    return "cnn"
+
+
 def load_model(stage: str, ckpt_path: Path, cfg: SATSConfig, device: str):
-    ckpt = torch.load(ckpt_path, map_location="cpu")
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+
     if stage == "lstm":
         from sats.training.lstm_module import SATSLSTMStage
         model = SATSLSTMStage(cfg)
@@ -77,24 +128,20 @@ def load_model(stage: str, ckpt_path: Path, cfg: SATSConfig, device: str):
         model = SATSCNNStage(cfg)
     else:
         raise ValueError(f"알 수 없는 stage: {stage!r}")
-    model.load_state_dict(ckpt["model"])
+
+    try:
+        model.load_state_dict(ckpt["model"], strict=True)
+    except RuntimeError as e:
+        if "size mismatch" in str(e):
+            raise RuntimeError(
+                f"체크포인트 아키텍처가 현재 코드와 맞지 않습니다.\n{e}"
+            ) from None
+        result = model.load_state_dict(ckpt["model"], strict=False)
+        if result.missing_keys:
+            print(f"  [경고] 초기화되지 않은 키: {result.missing_keys}")
+
     model.eval()
     return model.to(device)
-
-
-def load_cfg_from_ckpt(ckpt_path: Path, overrides: dict) -> SATSConfig:
-    """체크포인트 디렉터리의 config.json 복원 후 overrides 적용."""
-    cfg_path = ckpt_path.parent / "config.json"
-    d: dict = {}
-    if cfg_path.exists():
-        with open(cfg_path) as f:
-            raw = json.load(f)
-        valid = {f.name for f in dataclasses.fields(SATSConfig)}
-        d = {k: v for k, v in raw.items() if k in valid}
-    else:
-        print(f"[경고] config.json 없음: {cfg_path}  — 기본값 사용")
-    d.update(overrides)
-    return SATSConfig(**d)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -113,12 +160,12 @@ def compute_taxel_rmse(
 
     Returns
     -------
-    per_taxel_rmse  : [H, W] float64 ndarray
+    per_taxel_rmse  : [H, W] float64
     n_samples       : 처리된 샘플 수
-    per_sample_rmse : List[float]  샘플별 전체 RMSE
+    per_sample_rmse : List[float]
     """
     sq_err_sum = np.zeros((grid_size, grid_size), dtype=np.float64)
-    n_samples = 0
+    n_samples  = 0
     per_sample_rmse: List[float] = []
 
     model.eval()
@@ -127,11 +174,11 @@ def compute_taxel_rmse(
         gt_b     = gt_b.to(device)
         lengths  = lengths.to(device)
 
-        target = get_target(gt_b, lengths)                          # [B, H, W]
+        target = get_target(gt_b, lengths)               # [B, H, W]
         out    = model(sensor_b, lengths)
-        pred   = out[0] if isinstance(out, tuple) else out          # [B, H, W]
+        pred   = out[0] if isinstance(out, tuple) else out
 
-        err = (pred - target).cpu().numpy()                         # [B, H, W]
+        err = (pred - target).cpu().numpy()              # [B, H, W]
         sq_err_sum += (err ** 2).sum(axis=0)
         for b in range(err.shape[0]):
             per_sample_rmse.append(float(np.sqrt(np.mean(err[b] ** 2))))
@@ -145,15 +192,14 @@ def compute_taxel_rmse(
 # 시각화
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _extent() -> list:
-    return [-9.75, 9.75, -9.75, 9.75]
+_EXTENT = [-9.75, 9.75, -9.75, 9.75]
 
 
 def plot_heatmap_comparison(
     results: List[Tuple[str, np.ndarray]],
     out_path: Path,
 ) -> None:
-    """모델별 per-taxel RMSE heatmap을 가로 배열 (논문 Fig.4.b 스타일)."""
+    """모델별 per-taxel RMSE heatmap (논문 Fig.4.b 스타일)."""
     n    = len(results)
     vmax = max(r.max() for _, r in results)
     fig, axes = plt.subplots(1, n, figsize=(5 * n + 1, 5))
@@ -162,7 +208,7 @@ def plot_heatmap_comparison(
 
     for ax, (label, rmse_map) in zip(axes, results):
         im = ax.imshow(
-            rmse_map, origin="lower", extent=_extent(),
+            rmse_map, origin="lower", extent=_EXTENT,
             cmap="hot", vmin=0, vmax=vmax,
         )
         ax.set_title(
@@ -173,18 +219,79 @@ def plot_heatmap_comparison(
         ax.set_ylabel("y [mm]")
         plt.colorbar(im, ax=ax, fraction=0.046, label="RMSE (N/mm²)")
 
-    fig.suptitle("Per-taxel RMSE Heatmap", fontsize=12, y=1.02)
-    plt.tight_layout()
+    fig.suptitle("Per-taxel RMSE Heatmap", fontsize=12)
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Heatmap 저장: {out_path}")
+
+
+def plot_3d_bar(
+    results: List[Tuple[str, np.ndarray]],
+    out_dir: Path,
+) -> None:
+    """
+    per-taxel RMSE 3D 막대 그래프.
+
+    색상: 낮은 RMSE → 하늘색(연한 파랑), 높은 RMSE → 남색(진한 파랑).
+    """
+    # 40×40 그리드 → mm 좌표
+    grid_size = results[0][1].shape[0]
+    mm_coords = np.linspace(-9.75, 9.75, grid_size)
+    step_mm   = mm_coords[1] - mm_coords[0]      # ≈ 0.5 mm
+    bar_width = step_mm * 0.85
+
+    xpos_1d, ypos_1d = np.meshgrid(mm_coords, mm_coords)
+    xpos = xpos_1d.flatten()
+    ypos = ypos_1d.flatten()
+    zpos = np.zeros_like(xpos)
+
+    for label, rmse_map in results:
+        dz = rmse_map.flatten().astype(np.float64)
+
+        # 0=최솟값(하늘색), 1=최댓값(남색)
+        norm_vals = (dz - dz.min()) / (dz.max() - dz.min() + 1e-12)
+        # Blues: 0.0 → 거의 흰색, 1.0 → 진한 남색
+        # 하늘색 시작을 위해 [0.25, 1.0] 구간 사용
+        colors = plt.cm.Blues(0.25 + 0.75 * norm_vals)
+
+        fig = plt.figure(figsize=(12, 8))
+        ax  = fig.add_subplot(111, projection="3d")
+
+        ax.bar3d(
+            xpos, ypos, zpos,
+            bar_width, bar_width, dz,
+            color=colors,
+            alpha=0.9,
+            shade=True,
+        )
+
+        ax.set_xlabel("x [mm]", labelpad=8)
+        ax.set_ylabel("y [mm]", labelpad=8)
+        ax.set_zlabel("RMSE (N/mm²)", labelpad=8)
+        ax.set_title(f"{label}\nPer-taxel RMSE 3D", fontsize=11)
+        ax.view_init(elev=30, azim=-60)
+
+        # 컬러바 (실제 RMSE 값 기준)
+        sm = plt.cm.ScalarMappable(
+            cmap=plt.cm.Blues,
+            norm=plt.Normalize(vmin=rmse_map.min(), vmax=rmse_map.max()),
+        )
+        sm.set_array([])
+        cbar = fig.colorbar(sm, ax=ax, shrink=0.5, pad=0.1)
+        cbar.set_label("RMSE (N/mm²)", fontsize=9)
+
+        safe = label.replace(" ", "_").replace("/", "_")
+        out_path = out_dir / f"{safe}_taxel_rmse_3d.png"
+        plt.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  3D bar 저장: {out_path}")
 
 
 def plot_distribution_comparison(
     results: List[Tuple[str, np.ndarray, List[float]]],
     out_path: Path,
 ) -> None:
-    """per-taxel / per-sample RMSE 분포를 겹쳐 비교 (논문 Fig.4.c 스타일)."""
+    """per-taxel / per-sample RMSE 분포 (논문 Fig.4.c 스타일)."""
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     colors = plt.cm.tab10.colors
 
@@ -242,29 +349,30 @@ def print_stats(label: str, rmse_map: np.ndarray, sample_rmse: List[float]) -> N
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_analysis(
-    ckpt_paths: List[Path],
-    stages: List[str],
-    labels: List[str],
-    cfg_overrides: dict,
+    entries: List[Tuple[Path, str, str, Path]],  # (ckpt, stage, label, cfg_dir)
+    explicit_overrides: dict,
     out_dir: Path,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    heatmap_data: List[Tuple[str, np.ndarray]] = []
-    dist_data: List[Tuple[str, np.ndarray, List[float]]] = []
+    heatmap_data: List[Tuple[str, np.ndarray]]              = []
+    dist_data:    List[Tuple[str, np.ndarray, List[float]]] = []
 
-    for ckpt_path, stage, label in zip(ckpt_paths, stages, labels):
+    for ckpt_path, stage, label, cfg_dir in entries:
         print(f"\n[{label}]  ckpt: {ckpt_path}")
-        cfg    = load_cfg_from_ckpt(ckpt_path, cfg_overrides)
+        cfg    = load_cfg_from_dir(cfg_dir, explicit_overrides)
         device = cfg.effective_device()
 
         _, val_loader = build_dataloaders(cfg)
         model = load_model(stage, ckpt_path, cfg, device)
 
-        print(f"  val 샘플 순회 중 (stage={stage}, device={device})...")
+        mode = "window" if cfg.use_window_dataset else "sequence"
+        print(f"  추론 모드: {mode}  stage={stage}  device={device}")
+
         rmse_map, n, sample_rmse = compute_taxel_rmse(
             model, val_loader, device, cfg.grid_size,
         )
+        print(f"  처리 완료: {n}개 샘플")
         print_stats(label, rmse_map, sample_rmse)
 
         safe = label.replace(" ", "_").replace("/", "_")
@@ -274,6 +382,7 @@ def run_analysis(
         dist_data.append((label, rmse_map, sample_rmse))
 
     plot_heatmap_comparison(heatmap_data, out_dir / "taxel_rmse_heatmap.png")
+    plot_3d_bar(heatmap_data, out_dir)
     plot_distribution_comparison(dist_data, out_dir / "taxel_rmse_dist.png")
     print(f"\n출력 디렉터리: {out_dir.resolve()}")
 
@@ -287,66 +396,100 @@ def _build_parser() -> argparse.ArgumentParser:
         description="SATS per-taxel RMSE 분석 (논문 Fig.4.b/c)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    # 단일 모델
-    p.add_argument("--ckpt",  default="",
-                   help="단일 모델 체크포인트 경로")
-    p.add_argument("--stage", default="cnn",
+
+    # ── run 디렉터리 자동 로드 (권장) ─────────────────────────────────────────
+    p.add_argument("--run-dir",  default="",
+                   help="단일 run 디렉터리 (config.json + best_model.pt 자동 로드)")
+    p.add_argument("--run-dirs", nargs="+", default=[],
+                   help="비교할 run 디렉터리 목록")
+
+    # ── 체크포인트 직접 지정 (구형 호환) ──────────────────────────────────────
+    p.add_argument("--ckpt",   default="", help="단일 모델 체크포인트 경로")
+    p.add_argument("--stage",  default="cnn",
                    choices=["lstm", "attn", "local_map", "cnn", "e2e"],
-                   help="모델 종류 (cnn / e2e 는 동일 구조 SATSCNNStage)")
-    p.add_argument("--label", default="",
-                   help="표시 이름 (기본: 체크포인트 폴더명)")
+                   help="모델 종류 (--run-dir 사용 시 자동 감지)")
+    p.add_argument("--label",  default="", help="표시 이름")
+    p.add_argument("--ckpts",  nargs="+", default=[])
+    p.add_argument("--stages", nargs="+", default=[])
+    p.add_argument("--labels", nargs="+", default=[])
 
-    # 다중 모델 비교
-    p.add_argument("--ckpts",  nargs="+", default=[],
-                   help="비교할 체크포인트 경로 목록")
-    p.add_argument("--stages", nargs="+", default=[],
-                   help="각 체크포인트의 stage (기본: 모두 cnn)")
-    p.add_argument("--labels", nargs="+", default=[],
-                   help="각 체크포인트의 표시 이름 (기본: 폴더명)")
+    # ── 명시적 오버라이드 (config.json 값 우선, 지정 시만 덮어씀) ─────────────
+    p.add_argument("--device",     default=None, help="cuda / cpu")
+    p.add_argument("--batch-size", type=int, default=None)
+    p.add_argument("--val-trials", nargs="+", default=None,
+                   help="명시 시에만 config.json 값 대체")
+    p.add_argument("--exclude-diameters", nargs="+", type=int, default=None)
 
-    # 데이터 설정 (config.json 값을 오버라이드)
-    p.add_argument("--raw-dir",    default="raw_data")
-    p.add_argument("--gt-dir",     default="sats/preprocessing/gt_output_v1")
-    p.add_argument("--val-trials", nargs="+",
-                   default=["ecomesh_d5_z1_test3", "ecomesh_d5_z1.5_test9"])
-    p.add_argument("--exclude-diameters", nargs="+", type=int, default=[])
-
-    # 출력 / 추론 설정
-    p.add_argument("--out-dir",    default="sats/tools/viz_output/taxel_rmse")
-    p.add_argument("--batch-size", type=int, default=256,
-                   help="추론 배치 크기 (메모리 조절용)")
-    p.add_argument("--device",     default="cuda")
+    # ── 출력 ──────────────────────────────────────────────────────────────────
+    p.add_argument("--out-dir", default="", help="출력 디렉터리 (기본: run-dir/taxel_rmse)")
     return p
 
 
 def main() -> None:
     args = _build_parser().parse_args()
 
-    cfg_overrides = {
-        "raw_dir":            args.raw_dir,
-        "gt_dir":             args.gt_dir,
-        "dataset_index_path": f"{args.gt_dir}/dataset_index.json",
-        "val_trials":         args.val_trials,
-        "exclude_diameters":  args.exclude_diameters,
-        "batch_size":         args.batch_size,
-        "device":             args.device,
-    }
+    # 명시된 인자만 오버라이드에 포함
+    explicit_overrides: dict = {}
+    if args.device is not None:
+        explicit_overrides["device"] = args.device
+    if args.batch_size is not None:
+        explicit_overrides["batch_size"] = args.batch_size
+    if args.val_trials is not None:
+        explicit_overrides["val_trials"] = args.val_trials
+    if args.exclude_diameters is not None:
+        explicit_overrides["exclude_diameters"] = args.exclude_diameters
 
-    if args.ckpts:
+    # device 미지정 시 기본 cuda
+    if "device" not in explicit_overrides:
+        explicit_overrides["device"] = "cuda"
+
+    # ── run-dir 방식 ───────────────────────────────────────────────────────────
+    if args.run_dirs:
+        entries = []
+        for rd in args.run_dirs:
+            run_dir = Path(rd)
+            cfg_tmp = load_cfg_from_dir(run_dir, {})
+            stage   = detect_stage(run_dir, cfg_tmp)
+            label   = run_dir.name
+            entries.append((run_dir / "best_model.pt", stage, label, run_dir))
+        if args.labels:
+            for i, lbl in enumerate(args.labels[:len(entries)]):
+                ckpt, stg, _, cfg_d = entries[i]
+                entries[i] = (ckpt, stg, lbl, cfg_d)
+
+    elif args.run_dir:
+        run_dir = Path(args.run_dir)
+        cfg_tmp = load_cfg_from_dir(run_dir, {})
+        stage   = args.stage if args.stage != "cnn" else detect_stage(run_dir, cfg_tmp)
+        label   = args.label or run_dir.name
+        entries = [(run_dir / "best_model.pt", stage, label, run_dir)]
+
+    # ── ckpt 직접 지정 방식 ────────────────────────────────────────────────────
+    elif args.ckpts:
         ckpt_paths = [Path(c) for c in args.ckpts]
         stages = args.stages if args.stages else ["cnn"] * len(ckpt_paths)
         labels = args.labels if args.labels else [p.parent.name for p in ckpt_paths]
+        entries = [(p, s, l, p.parent) for p, s, l in zip(ckpt_paths, stages, labels)]
+
+    elif args.ckpt:
+        ckpt_path = Path(args.ckpt)
+        entries = [(ckpt_path, args.stage, args.label or ckpt_path.parent.name,
+                    ckpt_path.parent)]
+
     else:
-        if not args.ckpt:
-            raise SystemExit("--ckpt 또는 --ckpts 를 지정하세요.")
-        ckpt_paths = [Path(args.ckpt)]
-        stages     = [args.stage]
-        labels     = [args.label or Path(args.ckpt).parent.name]
+        raise SystemExit("--run-dir / --run-dirs / --ckpt / --ckpts 중 하나를 지정하세요.")
 
-    if len(stages) != len(ckpt_paths) or len(labels) != len(ckpt_paths):
-        raise SystemExit("--ckpts / --stages / --labels 의 개수가 일치해야 합니다.")
+    # 출력 디렉터리
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+    elif args.run_dir:
+        out_dir = Path(args.run_dir) / "taxel_rmse"
+    elif args.run_dirs:
+        out_dir = Path("sats/tools/viz_output/taxel_rmse")
+    else:
+        out_dir = Path("sats/tools/viz_output/taxel_rmse")
 
-    run_analysis(ckpt_paths, stages, labels, cfg_overrides, Path(args.out_dir))
+    run_analysis(entries, explicit_overrides, out_dir)
 
 
 if __name__ == "__main__":
