@@ -7,7 +7,8 @@
       "Bash(xargs -I {} basename {})",
       "Bash(find /home/user/sensor_training/preprocessing/preprocessing_data/eco20_loading_only -type f -name \"meta.json\" -exec head -50 {})",
       "Bash(xargs cat:*)",
-      "Bash(wait)"
+      "Bash(wait)",
+      "Bash(kill %1)"
     ]
   }
 }
