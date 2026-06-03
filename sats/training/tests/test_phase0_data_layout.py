@@ -3,7 +3,7 @@ import os
 import pandas as pd
 import pytest
 
-RAW_ROOT = os.path.join(os.path.dirname(__file__), "../../../../raw_data/ecomesh")
+RAW_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../raw_data/ecomesh")
 D5_DIR = os.path.join(RAW_ROOT, "d5/z_2.5mm/test1")
 D10_DIR = os.path.join(RAW_ROOT, "d10/z_2.0mm/test1")
 
@@ -128,13 +128,13 @@ class TestLoadcellBaseline:
 
     def test_d5_loadcell_idle_kg_reasonable(self):
         df = pd.read_csv(os.path.join(D5_DIR, "loadcell_data.csv"))
-        # 처음 5% 행 = 무부하 head 구간 추정
-        head_kg = df.kg.iloc[: max(1, len(df) // 20)].mean()
+        # 처음 1000행 = 스캔 시작 전 무부하 head 구간
+        head_kg = df.kg.iloc[:1000].mean()
         assert 0.05 <= head_kg <= 0.20, f"d5 idle baseline 범위 이상: {head_kg:.4f} kg"
 
     def test_d10_loadcell_idle_kg_reasonable(self):
         df = pd.read_csv(os.path.join(D10_DIR, "loadcell_data.csv"))
-        head_kg = df.kg.iloc[: max(1, len(df) // 20)].mean()
+        head_kg = df.kg.iloc[:1000].mean()
         assert 0.05 <= head_kg <= 0.20, f"d10 idle baseline 범위 이상: {head_kg:.4f} kg"
 
     def test_d5_loadcell_peak_physically_plausible(self):
