@@ -4,14 +4,13 @@ Raw sensor stream merger for tactile super-resolution experiments.
 
 기능:
 1) raw_data 하위 trial 폴더명(소재_인덴터지름_시험번호) 파싱
-2) due / ethermotion / afd CSV를 timestamp 기준으로 정렬 및 동기화
+2) due / ethermotion / loadcell CSV를 timestamp 기준으로 정렬 및 동기화
 3) trial별 통합 CSV 생성
 4) 동기화 검증용 PNG 생성
-5) 무부하(baseline) 구간 통계(due/afd) JSON 저장
+5) 무부하(baseline) 구간 통계(due/loadcell) JSON 저장
 
 예시:
-  python3 preprocessing/raw_merge.py \
-    --raw-root /home/user/sensor_training/preprocessing/raw_data
+  python3 sats/preprocessing/raw_merge.py --raw-root /home/user/sensor_training/raw_data
 """
 
 from __future__ import annotations
@@ -35,45 +34,74 @@ INDENTER_DIR_RE = re.compile(r"^d(?P<diameter_mm>\d+(?:\.\d+)?)$", re.IGNORECASE
 Z_DIR_RE = re.compile(r"^z_?(?P<z_max_indentation_mm>\d+(?:\.\d+)?)mm$", re.IGNORECASE)
 TEST_DIR_RE = re.compile(r"^test(?P<trial_no>\d+)$", re.IGNORECASE)
 
-# CSV 파일명 변형 대응: "*_data_*.csv" 외에
-# due_<소재>_<번호>.csv, afd50_<소재>_<번호>.csv, ethermotion/eithermotion_*.csv 등도 허용한다.
+# CSV 파일명 변형 대응: "*_data*.csv" 외에
+# due_<소재>_<번호>.csv, loadcell_<소재>_<번호>.csv, ethermotion/eithermotion_*.csv 등도 허용한다.
 DUE_PATTERNS = [
-    "due_data_*.csv",
+    "due_data*.csv",
     "due_*_*.csv",
     "due*.csv",
 ]
 ETHERMOTION_PATTERNS = [
-    "ethermotion_data_*.csv",
+    "ethermotion_data*.csv",
     "ethermotion_*_*.csv",
     "eithermotion_*_*.csv",  # 현장 오타 대응
     "*thermotion*.csv",
 ]
-AFD_PATTERNS = [
-    "afd50_data_*.csv",
-    "afd50_*_*.csv",
-    "afd_*_*.csv",
-    "afd*.csv",
+# force source: afd50(FT[N]) → loadcell(kg). afd50_data.csv는 헤더만 존재(0행)이므로 사용 안 함.
+LOADCELL_PATTERNS = [
+    "loadcell_data*.csv",
+    "loadcell_*_*.csv",
+    "loadcell*.csv",
 ]
 
 SKIN_COLS = [f"Skin{i}" for i in range(1, 17)]
 XYZ_SCALE = 1e-4  # 0.1 um -> mm
 XY_GRID_MM = 1e-4
 XY_GRID_TOL_MM = 1e-9
-Z_OFFSET_RAW = 105000
+GRAVITY = 9.80665  # kg -> N 변환 계수
+Z_START_BY_DIAMETER_MM = {
+    5.0: 13.0,
+    10.0: 12.0,
+}
+
+# 측정 그리드 (변경점3: 41점, ±10.0mm)
+GRID_SIZE = 41
+GRID_MIN_MM = -10.0
+GRID_MAX_MM = 10.0
+# 측정 스캔 시작점 (변경점4: (-10,-10) 시작 지그재그). z 영점 기준점으로 사용.
+SCAN_START_X_MM = GRID_MIN_MM
+SCAN_START_Y_MM = GRID_MIN_MM
+
+
+def kg_to_newton(kg: float, baseline_kg: float) -> float:
+    """loadcell kg → 수직력 N. N = (kg − baseline) × g."""
+    return (kg - baseline_kg) * GRAVITY
+
+
+def z_start_for_indenter(diameter_mm: float | None) -> float | None:
+    """Return mk555 start Z for a known indenter diameter."""
+
+    if diameter_mm is None:
+        return None
+    for known_diameter, z_start in Z_START_BY_DIAMETER_MM.items():
+        if abs(float(diameter_mm) - known_diameter) < 1e-6:
+            return z_start
+    return None
 
 
 
 def parse_args() -> argparse.Namespace:
+    this = Path(__file__).resolve()
     parser = argparse.ArgumentParser(description="Merge raw trial streams by timestamp.")
     parser.add_argument(
         "--raw-root",
         type=Path,
-        default=Path("/home/user/sensor_training/preprocessing/raw_data"),
+        default=this.parents[2] / "raw_data",
         help="Root directory that contains trial folders.",
     )
     parser.add_argument(
         "--sync-ref",
-        choices=["due", "ethermotion", "afd"],
+        choices=["due", "ethermotion", "loadcell"],
         default="ethermotion",
         help="Reference stream for merged timeline.",
     )
@@ -86,8 +114,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--resample-hz",
         type=float,
-        default=100.0,
-        help="Target Hz for --align-mode resample. Use 100 for afd-limited common rate.",
+        default=200.0,
+        help="Target Hz for --align-mode resample.",
     )
     parser.add_argument(
         "--window-ms",
@@ -111,7 +139,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lag-ethermotion-ms", type=float, default=0.0, help="Global lag correction for ethermotion timestamp (ms)."
     )
-    parser.add_argument("--lag-afd-ms", type=float, default=0.0, help="Global lag correction for afd timestamp (ms).")
+    parser.add_argument(
+        "--lag-loadcell-ms", type=float, default=0.0, help="Global lag correction for loadcell timestamp (ms)."
+    )
     parser.add_argument(
         "--due-tol-sec",
         type=float,
@@ -125,10 +155,10 @@ def parse_args() -> argparse.Namespace:
         help="Timestamp tolerance(sec) when aligning ethermotion stream.",
     )
     parser.add_argument(
-        "--afd-tol-sec",
+        "--loadcell-tol-sec",
         type=float,
         default=0.03,
-        help="Timestamp tolerance(sec) when aligning afd stream.",
+        help="Timestamp tolerance(sec) when aligning loadcell stream.",
     )
     parser.add_argument(
         "--baseline-fallback-sec",
@@ -145,7 +175,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--plot-y-mm",
         type=float,
-        default=9.75,
+        default=10.0,
         help="Fixed Y(mm) for sync plot.",
     )
     parser.add_argument(
@@ -158,13 +188,13 @@ def parse_args() -> argparse.Namespace:
         "--min-match-ratio",
         type=float,
         default=0.9,
-        help="due/ethermotion/afd match_ratio가 이 값보다 낮으면 에러로 중단합니다.",
+        help="due/ethermotion/loadcell match_ratio가 이 값보다 낮으면 에러로 중단합니다.",
     )
     parser.add_argument(
         "--force-round-dp",
         type=int,
         default=2,
-        help="Fx/Fy/Fz 소수점 자릿수(예: 2 -> 0.01). 음수면 반올림 비활성.",
+        help="Fz 소수점 자릿수(예: 2 -> 0.01). 음수면 반올림 비활성.",
     )
     return parser.parse_args()
 
@@ -277,18 +307,19 @@ def find_single_file(trial_dir: Path, patterns: list[str]) -> Path:
 
 
 
-def load_due_csv(path: Path) -> pd.DataFrame:
+def load_due_csv(path: Path | str) -> pd.DataFrame:
+    path = Path(path)
     df = pd.read_csv(path)
-    expected = ["Timestamp", *SKIN_COLS]
+    expected = ["time_s", *SKIN_COLS]
     missing = [c for c in expected if c not in df.columns]
     if missing:
         raise ValueError(f"[{path.name}] missing columns: {missing}")
 
-    out = df[["Timestamp", *SKIN_COLS]].copy()
+    out = df[["time_s", *SKIN_COLS]].copy()
     # 비수치 오염값은 NaN으로 강제 후 행 단위로 제거해 병합을 계속 진행한다.
-    for c in ["Timestamp", *SKIN_COLS]:
+    for c in ["time_s", *SKIN_COLS]:
         out[c] = pd.to_numeric(out[c], errors="coerce")
-    bad_mask = out[["Timestamp", *SKIN_COLS]].isna().any(axis=1)
+    bad_mask = out[["time_s", *SKIN_COLS]].isna().any(axis=1)
     bad_n = int(bad_mask.sum())
     if bad_n:
         print(f"[{path.name}] warning: dropped {bad_n} invalid due rows")
@@ -296,7 +327,7 @@ def load_due_csv(path: Path) -> pd.DataFrame:
     if out.empty:
         raise ValueError(f"[{path.name}] all due rows invalid after numeric coercion")
 
-    out = out.rename(columns={"Timestamp": "timestamp_due"})
+    out = out.rename(columns={"time_s": "timestamp_due"})
     out = out.sort_values("timestamp_due").reset_index(drop=True)
     out["due_mean"] = out[SKIN_COLS].mean(axis=1)
     out["due_std"] = out[SKIN_COLS].std(axis=1)
@@ -304,17 +335,23 @@ def load_due_csv(path: Path) -> pd.DataFrame:
 
 
 
-def load_ethermotion_csv(path: Path) -> pd.DataFrame:
+def load_ethermotion_csv(path: Path | str) -> pd.DataFrame:
+    path = Path(path)
     df = pd.read_csv(path)
-    expected = ["Timestamp", "X", "Y", "Z"]
+    # U(전단 변위)는 신규 축. 없으면 0으로 채운다(하위 호환).
+    has_u = "U" in df.columns
+    base_cols = ["time_s", "X", "Y", "Z"] + (["U"] if has_u else [])
+    expected = ["time_s", "X", "Y", "Z"]
     missing = [c for c in expected if c not in df.columns]
     if missing:
         raise ValueError(f"[{path.name}] missing columns: {missing}")
 
-    out = df[["Timestamp", "X", "Y", "Z"]].copy()
-    for c in ["Timestamp", "X", "Y", "Z"]:
+    out = df[base_cols].copy()
+    if not has_u:
+        out["U"] = 0.0
+    for c in ["time_s", "X", "Y", "Z", "U"]:
         out[c] = pd.to_numeric(out[c], errors="coerce")
-    bad_mask = out[["Timestamp", "X", "Y", "Z"]].isna().any(axis=1)
+    bad_mask = out[["time_s", "X", "Y", "Z", "U"]].isna().any(axis=1)
     bad_n = int(bad_mask.sum())
     if bad_n:
         print(f"[{path.name}] warning: dropped {bad_n} invalid ethermotion rows")
@@ -322,57 +359,60 @@ def load_ethermotion_csv(path: Path) -> pd.DataFrame:
     if out.empty:
         raise ValueError(f"[{path.name}] all ethermotion rows invalid after numeric coercion")
 
-    out = out.rename(columns={"Timestamp": "timestamp_ethermotion"})
+    out = out.rename(columns={"time_s": "timestamp_ethermotion"})
     out = out.sort_values("timestamp_ethermotion").reset_index(drop=True)
 
     out["x_mm"] = out["X"] * XYZ_SCALE
     out["y_mm"] = out["Y"] * XYZ_SCALE
     out["z_mm"] = out["Z"] * XYZ_SCALE
+    out["u_mm"] = out["U"] * XYZ_SCALE  # 전단 변위(보존만, 필터는 dataset 단계)
     return out
 
 
 
-def load_afd_csv(path: Path) -> pd.DataFrame:
+def load_loadcell_csv(path: Path | str) -> pd.DataFrame:
+    """단일축 loadcell CSV(time_s, kg) 로드. kg→N 환산은 build_export_frame에서 수행."""
+    path = Path(path)
     df = pd.read_csv(path)
-    expected = ["Timestamp", "Fx", "Fy", "Fz"]
+    expected = ["time_s", "kg"]
     missing = [c for c in expected if c not in df.columns]
     if missing:
         raise ValueError(f"[{path.name}] missing columns: {missing}")
 
-    out = df[["Timestamp", "Fx", "Fy", "Fz"]].copy()
-    for c in ["Timestamp", "Fx", "Fy", "Fz"]:
+    out = df[["time_s", "kg"]].copy()
+    for c in ["time_s", "kg"]:
         out[c] = pd.to_numeric(out[c], errors="coerce")
-    bad_mask = out[["Timestamp", "Fx", "Fy", "Fz"]].isna().any(axis=1)
+    bad_mask = out[["time_s", "kg"]].isna().any(axis=1)
     bad_n = int(bad_mask.sum())
     if bad_n:
-        print(f"[{path.name}] warning: dropped {bad_n} invalid afd rows")
+        print(f"[{path.name}] warning: dropped {bad_n} invalid loadcell rows")
         out = out.loc[~bad_mask].copy()
     if out.empty:
-        raise ValueError(f"[{path.name}] all afd rows invalid after numeric coercion")
+        raise ValueError(f"[{path.name}] all loadcell rows invalid after numeric coercion")
 
-    out = out.rename(columns={"Timestamp": "timestamp_afd"})
-    out = out.sort_values("timestamp_afd").reset_index(drop=True)
+    out = out.rename(columns={"time_s": "timestamp_loadcell"})
+    out = out.sort_values("timestamp_loadcell").reset_index(drop=True)
     return out
 
 
 def apply_global_lag_correction(
     due_df: pd.DataFrame,
     ether_df: pd.DataFrame,
-    afd_df: pd.DataFrame,
+    loadcell_df: pd.DataFrame,
     lag_due_sec: float,
     lag_ether_sec: float,
-    lag_afd_sec: float,
+    lag_loadcell_sec: float,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     due = due_df.copy()
     ether = ether_df.copy()
-    afd = afd_df.copy()
+    loadcell = loadcell_df.copy()
     if lag_due_sec != 0.0:
         due["timestamp_due"] = due["timestamp_due"] + lag_due_sec
     if lag_ether_sec != 0.0:
         ether["timestamp_ethermotion"] = ether["timestamp_ethermotion"] + lag_ether_sec
-    if lag_afd_sec != 0.0:
-        afd["timestamp_afd"] = afd["timestamp_afd"] + lag_afd_sec
-    return due, ether, afd
+    if lag_loadcell_sec != 0.0:
+        loadcell["timestamp_loadcell"] = loadcell["timestamp_loadcell"] + lag_loadcell_sec
+    return due, ether, loadcell
 
 
 
@@ -401,7 +441,7 @@ def _head_zero_block_bounds(ether_df: pd.DataFrame) -> tuple[float | None, float
 
 def compute_baseline(
     due_df: pd.DataFrame,
-    afd_df: pd.DataFrame,
+    loadcell_df: pd.DataFrame,
     ether_df: pd.DataFrame,
     fallback_sec: float,
 ) -> dict:
@@ -412,7 +452,7 @@ def compute_baseline(
         baseline_mode = "fallback_head_window"
         earliest = min(
             float(due_df["timestamp_due"].iloc[0]),
-            float(afd_df["timestamp_afd"].iloc[0]),
+            float(loadcell_df["timestamp_loadcell"].iloc[0]),
             float(ether_df["timestamp_ethermotion"].iloc[0]),
         )
         t0 = earliest
@@ -422,7 +462,9 @@ def compute_baseline(
         )
 
     due_bl = due_df[(due_df["timestamp_due"] >= t0) & (due_df["timestamp_due"] <= t1)].copy()
-    afd_bl = afd_df[(afd_df["timestamp_afd"] >= t0) & (afd_df["timestamp_afd"] <= t1)].copy()
+    lc_bl = loadcell_df[
+        (loadcell_df["timestamp_loadcell"] >= t0) & (loadcell_df["timestamp_loadcell"] <= t1)
+    ].copy()
 
     baseline: dict = {
         "baseline_mode": baseline_mode,
@@ -431,16 +473,16 @@ def compute_baseline(
         "baseline_duration_sec": float(t1 - t0),
         "ethermotion_baseline_rows": int(n_ether),
         "due_baseline_rows": int(len(due_bl)),
-        "afd_baseline_rows": int(len(afd_bl)),
+        "loadcell_baseline_rows": int(len(lc_bl)),
     }
 
     for c in SKIN_COLS + ["due_mean", "due_std"]:
         baseline[f"{c}_mean"] = float(due_bl[c].mean()) if len(due_bl) else None
         baseline[f"{c}_std"] = float(due_bl[c].std()) if len(due_bl) else None
 
-    for c in ["Fx", "Fy", "Fz"]:
-        baseline[f"{c}_mean"] = float(afd_bl[c].mean()) if len(afd_bl) else None
-        baseline[f"{c}_std"] = float(afd_bl[c].std()) if len(afd_bl) else None
+    # 무부하 head 구간 kg 평균 = baseline. N 환산 기준.
+    baseline["kg_baseline"] = float(lc_bl["kg"].mean()) if len(lc_bl) else None
+    baseline["kg_baseline_std"] = float(lc_bl["kg"].std()) if len(lc_bl) else None
 
     return baseline
 
@@ -449,43 +491,43 @@ def compute_baseline(
 def align_streams(
     due_df: pd.DataFrame,
     ether_df: pd.DataFrame,
-    afd_df: pd.DataFrame,
+    loadcell_df: pd.DataFrame,
     align_mode: str,
     sync_ref: str,
     resample_hz: float,
     due_tol_sec: float,
     ether_tol_sec: float,
-    afd_tol_sec: float,
+    loadcell_tol_sec: float,
 ) -> pd.DataFrame:
     if align_mode == "resample":
         return align_streams_resample(
             due_df=due_df,
             ether_df=ether_df,
-            afd_df=afd_df,
+            loadcell_df=loadcell_df,
             target_hz=resample_hz,
         )
 
     frames = {
         "due": due_df,
         "ethermotion": ether_df,
-        "afd": afd_df,
+        "loadcell": loadcell_df,
     }
     key_cols = {
         "due": "timestamp_due",
         "ethermotion": "timestamp_ethermotion",
-        "afd": "timestamp_afd",
+        "loadcell": "timestamp_loadcell",
     }
     tols = {
         "due": due_tol_sec,
         "ethermotion": ether_tol_sec,
-        "afd": afd_tol_sec,
+        "loadcell": loadcell_tol_sec,
     }
 
     ref = frames[sync_ref].copy()
     ref_key = key_cols[sync_ref]
 
     merged = ref
-    for name in ["due", "ethermotion", "afd"]:
+    for name in ["due", "ethermotion", "loadcell"]:
         if name == sync_ref:
             continue
         merged = pd.merge_asof(
@@ -505,14 +547,14 @@ def align_streams(
         merged["lag_due_sec"] = merged["timestamp_due"] - merged["timestamp"]
     if "timestamp_ethermotion" in merged.columns:
         merged["lag_ethermotion_sec"] = merged["timestamp_ethermotion"] - merged["timestamp"]
-    if "timestamp_afd" in merged.columns:
-        merged["lag_afd_sec"] = merged["timestamp_afd"] - merged["timestamp"]
+    if "timestamp_loadcell" in merged.columns:
+        merged["lag_loadcell_sec"] = merged["timestamp_loadcell"] - merged["timestamp"]
     if "lag_due_sec" in merged.columns:
         merged["lag_due_abs_sec"] = np.abs(merged["lag_due_sec"])
     if "lag_ethermotion_sec" in merged.columns:
         merged["lag_ethermotion_abs_sec"] = np.abs(merged["lag_ethermotion_sec"])
-    if "lag_afd_sec" in merged.columns:
-        merged["lag_afd_abs_sec"] = np.abs(merged["lag_afd_sec"])
+    if "lag_loadcell_sec" in merged.columns:
+        merged["lag_loadcell_abs_sec"] = np.abs(merged["lag_loadcell_sec"])
 
     return merged
 
@@ -574,14 +616,14 @@ def _rolling_aggregate(df: pd.DataFrame, cols: list[str], window_samples: int, a
 def align_streams_resample(
     due_df: pd.DataFrame,
     ether_df: pd.DataFrame,
-    afd_df: pd.DataFrame,
+    loadcell_df: pd.DataFrame,
     target_hz: float,
 ) -> pd.DataFrame:
     hz_due = _estimate_hz_from_timestamp(due_df, "timestamp_due")
     hz_ether = _estimate_hz_from_timestamp(ether_df, "timestamp_ethermotion")
-    hz_afd = _estimate_hz_from_timestamp(afd_df, "timestamp_afd")
+    hz_loadcell = _estimate_hz_from_timestamp(loadcell_df, "timestamp_loadcell")
 
-    hz_candidates = [h for h in [hz_due, hz_ether, hz_afd] if h is not None and h > 0]
+    hz_candidates = [h for h in [hz_due, hz_ether, hz_loadcell] if h is not None and h > 0]
     if not hz_candidates:
         raise RuntimeError("Failed to estimate source sampling rates.")
 
@@ -592,27 +634,27 @@ def align_streams_resample(
     t_start = max(
         float(due_df["timestamp_due"].iloc[0]),
         float(ether_df["timestamp_ethermotion"].iloc[0]),
-        float(afd_df["timestamp_afd"].iloc[0]),
+        float(loadcell_df["timestamp_loadcell"].iloc[0]),
     )
     t_end = min(
         float(due_df["timestamp_due"].iloc[-1]),
         float(ether_df["timestamp_ethermotion"].iloc[-1]),
-        float(afd_df["timestamp_afd"].iloc[-1]),
+        float(loadcell_df["timestamp_loadcell"].iloc[-1]),
     )
     if t_end <= t_start:
-        raise RuntimeError("No overlapping time window among due/ethermotion/afd.")
+        raise RuntimeError("No overlapping time window among due/ethermotion/loadcell.")
 
     n = int(np.floor((t_end - t_start) / dt)) + 1
     common_t = t_start + np.arange(n, dtype=np.float64) * dt
 
     due_i = _interp_to_common_t(due_df, "timestamp_due", common_t)
     ether_i = _interp_to_common_t(ether_df, "timestamp_ethermotion", common_t)
-    afd_i = _interp_to_common_t(afd_df, "timestamp_afd", common_t)
+    loadcell_i = _interp_to_common_t(loadcell_df, "timestamp_loadcell", common_t)
 
     merged = pd.DataFrame({"timestamp": common_t})
     merged["timestamp_due"] = common_t
     merged["timestamp_ethermotion"] = common_t
-    merged["timestamp_afd"] = common_t
+    merged["timestamp_loadcell"] = common_t
 
     for c in due_i.columns:
         if c != "timestamp_due":
@@ -620,20 +662,20 @@ def align_streams_resample(
     for c in ether_i.columns:
         if c != "timestamp_ethermotion":
             merged[c] = ether_i[c].to_numpy()
-    for c in afd_i.columns:
-        if c != "timestamp_afd":
-            merged[c] = afd_i[c].to_numpy()
+    for c in loadcell_i.columns:
+        if c != "timestamp_loadcell":
+            merged[c] = loadcell_i[c].to_numpy()
 
     merged["time_rel_sec"] = merged["timestamp"] - float(merged["timestamp"].iloc[0])
     due_t = due_df["timestamp_due"].to_numpy(dtype=np.float64)
     ether_t = ether_df["timestamp_ethermotion"].to_numpy(dtype=np.float64)
-    afd_t = afd_df["timestamp_afd"].to_numpy(dtype=np.float64)
+    loadcell_t = loadcell_df["timestamp_loadcell"].to_numpy(dtype=np.float64)
     merged["lag_due_sec"] = 0.0
     merged["lag_ethermotion_sec"] = 0.0
-    merged["lag_afd_sec"] = 0.0
+    merged["lag_loadcell_sec"] = 0.0
     merged["lag_due_abs_sec"] = _nearest_abs_dt(due_t, common_t)
     merged["lag_ethermotion_abs_sec"] = _nearest_abs_dt(ether_t, common_t)
-    merged["lag_afd_abs_sec"] = _nearest_abs_dt(afd_t, common_t)
+    merged["lag_loadcell_abs_sec"] = _nearest_abs_dt(loadcell_t, common_t)
     merged["resample_hz"] = float(target_hz)
     return merged
 
@@ -647,8 +689,8 @@ def apply_time_window_aggregation(
     if window_samples < 2:
         return merged
     due_cols = [c for c in SKIN_COLS + ["due_mean", "due_std"] if c in merged.columns]
-    afd_cols = [c for c in ["Fx", "Fy", "Fz"] if c in merged.columns]
-    out = _rolling_aggregate(merged, due_cols + afd_cols, window_samples=window_samples, agg=agg)
+    force_cols = [c for c in ["kg"] if c in merged.columns]
+    out = _rolling_aggregate(merged, due_cols + force_cols, window_samples=window_samples, agg=agg)
     out["window_ms"] = float(window_ms)
     out["window_agg"] = agg
     return out
@@ -659,7 +701,7 @@ def apply_quality_gate(merged: pd.DataFrame, max_dt_sec: float) -> pd.DataFrame:
         return merged
     out = merged.copy()
     masks = []
-    for c in ["lag_due_abs_sec", "lag_ethermotion_abs_sec", "lag_afd_abs_sec"]:
+    for c in ["lag_due_abs_sec", "lag_ethermotion_abs_sec", "lag_loadcell_abs_sec"]:
         if c in out.columns:
             masks.append(out[c] <= max_dt_sec)
     if masks:
@@ -681,12 +723,12 @@ def add_baseline_corrected_columns(merged: pd.DataFrame, baseline: dict) -> pd.D
         else:
             out[f"{c}_bc"] = out[c] - m
 
-    for c in ["Fx", "Fy", "Fz"]:
-        m = baseline.get(f"{c}_mean")
-        if m is None:
-            out[f"{c}_bc"] = np.nan
-        else:
-            out[f"{c}_bc"] = out[c] - m
+    # loadcell: kg → baseline 보정 후 N 환산한 Fz_bc (plot/검증용)
+    kg_bl = baseline.get("kg_baseline")
+    if kg_bl is None or "kg" not in out.columns:
+        out["Fz_bc"] = np.nan
+    else:
+        out["Fz_bc"] = (out["kg"] - kg_bl) * GRAVITY
 
     return out
 
@@ -721,7 +763,7 @@ def filter_xy_grid_stable_points(
 
 
 def trim_to_common_recording_start(
-    merged: pd.DataFrame, due_df: pd.DataFrame, ether_df: pd.DataFrame, afd_df: pd.DataFrame
+    merged: pd.DataFrame, due_df: pd.DataFrame, ether_df: pd.DataFrame, loadcell_df: pd.DataFrame
 ) -> pd.DataFrame:
     if merged.empty:
         return merged.copy()
@@ -729,12 +771,12 @@ def trim_to_common_recording_start(
     t_common_start = max(
         float(due_df["timestamp_due"].iloc[0]),
         float(ether_df["timestamp_ethermotion"].iloc[0]),
-        float(afd_df["timestamp_afd"].iloc[0]),
+        float(loadcell_df["timestamp_loadcell"].iloc[0]),
     )
     out = merged[merged["timestamp"] >= t_common_start].copy()
 
     # 세 스트림이 실제로 모두 존재하는 구간만 사용.
-    req_cols = ["timestamp_due", "timestamp_afd", "timestamp_ethermotion"]
+    req_cols = ["timestamp_due", "timestamp_loadcell", "timestamp_ethermotion"]
     for c in req_cols:
         if c in out.columns:
             out = out[out[c].notna()]
@@ -742,7 +784,12 @@ def trim_to_common_recording_start(
     return out.reset_index(drop=True)
 
 
-def build_export_frame(merged: pd.DataFrame, force_round_dp: int | None = None) -> pd.DataFrame:
+def build_export_frame(
+    merged: pd.DataFrame,
+    baseline_kg: float | None = None,
+    force_round_dp: int | None = None,
+    z_start_mm: float | None = None,
+) -> pd.DataFrame:
     out = merged.copy()
     out["timestep_sec"] = out["time_rel_sec"]
 
@@ -755,20 +802,19 @@ def build_export_frame(merged: pd.DataFrame, force_round_dp: int | None = None) 
             out[c] = np.nan
     for c in [
         "timestamp_due",
-        "timestamp_afd",
+        "timestamp_loadcell",
         "timestamp_ethermotion",
         "lag_due_sec",
-        "lag_afd_sec",
+        "lag_loadcell_sec",
         "lag_ethermotion_sec",
         "lag_due_abs_sec",
-        "lag_afd_abs_sec",
+        "lag_loadcell_abs_sec",
         "lag_ethermotion_abs_sec",
         "x_mm",
         "y_mm",
         "z_mm",
-        "Fx",
-        "Fy",
-        "Fz",
+        "u_mm",
+        "kg",
     ]:
         if c not in out.columns:
             out[c] = np.nan
@@ -776,24 +822,30 @@ def build_export_frame(merged: pd.DataFrame, force_round_dp: int | None = None) 
     # 출력 좌표는 0.0001 mm 격자로 정리 (특히 z축).
     out["x_mm"] = np.round(out["x_mm"].to_numpy(dtype=np.float64) / XY_GRID_MM) * XY_GRID_MM
     out["y_mm"] = np.round(out["y_mm"].to_numpy(dtype=np.float64) / XY_GRID_MM) * XY_GRID_MM
-    z_raw = np.round(out["z_mm"].to_numpy(dtype=np.float64) / XY_GRID_MM)
-    z_adj_raw = np.where(z_raw <= 0, 0.0, z_raw - Z_OFFSET_RAW)
-    z_adj_raw = np.maximum(z_adj_raw, 0.0)
+    out["u_mm"] = np.round(out["u_mm"].to_numpy(dtype=np.float64) / XY_GRID_MM) * XY_GRID_MM
 
-    # 스캔 시작 기준점(9.75, -9.75)을 추가 영점으로 사용.
-    start_mask = np.isclose(out["x_mm"].to_numpy(dtype=np.float64), 9.75, atol=XY_GRID_MM / 2) & np.isclose(
-        out["y_mm"].to_numpy(dtype=np.float64), -9.75, atol=XY_GRID_MM / 2
-    )
-    if np.any(start_mask):
-        start_offset = float(z_adj_raw[np.where(start_mask)[0][0]])
-        z_adj_raw = np.maximum(z_adj_raw - start_offset, 0.0)
+    # z_stage_mm is the absolute EtherMotion command Z. z_depth_mm is the
+    # indentation depth relative to the mk555 node start Z.
+    z_stage_mm = np.round(out["z_mm"].to_numpy(dtype=np.float64) / XY_GRID_MM) * XY_GRID_MM
+    if z_start_mm is None:
+        start_mask = np.isclose(
+            out["x_mm"].to_numpy(dtype=np.float64), SCAN_START_X_MM, atol=XY_GRID_MM / 2
+        ) & np.isclose(
+            out["y_mm"].to_numpy(dtype=np.float64), SCAN_START_Y_MM, atol=XY_GRID_MM / 2
+        )
+        if np.any(start_mask):
+            z_start_mm = float(np.min(z_stage_mm[start_mask]))
+        else:
+            z_start_mm = float(np.min(z_stage_mm))
+    out["z_stage_mm"] = z_stage_mm
+    out["z_depth_mm"] = np.maximum(z_stage_mm - float(z_start_mm), 0.0)
 
-    out["z_mm"] = z_adj_raw * XY_GRID_MM
+    # 단일축 loadcell: Fz = (kg − baseline) × g. Fx/Fy 없음.
+    bl = baseline_kg if baseline_kg is not None else 0.0
+    out["Fz"] = (out["kg"].to_numpy(dtype=np.float64) - bl) * GRAVITY
 
     # 힘 채널 소수점 절삭(필요 시)
     if force_round_dp is not None:
-        out["Fx"] = np.round(out["Fx"].to_numpy(dtype=np.float64), force_round_dp)
-        out["Fy"] = np.round(out["Fy"].to_numpy(dtype=np.float64), force_round_dp)
         out["Fz"] = np.round(out["Fz"].to_numpy(dtype=np.float64), force_round_dp)
 
     ordered = (
@@ -802,18 +854,18 @@ def build_export_frame(merged: pd.DataFrame, force_round_dp: int | None = None) 
         + [
             "x_mm",
             "y_mm",
-            "z_mm",
-            "Fx",
-            "Fy",
+            "z_stage_mm",
+            "z_depth_mm",
+            "u_mm",
             "Fz",
             "timestamp_due",
-            "timestamp_afd",
+            "timestamp_loadcell",
             "timestamp_ethermotion",
             "lag_due_sec",
-            "lag_afd_sec",
+            "lag_loadcell_sec",
             "lag_ethermotion_sec",
             "lag_due_abs_sec",
-            "lag_afd_abs_sec",
+            "lag_loadcell_abs_sec",
             "lag_ethermotion_abs_sec",
         ]
     )
@@ -824,18 +876,18 @@ def build_export_frame(merged: pd.DataFrame, force_round_dp: int | None = None) 
         + [
             "x_mm",
             "y_mm",
-            "z_mm",
-            "Fx",
-            "Fy",
+            "z_stage_mm",
+            "z_depth_mm",
+            "u_mm",
             "Fz",
             "timestamp_due",
-            "timestamp_afd",
+            "timestamp_loadcell",
             "timestamp_ethermotion",
             "lag_due_sec",
-            "lag_afd_sec",
+            "lag_loadcell_sec",
             "lag_ethermotion_sec",
             "lag_due_abs_sec",
-            "lag_afd_abs_sec",
+            "lag_loadcell_abs_sec",
             "lag_ethermotion_abs_sec",
         ]
     )
@@ -897,9 +949,9 @@ def save_sync_plot(
         if c not in sel.columns:
             sel[c] = np.nan
 
-    # x 목표 그리드(-9.75~9.75, 0.5mm)로 스냅 후,
+    # x 목표 그리드(-10.0~10.0, 0.5mm, 41점)로 스냅 후,
     # 연속 동일 x 구간(=한 x에서의 압입/복귀 구간)마다 대표 1점(최대 z) 추출.
-    x_grid = -9.75 + 0.5 * np.arange(40, dtype=np.float64)
+    x_grid = GRID_MIN_MM + 0.5 * np.arange(GRID_SIZE, dtype=np.float64)
     x_val = sel["x_mm"].to_numpy(dtype=np.float64)
     nearest_idx = np.abs(x_val[:, None] - x_grid[None, :]).argmin(axis=1)
     sel["x_nominal_mm"] = x_grid[nearest_idx]
@@ -952,7 +1004,7 @@ def summarize_merge(merged: pd.DataFrame) -> dict:
             "duration_sec": 0.0,
             "due_match_ratio": 0.0,
             "ethermotion_match_ratio": 0.0,
-            "afd_match_ratio": 0.0,
+            "loadcell_match_ratio": 0.0,
         }
 
     summary = {
@@ -966,9 +1018,9 @@ def summarize_merge(merged: pd.DataFrame) -> dict:
         summary["due_match_ratio"] = float(merged["timestamp_due"].notna().mean())
     if "timestamp_ethermotion" in merged.columns:
         summary["ethermotion_match_ratio"] = float(merged["timestamp_ethermotion"].notna().mean())
-    if "timestamp_afd" in merged.columns:
-        summary["afd_match_ratio"] = float(merged["timestamp_afd"].notna().mean())
-    for c in ["lag_due_abs_sec", "lag_ethermotion_abs_sec", "lag_afd_abs_sec"]:
+    if "timestamp_loadcell" in merged.columns:
+        summary["loadcell_match_ratio"] = float(merged["timestamp_loadcell"].notna().mean())
+    for c in ["lag_due_abs_sec", "lag_ethermotion_abs_sec", "lag_loadcell_abs_sec"]:
         if c in merged.columns:
             vals = pd.to_numeric(merged[c], errors="coerce").dropna().to_numpy(dtype=np.float64)
             if len(vals):
@@ -992,10 +1044,10 @@ def process_trial_dir(
     max_dt_ms: float,
     lag_due_ms: float,
     lag_ethermotion_ms: float,
-    lag_afd_ms: float,
+    lag_loadcell_ms: float,
     due_tol_sec: float,
     ether_tol_sec: float,
-    afd_tol_sec: float,
+    loadcell_tol_sec: float,
     baseline_fallback_sec: float,
     plot_max_points: int,
     plot_y_mm: float,
@@ -1007,36 +1059,39 @@ def process_trial_dir(
 
     due_path = find_single_file(trial_dir, DUE_PATTERNS)
     ether_path = find_single_file(trial_dir, ETHERMOTION_PATTERNS)
-    afd_path = find_single_file(trial_dir, AFD_PATTERNS)
+    loadcell_path = find_single_file(trial_dir, LOADCELL_PATTERNS)
 
     due_df = load_due_csv(due_path)
     ether_df = load_ethermotion_csv(ether_path)
-    afd_df = load_afd_csv(afd_path)
-    due_df, ether_df, afd_df = apply_global_lag_correction(
+    loadcell_df = load_loadcell_csv(loadcell_path)
+    due_df, ether_df, loadcell_df = apply_global_lag_correction(
         due_df,
         ether_df,
-        afd_df,
+        loadcell_df,
         lag_due_sec=lag_due_ms / 1000.0,
         lag_ether_sec=lag_ethermotion_ms / 1000.0,
-        lag_afd_sec=lag_afd_ms / 1000.0,
+        lag_loadcell_sec=lag_loadcell_ms / 1000.0,
     )
 
-    baseline = compute_baseline(due_df, afd_df, ether_df, baseline_fallback_sec)
+    baseline = compute_baseline(due_df, loadcell_df, ether_df, baseline_fallback_sec)
     merged = align_streams(
         due_df,
         ether_df,
-        afd_df,
+        loadcell_df,
         align_mode=align_mode,
         sync_ref=sync_ref,
         resample_hz=resample_hz,
         due_tol_sec=due_tol_sec,
         ether_tol_sec=ether_tol_sec,
-        afd_tol_sec=afd_tol_sec,
+        loadcell_tol_sec=loadcell_tol_sec,
     )
-    merged = trim_to_common_recording_start(merged, due_df=due_df, ether_df=ether_df, afd_df=afd_df)
+    merged = trim_to_common_recording_start(
+        merged, due_df=due_df, ether_df=ether_df, loadcell_df=loadcell_df
+    )
     if align_mode == "resample":
         merged = apply_time_window_aggregation(merged, window_ms=window_ms, agg=window_agg, resample_hz=resample_hz)
     merged = apply_quality_gate(merged, max_dt_sec=max_dt_ms / 1000.0)
+    merged = add_baseline_corrected_columns(merged, baseline)
     merged = filter_xy_grid_stable_points(merged)
 
     summary = summarize_merge(merged)
@@ -1045,27 +1100,38 @@ def process_trial_dir(
     summary["indenter_diameter_mm"] = info["indenter_diameter_mm"]
     summary["z_max_indentation_mm"] = info["z_max_indentation_mm"]
     summary["experiment_no"] = info["experiment_no"]
+    summary["kg_baseline"] = baseline.get("kg_baseline")
     summary["align_mode"] = align_mode
     summary["window_ms"] = float(window_ms)
     summary["window_agg"] = window_agg
     summary["max_dt_ms"] = float(max_dt_ms)
     summary["lag_due_ms"] = float(lag_due_ms)
     summary["lag_ethermotion_ms"] = float(lag_ethermotion_ms)
-    summary["lag_afd_ms"] = float(lag_afd_ms)
+    summary["lag_loadcell_ms"] = float(lag_loadcell_ms)
     if align_mode == "resample" and "resample_hz" in merged.columns:
         summary["resample_hz"] = float(merged["resample_hz"].iloc[0])
 
-    export_df = build_export_frame(merged, force_round_dp=None if force_round_dp is None else force_round_dp)
+    export_df = build_export_frame(
+        merged,
+        baseline_kg=baseline.get("kg_baseline"),
+        force_round_dp=None if force_round_dp is None else force_round_dp,
+        z_start_mm=z_start_for_indenter(info.get("indenter_diameter_mm")),
+    )
 
     merged_csv = trial_dir / f"{info['trial_id']}_merged.csv"
     baseline_json = trial_dir / f"{info['trial_id']}_baseline.json"
     summary_json = trial_dir / f"{info['trial_id']}_merge_summary.json"
+    sync_png = trial_dir / f"{info['trial_id']}_sync.png"
 
     export_df.to_csv(merged_csv, index=False)
     with open(baseline_json, "w", encoding="utf-8") as f:
         json.dump(baseline, f, indent=2, ensure_ascii=False)
     with open(summary_json, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
+    try:
+        save_sync_plot(merged, sync_png, max_points=plot_max_points, y_mm=plot_y_mm, y_tol_mm=plot_y_tol_mm)
+    except Exception as exc:  # plot 실패가 merge 결과를 막지 않도록
+        print(f"[{info['trial_id']}] sync plot skipped: {exc}")
 
     print(f"[{info['trial_id']}] done")
     print(f"  merged:   {merged_csv}")
@@ -1075,14 +1141,14 @@ def process_trial_dir(
         "  match ratio: "
         f"due={summary.get('due_match_ratio', np.nan):.3f}, "
         f"ethermotion={summary.get('ethermotion_match_ratio', np.nan):.3f}, "
-        f"afd={summary.get('afd_match_ratio', np.nan):.3f}"
+        f"loadcell={summary.get('loadcell_match_ratio', np.nan):.3f}"
     )
 
     # 품질 게이트: 매칭 비율 확인
     min_ratio = min(
         summary.get("due_match_ratio", 1.0),
         summary.get("ethermotion_match_ratio", 1.0),
-        summary.get("afd_match_ratio", 1.0),
+        summary.get("loadcell_match_ratio", 1.0),
     )
     if min_ratio < min_match_ratio:
         raise RuntimeError(
@@ -1116,10 +1182,10 @@ def main() -> None:
                 max_dt_ms=args.max_dt_ms,
                 lag_due_ms=args.lag_due_ms,
                 lag_ethermotion_ms=args.lag_ethermotion_ms,
-                lag_afd_ms=args.lag_afd_ms,
+                lag_loadcell_ms=args.lag_loadcell_ms,
                 due_tol_sec=args.due_tol_sec,
                 ether_tol_sec=args.ethermotion_tol_sec,
-                afd_tol_sec=args.afd_tol_sec,
+                loadcell_tol_sec=args.loadcell_tol_sec,
                 baseline_fallback_sec=args.baseline_fallback_sec,
                 plot_max_points=args.plot_max_points,
                 plot_y_mm=args.plot_y_mm,

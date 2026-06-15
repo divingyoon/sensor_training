@@ -36,7 +36,7 @@ class TestSATSConfigAttentionFields:
         assert cfg.hidden_dim == 64
         assert cfg.num_layers == 2
         assert cfg.n_sensors == 16
-        assert cfg.grid_size == 40
+        assert cfg.grid_size == 41
         assert cfg.bidirectional is False
 
 
@@ -78,9 +78,10 @@ class TestSATSConfigLocalMapFields:
         assert cfg.attn_dim == 64
         assert cfg.lstm_ckpt == ""
         assert cfg.hidden_dim == 64
-        assert cfg.grid_size == 40
+        assert cfg.grid_size == 41
         assert cfg.grid_step_mm == 0.5
-        assert cfg.grid_min_mm == -9.75
+        assert cfg.grid_min_mm == -10.0
+        assert cfg.grid_max_mm == 10.0
 
 
 class TestSATSConfigCNNFields:
@@ -110,4 +111,41 @@ class TestSATSConfigCNNFields:
         assert cfg.attn_ckpt == ""
         assert cfg.local_map_size == 15
         assert cfg.hidden_dim == 64
-        assert cfg.grid_size == 40
+        assert cfg.grid_size == 41
+
+
+class TestSATSConfigMk555Grid:
+    """mk555 grid/output defaults."""
+
+    def test_default_grid_contract(self):
+        cfg = SATSConfig()
+        assert cfg.grid_size == 41
+        assert cfg.grid_min_mm == -10.0
+        assert cfg.grid_max_mm == 10.0
+        assert cfg.grid_step_mm == 0.5
+        assert cfg.raw_dir == "learning_data/sensor_raw_bin"
+        assert cfg.gt_dir == "learning_data/gt"
+        assert cfg.dataset_index_path == "learning_data/gt/dataset_index.json"
+        assert cfg.prefer_merged_bin is True
+        assert cfg.val_trials == []
+        assert cfg.val_ratio == 0.2
+
+    def test_training_includes_hold_rows_by_default(self):
+        # u_mm은 가상 보간축(max깊이 hold 표식)이라 물리 필터가 아니다.
+        # hold(=최대 압입 정지·relaxation) 행도 수직 GT가 유효하므로 기본 포함한다.
+        cfg = SATSConfig()
+        assert cfg.use_u_zero_only is False
+
+    def test_training_defaults_follow_paper_window_mode(self):
+        cfg = SATSConfig()
+        assert cfg.use_window_dataset is True
+        assert cfg.window_size == 10
+        assert cfg.seq_len == 1000
+        assert cfg.batch_size == 2048
+        assert cfg.num_workers == 2
+
+    def test_trial_paths_include_merged_bin(self, tmp_path):
+        cfg = SATSConfig(raw_dir=str(tmp_path / "raw_data"))
+        paths = cfg.trial_paths("ecomesh_d5_z2.5_test1")
+        assert paths["merged_bin"].name == "ecomesh_d5_z2.5_test1_merged.bin"
+        assert paths["merged_csv"].name == "ecomesh_d5_z2.5_test1_merged.csv"

@@ -23,11 +23,18 @@ import matplotlib
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-from .inference_engine import SATSInferenceEngine, GRID_MIN_MM, GRID_STEP_MM, GRID_SIZE, TAXEL_AREA
+from .inference_engine import (
+    SATSInferenceEngine,
+    GRID_MIN_MM,
+    GRID_MAX_MM,
+    GRID_STEP_MM,
+    GRID_SIZE,
+    TAXEL_AREA,
+)
 
 # 그리드 좌표 메쉬 (mm)
-_COORDS = np.linspace(GRID_MIN_MM, -GRID_MIN_MM, GRID_SIZE)
-_XX, _YY = np.meshgrid(_COORDS, _COORDS)   # 각각 [40, 40]
+_COORDS = np.linspace(GRID_MIN_MM, GRID_MAX_MM, GRID_SIZE)
+_XX, _YY = np.meshgrid(_COORDS, _COORDS)   # 각각 [41, 41]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -219,8 +226,8 @@ class RealtimeViz3D:
             return
         x_mm = event.xdata
         y_mm = event.ydata
-        x_mm = max(GRID_MIN_MM, min(-GRID_MIN_MM, float(x_mm)))
-        y_mm = max(GRID_MIN_MM, min(-GRID_MIN_MM, float(y_mm)))
+        x_mm = max(GRID_MIN_MM, min(GRID_MAX_MM, float(x_mm)))
+        y_mm = max(GRID_MIN_MM, min(GRID_MAX_MM, float(y_mm)))
         # 그리드 스냅
         x_mm = round(round((x_mm - GRID_MIN_MM) / GRID_STEP_MM) * GRID_STEP_MM + GRID_MIN_MM, 4)
         y_mm = round(round((y_mm - GRID_MIN_MM) / GRID_STEP_MM) * GRID_STEP_MM + GRID_MIN_MM, 4)

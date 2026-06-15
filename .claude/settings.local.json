@@ -8,7 +8,16 @@
       "Bash(find /home/user/sensor_training/preprocessing/preprocessing_data/eco20_loading_only -type f -name \"meta.json\" -exec head -50 {})",
       "Bash(xargs cat:*)",
       "Bash(wait)",
-      "Bash(kill %1)"
+      "Bash(kill %1)",
+      "Bash(git stash *)",
+      "Bash(echo \"stash result: $?\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git commit *)",
+      "Bash(mkdir -p \"/tmp/sats_gt/sensor_raw_bin/ecomesh/d5/z_2.6mm/test1\")",
+      "Bash(cp /tmp/sats_verify/d5_test1/ecomesh_d5_z2.6_test1_merged.bin \"/tmp/sats_gt/sensor_raw_bin/ecomesh/d5/z_2.6mm/test1/\")",
+      "Bash(grep -iB1 \"sequence\\\\|gt_mmap\\\\|return sequences\")",
+      "Bash(grep -n \"gt_output_v1\\\\|grid-size.*40\\\\|grid = 40\\\\|grid-size\\\\` | \\\\`40\\\\|--grid-size\\\\|현재 40만\\\\|41만 지원\" sats/README.md)"
     ]
   }
 }

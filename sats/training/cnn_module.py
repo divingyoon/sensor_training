@@ -49,11 +49,11 @@ class SATSCNNRefiner(nn.Module):
 
     Parameters
     ----------
-    grid_size       : 전체 맵 한 변 크기 (기본 40) — 현재는 메타데이터용
+    grid_size       : 전체 맵 한 변 크기 (기본 41) — 현재는 메타데이터용
     hidden_channels : 중간 채널 수 (기본 16; 논문 미명시)
     """
 
-    def __init__(self, grid_size: int = 40, hidden_channels: int = 16) -> None:
+    def __init__(self, grid_size: int = 41, hidden_channels: int = 16) -> None:
         super().__init__()
         self.grid_size = grid_size
         self.hidden_channels = hidden_channels
@@ -106,8 +106,8 @@ class SATSCNNStage(nn.Module):
 
     Output
     ------
-    refined_map  : [B, 40, 40]   ← MSE 손실 대상
-    merged_map   : [B, 40, 40]   ← CNN 이전 맵 (디버깅/보조 손실용)
+    refined_map  : [B, 41, 41]   ← MSE 손실 대상
+    merged_map   : [B, 41, 41]   ← CNN 이전 맵 (디버깅/보조 손실용)
     """
 
     def __init__(self, cfg: SATSConfig) -> None:
@@ -149,6 +149,6 @@ class SATSCNNStage(nn.Module):
         local_feat    = self.encoder(sensor_seq, lengths)            # [B, 16, lstm_out]
         agg_feat      = self.attention(local_feat)                   # [B, 16, attn_dim]
         combined_feat = torch.cat([local_feat, agg_feat], dim=-1)   # [B, 16, combined]
-        merged_map    = self.local_map_decoder(combined_feat)        # [B, 40, 40]
-        refined_map   = self.cnn_refiner(merged_map)                 # [B, 40, 40]
+        merged_map    = self.local_map_decoder(combined_feat)        # [B, grid, grid]
+        refined_map   = self.cnn_refiner(merged_map)                 # [B, grid, grid]
         return refined_map, merged_map

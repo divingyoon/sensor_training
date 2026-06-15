@@ -9,15 +9,15 @@ SATS Local Map Construction 모듈.
   combined_i = [local_feat_i ∥ agg_feat_i]          (LSTM 출력 + Self-Attention 출력)
   local_map_i = g_phi(combined_i)                    (공유 MLP 디코더)
 
-16개 local_map을 센서 물리 좌표에 따라 40×40 전체 맵에 배치 & 합산 → merged_map.
+16개 local_map을 센서 물리 좌표에 따라 41×41 전체 맵에 배치 & 합산 → merged_map.
 
 센서 레이아웃 (4×4 grid, 6.5mm 간격)
 --------------------------------------
   col→  0      1      2      3
 row 0:  S1     S2     S3     S4    (y=-9.75mm → grid_row=0)
-row 1:  S5     S6     S7     S8    (y=-3.25mm → grid_row=13)
-row 2:  S9    S10    S11    S12    (y=+3.25mm → grid_row=26)
-row 3: S13    S14    S15    S16    (y=+9.75mm → grid_row=39)
+row 1:  S5     S6     S7     S8    (y=-3.25mm → nearest grid_row=13)
+row 2:  S9    S10    S11    S12    (y=+3.25mm → nearest grid_row=27)
+row 3: S13    S14    S15    S16    (y=+9.75mm → grid_row=40)
 
 local_map_size=15 (홀수), half=7:
   내부 센서: local map 전체 사용
@@ -26,6 +26,7 @@ local_map_size=15 (홀수), half=7:
 
 from __future__ import annotations
 
+import math
 from typing import List, Tuple
 
 import torch
@@ -40,21 +41,65 @@ from .attention_module import SATSSelfAttention
 # Phase 2: 센서 물리 좌표 → 그리드 인덱스 매핑
 # ─────────────────────────────────────────────────────────────────────────────
 
+def build_sensor_physical_positions(
+    n_sensors: int = 16,
+    sensor_spacing_mm: float = 6.5,
+) -> torch.Tensor:
+    """
+    Return physical sensor coordinates as ``[x_mm, y_mm]``.
+
+    S1부터 x가 증가한다:
+      S1=(-9.75,-9.75), S4=(9.75,-9.75), S16=(9.75,9.75).
+    """
+    side = int(math.sqrt(n_sensors))
+    if side * side != n_sensors:
+        raise ValueError(f"n_sensors must form a square grid: {n_sensors}")
+
+    origin = -0.5 * (side - 1) * sensor_spacing_mm
+    positions = torch.zeros(n_sensors, 2, dtype=torch.float32)
+    for i in range(n_sensors):
+        row_phys = i // side
+        col_phys = i % side
+        positions[i, 0] = origin + col_phys * sensor_spacing_mm
+        positions[i, 1] = origin + row_phys * sensor_spacing_mm
+    return positions
+
+
+def _nearest_grid_index_outward_tie(
+    coord_mm: float,
+    grid_min_mm: float,
+    grid_step_mm: float,
+    grid_size: int,
+) -> int:
+    raw = (coord_mm - grid_min_mm) / grid_step_mm
+    lower = math.floor(raw)
+    upper = math.ceil(raw)
+    lower_dist = abs(raw - lower)
+    upper_dist = abs(upper - raw)
+    if math.isclose(lower_dist, upper_dist, rel_tol=0.0, abs_tol=1e-9):
+        idx = lower if coord_mm < 0.0 else upper
+    elif lower_dist < upper_dist:
+        idx = lower
+    else:
+        idx = upper
+    return max(0, min(grid_size - 1, int(idx)))
+
+
 def build_sensor_grid_positions(
     n_sensors: int = 16,
-    grid_size: int = 40,
-    grid_min_mm: float = -9.75,
+    grid_size: int = 41,
+    grid_min_mm: float = -10.0,
     sensor_spacing_mm: float = 6.5,
     grid_step_mm: float = 0.5,
 ) -> torch.Tensor:
     """
-    4×4 센서 그리드의 물리 좌표를 40×40 맵의 grid 인덱스로 변환한다.
+    4×4 센서 그리드의 물리 좌표를 41×41 맵의 grid 인덱스로 변환한다.
 
     Parameters
     ----------
     n_sensors         : 센서 수 (기본 16)
-    grid_size         : 전체 맵 한 변 크기 (기본 40)
-    grid_min_mm       : 그리드 최솟값 (mm, 기본 -9.75)
+    grid_size         : 전체 맵 한 변 크기 (기본 41)
+    grid_min_mm       : 그리드 최솟값 (mm, 기본 -10.0)
     sensor_spacing_mm : 센서 간 물리 간격 (mm, 기본 6.5)
     grid_step_mm      : 그리드 step (mm, 기본 0.5)
 
@@ -63,14 +108,16 @@ def build_sensor_grid_positions(
     positions : LongTensor[n_sensors, 2]
         각 행은 (grid_row, grid_col) — 0-indexed.
     """
+    physical_xy = build_sensor_physical_positions(
+        n_sensors=n_sensors,
+        sensor_spacing_mm=sensor_spacing_mm,
+    )
     positions = torch.zeros(n_sensors, 2, dtype=torch.long)
     for i in range(n_sensors):
-        row_phys = i // 4
-        col_phys = 3 - (i % 4)   # S1(i=0) → col 3 → x=+9.75mm (S1~S4가 x 내림차순)
-        y_mm = grid_min_mm + row_phys * sensor_spacing_mm
-        x_mm = grid_min_mm + col_phys * sensor_spacing_mm
-        grid_r = round((y_mm - grid_min_mm) / grid_step_mm)
-        grid_c = round((x_mm - grid_min_mm) / grid_step_mm)
+        x_mm = float(physical_xy[i, 0].item())
+        y_mm = float(physical_xy[i, 1].item())
+        grid_r = _nearest_grid_index_outward_tie(y_mm, grid_min_mm, grid_step_mm, grid_size)
+        grid_c = _nearest_grid_index_outward_tie(x_mm, grid_min_mm, grid_step_mm, grid_size)
         positions[i, 0] = grid_r
         positions[i, 1] = grid_c
     return positions
@@ -207,7 +254,7 @@ class SATSLocalMapDecoder(nn.Module):
     ----------
     combined_dim      : LSTM out + attn_dim
     local_map_size    : 각 센서 local map 한 변 크기
-    grid_size         : 전체 맵 한 변 크기 (40)
+    grid_size         : 전체 맵 한 변 크기 (41)
     n_sensors         : 센서 수 (16)
     grid_min_mm       : 그리드 최솟값 (mm)
     sensor_spacing_mm : 센서 간 물리 간격 (mm)
@@ -218,9 +265,9 @@ class SATSLocalMapDecoder(nn.Module):
         self,
         combined_dim: int,
         local_map_size: int = 15,
-        grid_size: int = 40,
+        grid_size: int = 41,
         n_sensors: int = 16,
-        grid_min_mm: float = -9.75,
+        grid_min_mm: float = -10.0,
         sensor_spacing_mm: float = 6.5,
         grid_step_mm: float = 0.5,
     ) -> None:
@@ -303,7 +350,7 @@ class SATSLocalMapStage(nn.Module):
 
     Output
     ------
-    pred_map     : [B, 40, 40]        ← MSE 손실 대상
+    pred_map     : [B, 41, 41]        ← MSE 손실 대상
     combined_feat: [B, 16, combined]  ← 다음 단계(CNN) 연계용
     """
 
@@ -342,5 +389,5 @@ class SATSLocalMapStage(nn.Module):
         local_feat    = self.encoder(sensor_seq, lengths)           # [B, 16, lstm_out]
         agg_feat      = self.attention(local_feat)                  # [B, 16, attn_dim]
         combined_feat = torch.cat([local_feat, agg_feat], dim=-1)  # [B, 16, combined]
-        pred_map      = self.local_map_decoder(combined_feat)       # [B, 40, 40]
+        pred_map      = self.local_map_decoder(combined_feat)       # [B, grid, grid]
         return pred_map, combined_feat

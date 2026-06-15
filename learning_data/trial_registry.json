@@ -1,0 +1,15 @@
+{
+  "ecomesh/d10": {},
+  "ecomesh/d5": {
+    "sats/eco20 + mesh/d5/test1": 1,
+    "sats/eco20 + mesh/d5/test10": 3,
+    "sats/eco20 + mesh/d5/test2": 2,
+    "sats/eco20 + mesh/d5/test3": 4,
+    "sats/eco20 + mesh/d5/test4": 5,
+    "sats/eco20 + mesh/d5/test5": 6,
+    "sats/eco20 + mesh/d5/test6": 7,
+    "sats/eco20 + mesh/d5/test7": 8,
+    "sats/eco20 + mesh/d5/test8": 9,
+    "sats/eco20 + mesh/d5/test9": 10
+  }
+}

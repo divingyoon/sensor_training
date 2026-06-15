@@ -9,7 +9,7 @@ visualize.py 의 plot_sample 스타일을 실시간으로 구현.
 --------
   ┌──────────────────────────────────┬──────────────────┐
   │  Pressure Map (hot colormap)     │   Info Panel     │
-  │  [40×40 imshow, 실시간 update]   │   Peak (x, y):   │
+  │  [41×41 imshow, 실시간 update]   │   Peak (x, y):   │
   │                                  │   Peak P:        │
   │  ✚  peak 위치 마커               │   Fz:            │
   │  ○  query 위치 마커 (클릭)       │   Query P:       │
@@ -25,9 +25,16 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
-from .inference_engine import SATSInferenceEngine, GRID_MIN_MM, GRID_STEP_MM, GRID_SIZE, TAXEL_AREA
+from .inference_engine import (
+    SATSInferenceEngine,
+    GRID_MIN_MM,
+    GRID_MAX_MM,
+    GRID_STEP_MM,
+    GRID_SIZE,
+    TAXEL_AREA,
+)
 
-_EXTENT = [GRID_MIN_MM, -GRID_MIN_MM, GRID_MIN_MM, -GRID_MIN_MM]  # [-9.75, 9.75, ...]
+_EXTENT = [GRID_MIN_MM, GRID_MAX_MM, GRID_MIN_MM, GRID_MAX_MM]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -122,7 +129,7 @@ class RealtimeViz2D:
 
         Parameters
         ----------
-        pred_map : ndarray[40, 40]
+        pred_map : ndarray[41, 41]
         """
         self._frame += 1
 
@@ -195,7 +202,7 @@ class RealtimeViz2D:
         # 그리드에 스냅
         x_mm = round(round((x_mm - GRID_MIN_MM) / GRID_STEP_MM) * GRID_STEP_MM + GRID_MIN_MM, 4)
         y_mm = round(round((y_mm - GRID_MIN_MM) / GRID_STEP_MM) * GRID_STEP_MM + GRID_MIN_MM, 4)
-        x_mm = max(GRID_MIN_MM, min(-GRID_MIN_MM, x_mm))
-        y_mm = max(GRID_MIN_MM, min(-GRID_MIN_MM, y_mm))
+        x_mm = max(GRID_MIN_MM, min(GRID_MAX_MM, x_mm))
+        y_mm = max(GRID_MIN_MM, min(GRID_MAX_MM, y_mm))
         self.query_xy_mm = (x_mm, y_mm)
         print(f"[2D] query 위치 선택: ({x_mm:+.2f}, {y_mm:+.2f}) mm")

@@ -4,7 +4,7 @@ sats/inference/inference_engine.py
 학습된 SATS 모델을 사용해 실시간 추론을 수행하는 엔진.
 
 입력  : ndarray[window_size, 16]  (s_norm 슬라이딩 윈도우)
-출력  : ndarray[40, 40]           (정제된 압력 맵, 학습 단위 N/mm²×100)
+출력  : ndarray[41, 41]           (정제된 압력 맵, 학습 단위 N/mm²×100)
         + peak 위치 (x_mm, y_mm, peak_val)
         + Fz 추정값 (N)
 """
@@ -31,13 +31,14 @@ from sats.training.config import SATSConfig
 # 상수
 # ─────────────────────────────────────────────────────────────────────────────
 
-GRID_SIZE    = 40
-GRID_MIN_MM  = -9.75
+GRID_SIZE    = 41
+GRID_MIN_MM  = -10.0
+GRID_MAX_MM  = 10.0
 GRID_STEP_MM = 0.5
 TAXEL_AREA   = GRID_STEP_MM ** 2   # 0.25 mm²
 
 # 그리드 mm 좌표 (col, row → x, y)
-_GRID_COORDS_MM = np.linspace(GRID_MIN_MM, 9.75, GRID_SIZE)   # [40]
+_GRID_COORDS_MM = np.linspace(GRID_MIN_MM, GRID_MAX_MM, GRID_SIZE)   # [41]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -102,7 +103,7 @@ class SATSInferenceEngine:
 
         Returns
         -------
-        pred_map : ndarray[40, 40]  (압력 맵, 학습 스케일)
+        pred_map : ndarray[41, 41]  (압력 맵, 학습 스케일)
         """
         sensor = torch.from_numpy(window).float().unsqueeze(0).to(self.device)
         # [1, window_size, 16]
@@ -110,7 +111,7 @@ class SATSInferenceEngine:
 
         out = self.model(sensor, lengths)
         pred = out[0] if isinstance(out, tuple) else out
-        return pred[0].cpu().numpy()   # [40, 40]
+        return pred[0].cpu().numpy()   # [grid, grid]
 
     @staticmethod
     def get_peak(pred_map: np.ndarray) -> Tuple[float, float, float]:

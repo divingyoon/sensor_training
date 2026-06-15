@@ -160,13 +160,13 @@ class _LSTMProxyDecoder(nn.Module):
     """
     LSTM 단독 학습을 위한 임시 선형 디코더.
 
-    LSTM local_feat [B, 16, out_dim] → flatten → Linear → [B, 40, 40]
+    LSTM local_feat [B, 16, out_dim] → flatten → Linear → [B, 41, 41]
 
     이 모듈은 train_lstm.py에서만 사용되며,
     이후 Self-Attention + Local Map 모듈로 대체된다.
     """
 
-    def __init__(self, n_sensors: int, lstm_out_dim: int, grid_size: int = 40) -> None:
+    def __init__(self, n_sensors: int, lstm_out_dim: int, grid_size: int = 41) -> None:
         super().__init__()
         self.grid_size = grid_size
         in_features = n_sensors * lstm_out_dim
@@ -206,7 +206,7 @@ class SATSLSTMStage(nn.Module):
 
     Output
     ------
-    pred_map   : [B, 40, 40]  마지막 유효 timestep 기준 GT와 MSE 비교
+    pred_map   : [B, 41, 41]  마지막 유효 timestep 기준 GT와 MSE 비교
     local_feat : [B, 16, out_dim]  다음 모듈 연계용
     """
 
@@ -234,5 +234,5 @@ class SATSLSTMStage(nn.Module):
         lengths: torch.Tensor,      # [B]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         local_feat = self.encoder(sensor_seq, lengths)   # [B, 16, out_dim]
-        pred_map   = self.decoder(local_feat)            # [B, 40, 40]
+        pred_map   = self.decoder(local_feat)            # [B, grid, grid]
         return pred_map, local_feat

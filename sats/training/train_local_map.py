@@ -8,8 +8,10 @@ SATS Local Map Construction 단계 학습 스크립트.
 ----------
 1. SATSAttentionStage 체크포인트에서 LSTM 인코더 + Self-Attention 가중치를 로드한다.
 2. 인코더 & Attention을 동결(freeze)하고, Local Map Decoder만 학습한다.
-3. 타겟: find_peak_gt (train_lstm.py와 동일 로직)
-4. 손실: MSELoss(pred_map, peak_gt)
+3. 기본 타겟: window 마지막 timestep의 GT map (논문식 sliding window)
+4. 손실: MSELoss(pred_map, target_gt)
+
+`--no-use-window-dataset`을 주면 legacy peak-map 타겟을 사용한다.
 
 실행
 ----
@@ -268,28 +270,30 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="SATS Local Map Construction 학습")
     p.add_argument("--attn-ckpt",      default="",
                    help="사전학습된 Attention 체크포인트 경로 (SATSAttentionStage)")
-    p.add_argument("--raw-dir",        default="raw_data")
-    p.add_argument("--gt-dir",         default="sats/preprocessing/gt_output_v1")
+    p.add_argument("--raw-dir",        default="learning_data/sensor_raw_bin")
+    p.add_argument("--gt-dir",         default="learning_data/gt")
     p.add_argument("--out-dir",        default="sats/training/runs")
     p.add_argument("--run-name",       default="local_map_v1")
     p.add_argument("--epochs",         type=int,   default=50)
-    p.add_argument("--batch-size",     type=int,   default=64)
+    p.add_argument("--batch-size",     type=int,   default=2048)
     p.add_argument("--lr",             type=float, default=1e-3)
     p.add_argument("--hidden-dim",     type=int,   default=64)
     p.add_argument("--attn-dim",       type=int,   default=64)
     p.add_argument("--local-map-size", type=int,   default=15)
     p.add_argument("--num-layers",     type=int,   default=2)
     p.add_argument("--dropout",        type=float, default=0.1)
-    p.add_argument("--seq-len",        type=int,   default=400)
-    p.add_argument("--num-workers",    type=int,   default=4)
+    p.add_argument("--seq-len",        type=int,   default=1000)
+    p.add_argument("--num-workers",    type=int,   default=2)
     p.add_argument("--device",         default="cuda")
     p.add_argument("--seed",           type=int,   default=42)
-    p.add_argument("--val-trials",        nargs="+",
-                   default=["ecomesh_d5_z1_test3", "ecomesh_d5_z1.5_test9"])
+    p.add_argument("--val-trials",        nargs="+", default=[])
+    p.add_argument("--val-ratio",         type=float, default=0.2,
+                   help=">0: 랜덤 sequence-level split. 0: --val-trials 기반 trial split.")
     p.add_argument("--exclude-diameters", nargs="+", type=int, default=[],
                    help="학습/검증 풀에서 제외할 인덴터 직경(mm). 예: --exclude-diameters 10")
     p.add_argument("--window-size",       type=int,   default=10)
-    p.add_argument("--use-window-dataset", action="store_true")
+    p.add_argument("--use-window-dataset", action=argparse.BooleanOptionalAction, default=True,
+                   help="윈도우 데이터셋 사용 (논문 방식). 끄려면 --no-use-window-dataset")
     p.add_argument("--no-lr-scheduler",   action="store_true")
     return p
 
@@ -321,6 +325,7 @@ def main() -> None:
         device             = args.device,
         seed               = args.seed,
         val_trials         = args.val_trials,
+        val_ratio          = args.val_ratio,
         exclude_diameters  = args.exclude_diameters,
         window_size        = args.window_size,
         use_window_dataset = args.use_window_dataset,

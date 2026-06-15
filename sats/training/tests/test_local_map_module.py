@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parents[3]))
 
 from sats.training.config import SATSConfig
 from sats.training.local_map_module import (
+    build_sensor_physical_positions,
     build_sensor_grid_positions,
     build_placement_slices,
     SATSLocalMapDecoder,
@@ -31,7 +32,7 @@ def _small_cfg(**kwargs):
         num_layers=1,
         attn_dim=16,
         dropout=0.0,
-        grid_size=40,
+        grid_size=41,
         n_sensors=16,
         local_map_size=15,
         sensor_spacing_mm=6.5,
@@ -51,6 +52,12 @@ class TestBuildSensorGridPositions:
     def _pos(self, **kwargs):
         return build_sensor_grid_positions(**kwargs)
 
+    def test_physical_positions_s1_to_s16_x_increasing(self):
+        xy = build_sensor_physical_positions()
+        assert xy[0].tolist() == [-9.75, -9.75]
+        assert xy[3].tolist() == [9.75, -9.75]
+        assert xy[15].tolist() == [9.75, 9.75]
+
     def test_shape(self):
         pos = self._pos()
         assert pos.shape == (16, 2), f"shape 오류: {pos.shape}"
@@ -60,40 +67,40 @@ class TestBuildSensorGridPositions:
         assert pos.dtype == torch.long
 
     def test_sensor0_top_left(self):
-        """S1(idx=0): x=+9.75, y=-9.75 → grid (0, 39)."""
+        """S1(idx=0): x=-9.75, y=-9.75 → nearest grid (0, 0)."""
         pos = self._pos()
         assert pos[0, 0].item() == 0   # grid_row (y)
-        assert pos[0, 1].item() == 39  # grid_col (x)
+        assert pos[0, 1].item() == 0   # grid_col (x)
 
     def test_sensor5_interior(self):
-        """S6(idx=5): row=1, col=2 (phys) → grid (13, 26)."""
+        """S6(idx=5): x=-3.25, y=-3.25 → nearest grid (13, 13)."""
         pos = self._pos()
         assert pos[5, 0].item() == 13
-        assert pos[5, 1].item() == 26
+        assert pos[5, 1].item() == 13
 
     def test_sensor15_bottom_right(self):
-        """S16(idx=15): x=-9.75, y=+9.75 → grid (39, 0)."""
+        """S16(idx=15): x=+9.75, y=+9.75 → nearest grid (40, 40)."""
         pos = self._pos()
-        assert pos[15, 0].item() == 39
-        assert pos[15, 1].item() == 0
+        assert pos[15, 0].item() == 40
+        assert pos[15, 1].item() == 40
 
     def test_sensor3_top_right(self):
-        """S4(idx=3): x=-9.75, y=-9.75 → grid (0, 0)."""
+        """S4(idx=3): x=+9.75, y=-9.75 → nearest grid (0, 40)."""
         pos = self._pos()
         assert pos[3, 0].item() == 0
-        assert pos[3, 1].item() == 0
+        assert pos[3, 1].item() == 40
 
     def test_sensor12_bottom_left(self):
-        """S13(idx=12): x=+9.75, y=+9.75 → grid (39, 39)."""
+        """S13(idx=12): x=-9.75, y=+9.75 → nearest grid (40, 0)."""
         pos = self._pos()
-        assert pos[12, 0].item() == 39
-        assert pos[12, 1].item() == 39
+        assert pos[12, 0].item() == 40
+        assert pos[12, 1].item() == 0
 
     def test_all_values_in_range(self):
-        """모든 grid 인덱스가 [0, 39] 범위."""
+        """모든 grid 인덱스가 [0, 40] 범위."""
         pos = self._pos()
         assert (pos >= 0).all()
-        assert (pos <= 39).all()
+        assert (pos <= 40).all()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -104,13 +111,13 @@ class TestBuildPlacementSlices:
     """
     16개 센서 각각의 (src_slice, dst_slice) 쌍 검증.
 
-    local_map_size=15, half=7, grid_size=40.
-    sensor_positions: [0,0], [0,13], ..., [39,39]
+    local_map_size=15, half=7, grid_size=41.
+    sensor_positions: [0,0], [0,13], ..., [40,40]
     """
 
     def _slices(self):
         pos = build_sensor_grid_positions()
-        return build_placement_slices(pos, local_map_size=15, grid_size=40)
+        return build_placement_slices(pos, local_map_size=15, grid_size=41)
 
     def test_returns_16_entries(self):
         slices = self._slices()
@@ -140,9 +147,9 @@ class TestBuildPlacementSlices:
         slices = self._slices()
         for i, (_, _, dst_r, dst_c) in enumerate(slices):
             assert dst_r[0] >= 0,  f"센서 {i}: dst_r 시작 음수"
-            assert dst_r[1] <= 40, f"센서 {i}: dst_r 끝 초과"
+            assert dst_r[1] <= 41, f"센서 {i}: dst_r 끝 초과"
             assert dst_c[0] >= 0,  f"센서 {i}: dst_c 시작 음수"
-            assert dst_c[1] <= 40, f"센서 {i}: dst_c 끝 초과"
+            assert dst_c[1] <= 41, f"센서 {i}: dst_c 끝 초과"
 
     def test_src_slice_in_bounds(self):
         """src 슬라이스는 항상 [0, local_map_size) 범위."""
@@ -155,39 +162,39 @@ class TestBuildPlacementSlices:
 
     def test_corner_sensor0_clipped(self):
         """
-        S1(idx=0): center=(0,39), half=7
-        → local_map row [7:15], col [0:8] (src) → dst row [0:8], col [32:40]
+        S1(idx=0): center=(0,0), half=7
+        → local_map row [7:15], col [7:15] (src) → dst row [0:8], col [0:8]
         """
         slices = self._slices()
         src_r, src_c, dst_r, dst_c = slices[0]
         assert src_r == (7, 15), f"S1 src_r 오류: {src_r}"
-        assert src_c == (0, 8),  f"S1 src_c 오류: {src_c}"
+        assert src_c == (7, 15), f"S1 src_c 오류: {src_c}"
         assert dst_r == (0, 8),  f"S1 dst_r 오류: {dst_r}"
-        assert dst_c == (32, 40), f"S1 dst_c 오류: {dst_c}"
+        assert dst_c == (0, 8),  f"S1 dst_c 오류: {dst_c}"
 
     def test_interior_sensor5_no_clip(self):
         """
-        S6(idx=5): center=(13,26), half=7
-        → local_map 전체 [0:15, 0:15] (src) → dst row [6:21], col [19:34]
+        S6(idx=5): center=(13,13), half=7
+        → local_map 전체 [0:15, 0:15] (src) → dst row [6:21], col [6:21]
         """
         slices = self._slices()
         src_r, src_c, dst_r, dst_c = slices[5]
         assert src_r == (0, 15), f"S6 src_r 오류: {src_r}"
         assert src_c == (0, 15), f"S6 src_c 오류: {src_c}"
         assert dst_r == (6, 21), f"S6 dst_r 오류: {dst_r}"
-        assert dst_c == (19, 34), f"S6 dst_c 오류: {dst_c}"
+        assert dst_c == (6, 21), f"S6 dst_c 오류: {dst_c}"
 
     def test_corner_sensor15_clipped(self):
         """
-        S16(idx=15): center=(39,0), half=7
-        → local_map row [0:8], col [7:15] (src) → dst row [32:40], col [0:8]
+        S16(idx=15): center=(40,40), half=7
+        → local_map row [0:8], col [0:8] (src) → dst row [33:41], col [33:41]
         """
         slices = self._slices()
         src_r, src_c, dst_r, dst_c = slices[15]
         assert src_r == (0, 8),   f"S16 src_r 오류: {src_r}"
-        assert src_c == (7, 15),  f"S16 src_c 오류: {src_c}"
-        assert dst_r == (32, 40), f"S16 dst_r 오류: {dst_r}"
-        assert dst_c == (0, 8),   f"S16 dst_c 오류: {dst_c}"
+        assert src_c == (0, 8),   f"S16 src_c 오류: {src_c}"
+        assert dst_r == (33, 41), f"S16 dst_r 오류: {dst_r}"
+        assert dst_c == (33, 41), f"S16 dst_c 오류: {dst_c}"
 
     def test_size_positive(self):
         """모든 슬라이스 크기가 양수 (0 크기 슬라이스 없음)."""
@@ -211,13 +218,13 @@ class TestBuildPlacementSlices:
 
 class TestSATSLocalMapDecoder:
 
-    def _make_decoder(self, combined_dim=32, local_map_size=15, grid_size=40):
+    def _make_decoder(self, combined_dim=32, local_map_size=15, grid_size=41):
         return SATSLocalMapDecoder(
             combined_dim=combined_dim,
             local_map_size=local_map_size,
             grid_size=grid_size,
             n_sensors=16,
-            grid_min_mm=-9.75,
+            grid_min_mm=-10.0,
             sensor_spacing_mm=6.5,
             grid_step_mm=0.5,
         )
@@ -229,7 +236,7 @@ class TestSATSLocalMapDecoder:
         dec = self._make_decoder()
         x = self._rand_combined()
         out = dec(x)
-        assert out.shape == (2, 40, 40), f"shape 오류: {out.shape}"
+        assert out.shape == (2, 41, 41), f"shape 오류: {out.shape}"
 
     def test_no_nan_inf(self):
         dec = self._make_decoder()
@@ -281,24 +288,24 @@ class TestSATSLocalMapDecoder:
 
     def test_single_sensor_activation(self):
         """
-        센서 3(S4, top-left, grid=(0,0)) 활성화 시 해당 영역이 더 활성화되는지 검증.
-        S4: dst_r=(0,8), dst_c=(0,8)
+        센서 0(S1, top-left, grid=(0,0)) 활성화 시 해당 영역이 더 활성화되는지 검증.
+        S1: dst_r=(0,8), dst_c=(0,8)
         """
         dec = self._make_decoder(combined_dim=32)
         dec.eval()
         # 모든 입력을 0으로 시작
         x = torch.zeros(1, 16, 32)
-        # 센서 3 (S4) 활성화
-        x[0, 3] = torch.randn(32).abs() + 1.0 
+        # 센서 0 (S1) 활성화
+        x[0, 0] = torch.randn(32).abs() + 1.0
         with torch.no_grad():
-            out = dec(x)  # [1, 40, 40]
-        # S4 영역: (0,0) 근처 (dst: (0,8),(0,8))
-        s4_region = out[0, 0:8, 0:8].abs().mean()
+            out = dec(x)  # [1, 41, 41]
+        # S1 영역: (0,0) 근처 (dst: (0,8),(0,8))
+        s1_region = out[0, 0:8, 0:8].abs().mean()
         # 반대편 영역: (32,32) 근처
-        other_region = out[0, 32:40, 32:40].abs().mean()
-        # S4 영역이 더 활성화되어야 함
-        assert s4_region >= other_region, (
-            f"S4 영역({s4_region:.4f})이 반대 영역({other_region:.4f})보다 작음"
+        other_region = out[0, 33:41, 33:41].abs().mean()
+        # S1 영역이 더 활성화되어야 함
+        assert s1_region >= other_region, (
+            f"S1 영역({s1_region:.4f})이 반대 영역({other_region:.4f})보다 작음"
         )
 
 
@@ -321,7 +328,7 @@ class TestSATSLocalMapStage:
         stage = self._make_stage()
         x, l = self._rand_batch()
         pred_map, _ = stage(x, l)
-        assert pred_map.shape == (2, 40, 40), f"pred_map shape 오류: {pred_map.shape}"
+        assert pred_map.shape == (2, 41, 41), f"pred_map shape 오류: {pred_map.shape}"
 
     def test_combined_feat_shape(self):
         """combined_feat shape = [B, 16, lstm_out + attn_dim]."""

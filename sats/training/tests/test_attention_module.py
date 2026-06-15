@@ -177,7 +177,7 @@ class TestSATSAttentionStage:
         stage = self._make_stage()
         x, l = self._rand_batch()
         pred_map, _ = stage(x, l)
-        assert pred_map.shape == (2, 40, 40), f"pred_map shape 오류: {pred_map.shape}"
+        assert pred_map.shape == (2, 41, 41), f"pred_map shape 오류: {pred_map.shape}"
 
     def test_agg_feat_shape(self):
         stage = self._make_stage()

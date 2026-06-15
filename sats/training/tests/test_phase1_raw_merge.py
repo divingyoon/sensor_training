@@ -13,9 +13,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-# raw_data/raw_merge.py 직접 로드 (패키지 아님)
+# sats/preprocessing/raw_merge.py 직접 로드 (공식 SATS raw merge)
 _RM_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "../../../raw_data/raw_merge.py"
+    os.path.dirname(os.path.abspath(__file__)), "../../preprocessing/raw_merge.py"
 )
 _spec = importlib.util.spec_from_file_location("raw_merge_mod", _RM_PATH)
 rm = importlib.util.module_from_spec(_spec)
@@ -84,6 +84,13 @@ class TestLoadcellLoader:
 
     def test_kg_to_newton_zero_at_baseline(self):
         assert abs(rm.kg_to_newton(0.10, baseline_kg=0.10)) < 1e-9
+
+    def test_header_only_loadcell_is_rejected(self, tmp_path):
+        """헤더뿐(0행)인 loadcell CSV는 force merge 입력에서 제외되어야 한다."""
+        p = tmp_path / "loadcell_data.csv"
+        p.write_text("time_s,kg\n")
+        with pytest.raises(ValueError, match="all loadcell rows invalid"):
+            rm.load_loadcell_csv(p)
 
 
 # ── 1.3 baseline: loadcell kg 기반 ─────────────────────────────────────────
@@ -158,15 +165,18 @@ class TestExportFrame:
         out = rm.build_export_frame(merged, baseline_kg=0.10, force_round_dp=None)
         assert "u_mm" in out.columns
 
-    def test_export_zeroes_z_at_start_point(self):
-        """시작점(-10,-10) idle z=12.5 가 영점 → z_mm 최소가 0"""
+    def test_export_preserves_z_stage_and_computes_depth(self):
+        """z_stage_mm는 절대 command Z, z_depth_mm만 시작 Z 기준 depth."""
         merged = self._make_merged()
-        out = rm.build_export_frame(merged, baseline_kg=0.10, force_round_dp=None)
-        # 시작점 idle 행의 z_mm == 0
+        out = rm.build_export_frame(merged, baseline_kg=0.10, force_round_dp=None, z_start_mm=12.5)
+        assert "z_stage_mm" in out.columns
+        assert "z_depth_mm" in out.columns
+        assert "z_mm" not in out.columns
         start_idle = out[(np.isclose(out["x_mm"], -10.0)) & (np.isclose(out["y_mm"], -10.0))]
-        assert start_idle["z_mm"].min() == pytest.approx(0.0, abs=1e-6)
-        # 시작점 press 행: 15.5-12.5 = 3.0mm
-        assert start_idle["z_mm"].max() == pytest.approx(3.0, abs=1e-3)
+        assert start_idle["z_stage_mm"].min() == pytest.approx(12.5, abs=1e-6)
+        assert start_idle["z_stage_mm"].max() == pytest.approx(15.5, abs=1e-3)
+        assert start_idle["z_depth_mm"].min() == pytest.approx(0.0, abs=1e-6)
+        assert start_idle["z_depth_mm"].max() == pytest.approx(3.0, abs=1e-3)
 
     def test_export_fz_from_loadcell(self):
         """Fz = (kg - baseline) × 9.80665"""

@@ -24,7 +24,7 @@ def _small_cfg(**kwargs):
         num_layers=1,
         attn_dim=16,
         dropout=0.0,
-        grid_size=40,
+        grid_size=41,
         n_sensors=16,
         local_map_size=15,
         sensor_spacing_mm=6.5,
@@ -151,18 +151,18 @@ class TestSATSCNNStage:
         return sensor_seq, lengths
 
     def test_refined_map_shape(self):
-        """refined_map 출력 shape = [B, 40, 40]."""
+        """refined_map 출력 shape = [B, 41, 41]."""
         stage = self._make_stage()
         x, l = self._rand_batch()
         refined_map, merged_map = stage(x, l)
-        assert refined_map.shape == (2, 40, 40), f"refined_map shape 오류: {refined_map.shape}"
+        assert refined_map.shape == (2, 41, 41), f"refined_map shape 오류: {refined_map.shape}"
 
     def test_merged_map_shape(self):
-        """merged_map (CNN 전) 출력 shape = [B, 40, 40]."""
+        """merged_map (CNN 전) 출력 shape = [B, 41, 41]."""
         stage = self._make_stage()
         x, l = self._rand_batch()
         refined_map, merged_map = stage(x, l)
-        assert merged_map.shape == (2, 40, 40), f"merged_map shape 오류: {merged_map.shape}"
+        assert merged_map.shape == (2, 41, 41), f"merged_map shape 오류: {merged_map.shape}"
 
     def test_no_nan_in_refined_map(self):
         stage = self._make_stage()

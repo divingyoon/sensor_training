@@ -4,6 +4,9 @@ processed_data/
 hitmap/preprocessing/processed_sweeps/
 hitmap/preprocessing/processed_data/
 raw_data/
+learning_data/*
+!learning_data/README.md
+!learning_data/trial_registry.json
 pytorch/
 
 # Media and large documents

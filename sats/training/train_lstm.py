@@ -6,11 +6,14 @@ SATS LSTM 인코더 단독 학습 스크립트.
 
 학습 전략
 ----------
-입력  : sensor_seq [B, T, 16]   s_norm 시계열
-타겟  : peak GT map  [B, 40, 40]
-         시퀀스 내 GT 총합이 최대인 timestep의 40×40 압력맵
-         (= 압입 최대 접촉 시점의 GT)
-손실  : MSELoss(pred_map, peak_gt)
+기본값은 논문 방식의 sliding window 학습이다.
+
+입력  : sensor_window [B, 10, 16]   s_norm 시계열
+타겟  : target GT map [B, 41, 41]   window 마지막 timestep의 압력맵
+손실  : MSELoss(pred_map, target_gt)
+
+`--no-use-window-dataset`을 주면 legacy peak-map 실험을 수행한다:
+sensor_seq [B, 1000, 16] -> peak GT map [B, 41, 41].
 
 이후 단계
 ----------
@@ -20,7 +23,7 @@ SATSLSTMStage.encoder 가중치를 그대로 재사용한다.
 실행
 ----
 python3 -m sats.training.train_lstm
-python3 -m sats.training.train_lstm --epochs 100 --hidden-dim 128 --batch-size 32
+python3 -m sats.training.train_lstm --epochs 100 --hidden-dim 128 --batch-size 2048
 """
 
 from __future__ import annotations
@@ -373,32 +376,57 @@ def train(cfg: SATSConfig) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="SATS LSTM 학습")
-    p.add_argument("--raw-dir",      default="raw_data",
-                   help="raw_data 루트 디렉터리")
-    p.add_argument("--gt-dir",       default="sats/preprocessing/gt_output_v1",
+    p.add_argument("--raw-dir",      default="learning_data/sensor_raw_bin",
+                   help="merged BIN 학습 입력 루트 디렉터리")
+    p.add_argument("--gt-dir",       default="learning_data/gt",
                    help="GT npy 디렉터리")
+    p.add_argument("--gt-mode",      choices=["precomputed", "on_the_fly"], default="precomputed",
+                   help="GT 공급 방식. precomputed=기존 npy, on_the_fly=merged BIN에서 즉석 생성")
     p.add_argument("--out-dir",      default="sats/training/runs",
                    help="결과 저장 디렉터리")
     p.add_argument("--run-name",     default="lstm_v1")
     p.add_argument("--epochs",       type=int,   default=50)
-    p.add_argument("--batch-size",   type=int,   default=64)
+    p.add_argument("--batch-size",   type=int,   default=2048)
     p.add_argument("--lr",           type=float, default=1e-3)
     p.add_argument("--hidden-dim",   type=int,   default=64)
     p.add_argument("--num-layers",   type=int,   default=2)
     p.add_argument("--dropout",      type=float, default=0.1)
-    p.add_argument("--seq-len",      type=int,   default=400)
-    p.add_argument("--num-workers",  type=int,   default=4)
+    p.add_argument("--seq-len",      type=int,   default=1000)
+    p.add_argument("--num-workers",  type=int,   default=2)
+    p.add_argument("--prefetch-factor", type=int, default=4,
+                   help="DataLoader worker당 미리 준비할 batch 수(num_workers>0일 때)")
+    p.add_argument("--persistent-workers", action=argparse.BooleanOptionalAction, default=True,
+                   help="DataLoader worker를 epoch 사이에 유지")
     p.add_argument("--device",       default="cuda")
     p.add_argument("--seed",         type=int,   default=42)
     p.add_argument("--val-trials",        nargs="+",
-                   default=["ecomesh_d5_z1_test3", "ecomesh_d5_z1.5_test9"],
+                   default=[],
                    help="검증에 사용할 trial_id 목록")
+    p.add_argument("--val-ratio",         type=float, default=0.2,
+                   help=">0: 랜덤 sequence-level split. 0: --val-trials 기반 trial split.")
     p.add_argument("--exclude-diameters", nargs="+", type=int, default=[],
                    help="학습/검증 풀에서 제외할 인덴터 직경(mm). 예: --exclude-diameters 10")
     p.add_argument("--window-size",       type=int,   default=10,
                    help="슬라이딩 윈도우 크기 (논문: 10)")
-    p.add_argument("--use-window-dataset", action="store_true",
-                   help="윈도우 데이터셋 사용 (논문 방식, loading phase만)")
+    p.add_argument("--on-the-fly-patch-step-mm", type=float, default=0.1,
+                   help="on_the_fly GT 원형 접촉면 이산화 간격")
+    p.add_argument("--contact-radius-step-mm", type=float, default=0.05,
+                   help="구형 인덴터 접촉 반경 커널 캐시 양자화 간격")
+    p.add_argument("--min-contact-radius-mm", type=float, default=0.05,
+                   help="z_depth가 작을 때 사용할 최소 접촉 반경")
+    p.add_argument("--z-depth-min-mm", type=float, default=0.001,
+                   help="이 이하 z_depth는 비접촉 GT zero로 처리")
+    p.add_argument("--z-balance-bin-width-mm", type=float, default=0.005,
+                   help="on_the_fly balanced_contact에서 z_depth 균형 샘플링 bin 폭")
+    p.add_argument("--plateau-stride", type=int, default=10,
+                   help="on_the_fly balanced_contact에서 plateau/static 샘플 downsample stride")
+    p.add_argument("--loading-stride", type=int, default=1,
+                   help="on_the_fly balanced_contact에서 loading 샘플 stride")
+    p.add_argument("--saturation-stride", type=int, default=2,
+                   help="on_the_fly balanced_contact에서 high-force/saturation 샘플 stride")
+    p.add_argument("--use-window-dataset", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="윈도우 데이터셋 사용 (논문 방식, loading phase만). 끄려면 --no-use-window-dataset")
     p.add_argument("--no-lr-scheduler",   action="store_true",
                    help="고정 LR 사용 (ReduceLROnPlateau 비활성)")
     return p
@@ -416,6 +444,7 @@ def main() -> None:
     cfg = SATSConfig(
         raw_dir            = args.raw_dir,
         gt_dir             = args.gt_dir,
+        dataset_index_path = f"{args.gt_dir}/dataset_index.json",
         out_dir            = args.out_dir,
         run_name           = args.run_name,
         epochs             = args.epochs,
@@ -426,13 +455,25 @@ def main() -> None:
         dropout            = args.dropout,
         seq_len            = args.seq_len,
         num_workers        = args.num_workers,
+        dataloader_prefetch_factor = args.prefetch_factor,
+        persistent_workers = args.persistent_workers,
         device             = args.device,
         seed               = args.seed,
         val_trials         = args.val_trials,
+        val_ratio          = args.val_ratio,
         exclude_diameters  = args.exclude_diameters,
         window_size        = args.window_size,
         use_window_dataset = args.use_window_dataset,
         use_lr_scheduler   = not args.no_lr_scheduler,
+        gt_mode            = args.gt_mode,
+        on_the_fly_patch_step_mm = args.on_the_fly_patch_step_mm,
+        contact_radius_step_mm   = args.contact_radius_step_mm,
+        min_contact_radius_mm    = args.min_contact_radius_mm,
+        z_depth_min_mm           = args.z_depth_min_mm,
+        z_balance_bin_width_mm   = args.z_balance_bin_width_mm,
+        plateau_stride           = args.plateau_stride,
+        loading_stride           = args.loading_stride,
+        saturation_stride        = args.saturation_stride,
     )
 
     train(cfg)

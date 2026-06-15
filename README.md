@@ -1,178 +1,339 @@
 # 16-Channel Tactile Intelligence Framework
 
-16채널 기압 기반 촉각 센서 데이터로 XY 위치, contact 기준 Z depth, Fz를 학습하기 위한 파이프라인입니다.  
-루트 README는 전체 실행 순서와 대표 명령만 다룹니다. 세부 옵션은 [preprocessing/README.md](/home/user/sensor_training/preprocessing/README.md:1), [training/README.md](/home/user/sensor_training/training/README.md:1)를 참조하세요.
+16채널 기압 기반 tactile sensor array 데이터로 sparse-to-dense pressure map,
+XY heatmap, contact 기준 Z/Fz 회귀를 실험하는 workspace입니다.
 
-## Workflow
-1. `raw_merge.py`로 DUE, Ethermotion, AFD 로그를 trial별 merged CSV로 정렬합니다.
-2. `preprocess.py`로 baseline 보정, grid 필터링, feature CSV, Zarr dataset을 만듭니다.
-3. `train_z_fz_regressor.py`로 GT XY 조건 기반 Z/Fz 회귀를 학습하고, 필요하면 frozen XY checkpoint 기준 validation도 같이 봅니다. 이 경로는 hysteresis 보존을 위해 loading phase만 사용합니다.
-4. 공식 학습/평가는 trial-aware 5-fold CV를 기본으로 사용합니다.
-5. 필요할 때만 `train_comparison.py` Stage1/2/3 또는 평가 스크립트로 XY heatmap 실험을 재현합니다.
+현재 mk555 SATS 데이터의 공식 경로는 `skin_ws/raw_data`의 raw BIN archive를
+`learning_data`로 정리한 뒤 `sats` 학습을 돌리는 흐름입니다. 기존
+CSV/Zarr 기반 `hitmap` 경로는 XY/Z/Fz 회귀 실험용으로 유지됩니다.
 
-## Data Assumptions
-- 원천 데이터 루트: `preprocessing/raw_data`
-- 전처리 산출물 루트: `preprocessing/processed_data`
-- 학습용 Zarr는 여러 개가 있을 수 있으므로 `--zarr-path`를 명시하는 것을 권장합니다.
-- `preprocess.py`는 `*_merged.csv`를 읽으므로 `raw_merge.py`가 선행되어야 합니다.
+## Current Official SATS Flow
 
-## Step 1. Raw Merge
-언제 쓰는가:
-원시 장비 로그를 trial별 공통 타임라인 CSV로 만들 때 사용합니다.
+```text
+skin_ws/raw_data/sats/eco20 + mesh/d5/testN/
+  ├── due_raw_burst_*.bin
+  ├── ethermotion_encoder_*.bin
+  └── loadcell_raw_*.bin
 
-대표 명령:
-```bash
-python3 preprocessing/raw_merge.py \
-  --raw-root preprocessing/raw_data \
-  --align-mode resample \
-  --resample-hz 100 \
-  --min-match-ratio 0.9 \
-  --force-round-dp 2
+learning_data/
+  ├── sensor_raw_bin/ecomesh/d5/z_2.5mm/testN/*_merged.bin
+  └── gt/ecomesh_d5_z2.5_testN_targets.npy  # legacy/precomputed GT
+
+sats/training/
+  ├── train_lstm.py
+  ├── train_attention.py
+  ├── train_local_map.py
+  └── train_cnn.py
 ```
 
-입력:
-- `preprocessing/raw_data/**/due*.csv`
-- `preprocessing/raw_data/**/ethermotion*.csv`
-- `preprocessing/raw_data/**/afd*.csv`
+## Data Alignment Policy
 
-주요 출력:
-- trial별 `*_merged.csv`
-- 동기화 확인용 PNG
-- baseline/summary JSON
+- DUE effective sensor stream is 200 Hz. One raw DUE burst contains 10 FIFO
+  frames, so `bin_merge.py` expands bursts into the 200 Hz tactile stream.
+- Loadcell is aligned to the same 200 Hz common timeline and converted with
+  `Fz = (kg - kg_baseline) * 9.80665`.
+- EtherMotion is logged much faster, around 1000 Hz or higher, and provides
+  high-resolution `x/y/z/u` labels. It is interpolated onto the 200 Hz common
+  timeline; the final training row count is not expanded to EtherMotion rate.
+- `z_stage_mm` and `z_depth_mm` preserve EtherMotion command precision at about
+  `0.0001 mm`; do not bin Z coarsely when the goal is `0.xx mm` behavior.
+- `u_mm` is a node-internal wait/virtual axis. It is not physical shear and is
+  not the depth source. SATS uses all rows by default.
 
-다음 단계로 넘어가는 조건:
-- 각 trial에 merged CSV가 생성되고, 동기화 품질이 `--min-match-ratio` 기준을 만족해야 합니다.
+This means the recommended learning row is:
 
-자세한 옵션 설명:
-- [preprocessing/README.md](/home/user/sensor_training/preprocessing/README.md:1)
-
-## Step 2. Preprocess
-언제 쓰는가:
-merged CSV를 baseline-corrected feature, grid CSV, Zarr dataset으로 바꿀 때 사용합니다.
-
-대표 명령:
-```bash
-python3 preprocessing/preprocess.py \
-  --raw-dir preprocessing/raw_data \
-  --out-dir preprocessing/processed_data \
-  --use-depth-aware-radius \
-  --radius-model hertz \
-  --z-bin-mm 0.001 \
-  --min-reliable-s 0.001 \
-  --baseline-z-thresh 0.001 \
-  --baseline-force-thresh 0.5 \
-  --baseline-min-consec 40 \
-  --fallback-depth-mode none
+```text
+input[t] = DUE s1..s16 at 200 Hz
+Fz[t]    = loadcell Fz interpolated to t
+Z[t]     = EtherMotion z interpolated to t
+GT[t]    = Boussinesq pressure map from x/y/Fz/diameter
 ```
 
-입력:
-- `preprocessing/raw_data/**/*_merged.csv`
+## GT Modes
 
-주요 출력:
-- `processed_data/baselines/*_baselines.json`
-- `processed_data/grid/*_grid.csv`
-- `processed_data/features/*_features.csv`
-- `processed_data/zarr_data/dataset_<material>.zarr`
-- `processed_data/peak_summary/*_peak_summary.csv`
+Two GT paths are available:
 
-주요 조정 포인트:
-- `--min-signal`: 미지정 시 baseline noise 기반 자동 샘플 제거 기준
-- `--min-reliable-s`: 좌표 유지 기준
-- `--baseline-*`: baseline 자동 탐색 규칙
-- `--use-depth-aware-radius`: `d5`, `d10` 폴더명에서 자동 반경을 계산해 Zarr의 마지막 aux field 의미를 바꿈
+```text
+precomputed  : legacy path, stores learning_data/gt/*_targets.npy
+on_the_fly   : CPU worker path, generates dense GT during DataLoader fetch
+gpu_on_the_fly: optimized path, sends compact GT metadata and builds batch GT on GPU
+```
 
-다음 단계로 넘어가는 조건:
-- 원하는 필터 기준으로 feature/Zarr가 생성되고, 학습에 사용할 dataset 경로가 확정되어야 합니다.
+The default remains `precomputed`, so existing runs are unchanged. The new
+on-the-fly modes avoid writing dense GT files of about 18 GB per d5 trial.
+For `0.25 mm`, `0.2 mm`, or `0.1 mm` output grids, prefer
+`gpu_on_the_fly`; the CPU `on_the_fly` mode is mainly a compatibility/debug
+path for the original `41 x 41` grid.
 
-자세한 옵션 설명:
-- [preprocessing/README.md](/home/user/sensor_training/preprocessing/README.md:1)
+Current on-the-fly GT assumptions:
 
-## Step 3. Z/Fz Regressor
-언제 쓰는가:
-XY 위치는 주어진 조건으로 보고 contact 기준 Z/Fz만 별도 회귀할 때 사용합니다.
+```text
+z_s_mm                  = 2.0 fixed
+beta/FEM correction     = none
+indenter model          = spherical
+contact radius          = sqrt(R * z_depth_mm), R = diameter / 2
+contact starts at d5    = z_depth_mm > 0.001
+minimum contact radius  = 0.05 mm
+z-depth sample bins     = 0.005 mm
+pressure map grid       = 41 x 41, 0.5 mm XY spacing
+```
 
-대표 명령:
+The high-resolution EtherMotion Z signal is preserved in `merged.bin` at about
+`0.0001 mm`, but training samples are balanced by `0.005 mm` z-depth bins to
+avoid over-weighting repeated plateau rows.
+
+Example on-the-fly training command:
+
+First build compact metadata cache from merged BIN data. This does not save
+dense pressure maps; it stores normalized sensor windows and compact
+`diameter/x/y/z_depth/Fz` metadata.
+
 ```bash
-python -m training.pipelines.train_z_fz_regressor \
-  --data-dir preprocessing/processed_data \
-  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
-  --out-dir training/runs_z_fz \
-  --xy-checkpoint training/runs_comparison/folds/fold_0/best_multi_head_field_stage2_dlabel-gaussian-hertz_xybce1_zoff_fzoff_decsoftargmax.pth \
-  --decode-xy softargmax \
-  --xy-noise-std-mm 0.5 \
-  --cv-folds 5 \
-  --optimizer adamw \
-  --weight-decay 1e-4 \
-  --dropout 0.1 \
-  --epochs 100 \
+python3 -m sats.training.build_gt_meta_cache \
+  --raw-dir learning_data/sensor_raw_bin \
+  --out-dir learning_data/gt_meta_cache \
+  --exclude-diameters 10 \
+  --grid-step-mm 0.5
+```
+
+Then train from that cache:
+
+```bash
+python3 -m sats.training.train_e2e \
+  --gt-mode gpu_on_the_fly \
+  --raw-dir learning_data/sensor_raw_bin \
+  --gt-meta-cache-dir learning_data/gt_meta_cache \
+  --z-depth-min-mm 0.001 \
+  --z-balance-bin-width-mm 0.005 \
+  --min-contact-radius-mm 0.05 \
+  --exclude-diameters 10 \
+  --run-name e2e_d5_onthefly
+```
+
+High-resolution grid examples:
+
+```bash
+# 0.25 mm virtual grid, 81 x 81 output
+python3 -m sats.training.train_e2e \
+  --gt-mode gpu_on_the_fly \
+  --raw-dir learning_data/sensor_raw_bin \
+  --gt-meta-cache-dir learning_data/gt_meta_cache \
+  --exclude-diameters 10 \
+  --grid-step-mm 0.25 \
+  --batch-size 2048 \
+  --num-workers 6 \
+  --prefetch-factor 2 \
+  --run-name e2e_d5_gpu_gt_g025
+
+# 0.1 mm virtual grid, 201 x 201 output. Start smaller because target memory
+# grows about 24x compared with 41 x 41.
+python3 -m sats.training.train_e2e \
+  --gt-mode gpu_on_the_fly \
+  --raw-dir learning_data/sensor_raw_bin \
+  --gt-meta-cache-dir learning_data/gt_meta_cache \
+  --exclude-diameters 10 \
+  --grid-step-mm 0.1 \
   --batch-size 1024 \
+  --num-workers 4 \
+  --prefetch-factor 2 \
+  --run-name e2e_d5_gpu_gt_g010
+```
+
+Use a denser virtual XY pressure map by changing the GT/model grid, not by
+recollecting raw data. For example, `81 x 81` over the same `[-10, 10] mm` area
+gives `0.25 mm` virtual taxel spacing. The current raw scan centers are still
+collected every `0.5 mm`, so finer XY output improves map resolution but does
+not create new sub-0.5mm press-center labels by itself.
+
+In `train_e2e.py`, `--local-map-size 0` is the default. It automatically scales
+the local decoder's physical footprint with `--grid-step-mm`: `0.5 mm -> 15`,
+`0.25 mm -> 29`, `0.2 mm -> 37`, and `0.1 mm -> 71`.
+
+## Build Learning Data
+
+Run from repository root:
+
+```bash
+python3 sats/preprocessing/prepare_learning_data.py \
+  --source-root skin_ws/raw_data \
+  --learning-root learning_data
+```
+
+The script discovers raw BIN trial folders, assigns stable `testN` numbers via
+`learning_data/trial_registry.json`, writes merged BIN files, and generates
+Boussinesq pressure-map GT files under `learning_data/gt`.
+
+To preview what will be processed without writing:
+
+```bash
+python3 sats/preprocessing/prepare_learning_data.py --dry-run --stage all
+```
+
+To process only one new trial, use the planned output from dry-run and run the
+merge/GT tools against that specific trial, or run `prepare_learning_data.py`
+after confirming the registry mapping. Existing `testN` numbers are append-only.
+
+For on-the-fly GT training, dense `learning_data/gt/*_targets.npy` files are not
+required. You still need the merged BIN and baseline artifacts under
+`learning_data/sensor_raw_bin`.
+
+## Raw BIN Sufficiency Check
+
+Before running long training, inspect whether the raw BIN archive has enough
+usable data and consistent coverage.
+
+Quick file/record check:
+
+```bash
+python3 sats/tools/analyze_raw_bins.py \
+  --source-root skin_ws/raw_data \
+  --source-material "eco20 + mesh" \
+  --diameter d5 \
+  --out sats/tools/raw_bin_sufficiency_quick.csv
+```
+
+Full distribution check:
+
+```bash
+python3 sats/tools/analyze_raw_bins.py \
+  --source-root skin_ws/raw_data \
+  --source-material "eco20 + mesh" \
+  --diameter d5 \
+  --full \
+  --out sats/tools/raw_bin_sufficiency_full.csv
+```
+
+The full report builds the same 200 Hz merged rows in memory and summarizes:
+
+```text
+source stream row counts and rates
+merged row count and duration
+covered XY cells
+per-XY sequence length distribution
+z_depth range
+Fz distribution
+active contact row ratio
+```
+
+Use this report to confirm that each trial reaches the expected `2.5 mm` d5
+depth, has comparable force distribution, covers all `41 x 41` XY points, and
+does not have abnormal sequence lengths or missing streams.
+
+## Current mk555 d5 Dataset
+
+As of 2026-06-09, the current SATS d5 learning data contains:
+
+```text
+ecomesh_d5_z2.5_test1
+ecomesh_d5_z2.5_test2
+```
+
+Both trials have been checked for SATS training alignment:
+
+```text
+test1 on-grid rows = 2,743,978 = GT rows
+test2 on-grid rows = 2,743,016 = GT rows
+trial count        = 2
+sequence count     = 3,362  # 1,681 XY points per trial
+```
+
+GT peak positions match the row `(x_mm, y_mm)` coordinates in sampled checks.
+
+## SATS Training
+
+Default training follows the paper-style SATS data contract:
+
+```text
+raw cycle cap:  seq_len = 1000      # keeps loading peak around timestep 820-860
+sample input:   sensor_window [B, 10, 16]
+sample target:  pressure map  [B, 41, 41] at the window's last timestep
+split:          random sequence-level train/val split, val_ratio = 0.2
+```
+
+`--use-window-dataset` is enabled by default. Use `--no-use-window-dataset`
+only for the older peak-map experiment:
+
+```text
+old mode: sensor_seq [B, 1000, 16] -> peak pressure map [B, 41, 41]
+```
+
+Smoke test:
+
+```bash
+python3 -m sats.training.train_lstm \
+  --run-name smoke_lstm_window10 \
+  --epochs 1 \
+  --batch-size 256 \
+  --num-workers 0 \
   --device cuda
 ```
 
-동작 의미:
-- 학습은 항상 GT XY를 조건으로 사용합니다.
-- 전처리 zarr의 `depth_mm`는 현재 `z_contact_mm` 기준으로 저장됩니다.
-- Z/Fz sequence 회귀는 loading phase만 사용합니다. unloading/all은 이 경로에서 지원하지 않습니다.
-- 공식 학습 경로는 trial-aware 5-fold CV를 기본으로 사용합니다.
-- `--xy-noise-std-mm`는 학습 시 GT XY에 노이즈를 섞어 XY 오차에 대한 강건성을 높이는 옵션입니다.
-- `--xy-checkpoint`를 주면 validation에서 frozen XY heatmap checkpoint를 decode한 `predicted_xy` 지표도 같이 계산합니다.
-- 이 `predicted_xy` 평가는 radius를 여전히 GT에서 가져오므로 완전한 end-to-end 평가는 아닙니다.
+Recommended LSTM training on RTX 4090:
 
-주요 출력:
-- `training/runs_z_fz/best_z_fz_regressor.pth`
-- `training/runs_z_fz/metrics_z_fz_regressor.json`
-- `training/runs_z_fz/history_z_fz_regressor.json`
-
-자세한 옵션 설명:
-- [training/README.md](/home/user/sensor_training/training/README.md:1)
-
-## Optional. XY Heatmap Comparison
-`multi_head_field` Stage1/2/3를 다시 만들거나 다른 모델과 비교하려면 `train_comparison.py`를 사용합니다.
-
-Stage2 예시:
 ```bash
-python -m training.pipelines.train_comparison \
-  --data-dir preprocessing/processed_data \
-  --zarr-path preprocessing/processed_data/zarr_data/dataset_ecomesh.zarr \
-  --models multi_head_field \
-  --cv-folds 5 \
-  --optimizer adamw \
-  --weight-decay 1e-4 \
-  --dropout 0.1 \
-  --use-depth-aware-label \
-  --depth-label-kernel gaussian \
-  --depth-radius-model hertz \
-  --heatmap-size 40 \
-  --fg-weight 8.0 \
-  --heatmap-sigma-scale 0.35 \
-  --lambda-z 0.0 \
-  --lambda-fz 0.0 \
-  --decode-xy softargmax \
-  --depth-fallback-mm 1.0 \
-  --depth-min-for-label 0.05 \
-  --save-heatmap-overlay \
-  --overlay-batches 1 \
-  --overlay-samples 4 \
-  --epochs 100 \
-  --batch-size 1024
+python3 -m sats.training.train_lstm \
+  --run-name lstm_d5_test12_window10_bs2048 \
+  --epochs 50 \
+  --batch-size 2048 \
+  --num-workers 2 \
+  --device cuda
 ```
 
-평가 예시:
+Why `batch-size=2048`: window mode transfers only one `[41,41]` target map per
+sample instead of a full `[1000,41,41]` GT sequence, so the 4090 has enough VRAM
+headroom. Keep `num-workers=2` as the default while the dataset grows to 10
+sets; more workers can increase mmap/RAM pressure without improving epoch time.
+
+Continue the staged SATS pipeline:
+
 ```bash
-python3 -m training.pipelines.evaluate_comparison_heatmap \
-  --runs-dir training/runs_comparison \
-  --models multi_head_field \
-  --batch-size 512 \
-  --device cuda \
-  --eval-split all \
-  --fill-missing neighbor
+python3 -m sats.training.train_attention \
+  --lstm-ckpt sats/training/runs/lstm_d5_test12_window10_bs2048/best_model.pt \
+  --run-name attn_d5_test12_window10_bs2048 \
+  --epochs 50 \
+  --batch-size 2048 \
+  --num-workers 2 \
+  --device cuda
+
+python3 -m sats.training.train_local_map \
+  --attn-ckpt sats/training/runs/attn_d5_test12_window10_bs2048/best_model.pt \
+  --run-name local_map_d5_test12_window10_bs2048 \
+  --epochs 50 \
+  --batch-size 2048 \
+  --num-workers 2 \
+  --device cuda
+
+python3 -m sats.training.train_cnn \
+  --local-map-ckpt sats/training/runs/local_map_d5_test12_window10_bs2048/best_model.pt \
+  --run-name cnn_d5_test12_window10_bs2048 \
+  --epochs 50 \
+  --batch-size 2048 \
+  --num-workers 2 \
+  --device cuda
 ```
 
-세부 실험 순서와 옵션 설명:
-- [training/README.md](/home/user/sensor_training/training/README.md:1)
+Batch tuning rule for 2 to 10 sets:
+
+```text
+default:       batch_size=2048, num_workers=2
+RAM pressure:  batch_size=1024, num_workers=1 or 0
+stable/idle:   batch_size=4096, num_workers=2
+```
+
+Judge tuning by epoch time and RAM stability, not by whether instantaneous GPU
+utilization stays fixed at 90%.
+
+## Legacy / Alternate Paths
+
+- `hitmap/` contains the newer CSV/Zarr based XY heatmap and Z/Fz regressor
+  experiments.
+- `sats/preprocessing/raw_merge.py` and CSV exports are compatibility surfaces.
+  For current mk555 SATS data, prefer raw BIN -> merged BIN.
 
 ## Directory Map
-- `preprocessing/`: raw merge, preprocess, label preview
-- `training/`: dataset, model, training/evaluation pipeline
-- `inference/`: 저장된 checkpoint 기반 추론 및 overlay 확인
-- `md/`: 연구/설계 메모
+
+- `skin_ws/`: raw acquisition archive, node files, acquisition scripts.
+- `learning_data/`: managed SATS merged BIN and GT workspace.
+- `sats/`: SATS preprocessing, GT generation, training, and references.
+- `hitmap/`: Zarr/heatmap/Z-Fz experimental training pipelines.
+- `history/`: dated implementation and experiment notes.
