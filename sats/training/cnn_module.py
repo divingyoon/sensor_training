@@ -141,14 +141,44 @@ class SATSCNNStage(nn.Module):
             hidden_channels = cfg.cnn_hidden_channels,
         )
 
+        # ── Ablation (논문 Table S2 / FigS19) ────────────────────────────────
+        self.ablate_lstm = bool(getattr(cfg, "ablate_lstm", False))
+        self.ablate_attention = bool(getattr(cfg, "ablate_attention", False))
+        self.ablate_cnn = bool(getattr(cfg, "ablate_cnn", False))
+        self.attn_dim = cfg.attn_dim
+        if self.ablate_lstm:
+            # LSTM 대체: 센서별 시퀀스의 mean/max/last 통계 → 선형 투영 (비순환)
+            self._nolstm_proj = nn.Linear(3, self.encoder.out_dim)
+
+    def _nolstm_encode(self, seq: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        """LSTM 없이 [B,T,16] → [B,16,out_dim]. 유효 길이 마스킹된 mean/max/last 통계."""
+        b, t, s = seq.shape
+        valid = torch.arange(t, device=seq.device)[None, :] < lengths[:, None]   # [B,T]
+        m = valid[:, :, None].float()
+        mean = (seq * m).sum(1) / m.sum(1).clamp(min=1.0)                          # [B,16]
+        masked = seq.masked_fill(~valid[:, :, None], float("-inf"))
+        mx = masked.max(dim=1).values
+        mx = torch.where(torch.isfinite(mx), mx, torch.zeros_like(mx))
+        idx = (lengths - 1).clamp(min=0)
+        last = seq[torch.arange(b, device=seq.device), idx]                        # [B,16]
+        stats = torch.stack([mean, mx, last], dim=-1)                              # [B,16,3]
+        return self._nolstm_proj(stats)
+
     def forward(
         self,
         sensor_seq: torch.Tensor,   # [B, T, 16]
         lengths: torch.Tensor,      # [B]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        local_feat    = self.encoder(sensor_seq, lengths)            # [B, 16, lstm_out]
-        agg_feat      = self.attention(local_feat)                   # [B, 16, attn_dim]
+        if self.ablate_lstm:
+            local_feat = self._nolstm_encode(sensor_seq, lengths)   # [B, 16, lstm_out]
+        else:
+            local_feat = self.encoder(sensor_seq, lengths)          # [B, 16, lstm_out]
+        if self.ablate_attention:
+            agg_feat = torch.zeros(local_feat.shape[0], local_feat.shape[1],
+                                   self.attn_dim, device=local_feat.device, dtype=local_feat.dtype)
+        else:
+            agg_feat = self.attention(local_feat)                   # [B, 16, attn_dim]
         combined_feat = torch.cat([local_feat, agg_feat], dim=-1)   # [B, 16, combined]
         merged_map    = self.local_map_decoder(combined_feat)        # [B, grid, grid]
-        refined_map   = self.cnn_refiner(merged_map)                 # [B, grid, grid]
+        refined_map   = merged_map if self.ablate_cnn else self.cnn_refiner(merged_map)
         return refined_map, merged_map

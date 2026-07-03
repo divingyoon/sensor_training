@@ -21,7 +21,9 @@ from sats.preprocessing.prepare_learning_data import (
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SOURCE_ROOT = REPO_ROOT / "skin_ws" / "raw_data"
-SATS_SOURCE = SOURCE_ROOT / "sats" / "eco20 + mesh"
+SATS_SOURCE = SOURCE_ROOT / "sats"
+D5_SMOKE_TRIAL = SATS_SOURCE / "ecomesh" / "xy_0.5mm" / "d5" / "test1"
+D10_SMOKE_TRIAL = SATS_SOURCE / "ecomesh" / "xy_1mm" / "d10" / "20260622_test4"
 
 
 class TestSkinWsRawBinArchive:
@@ -31,7 +33,9 @@ class TestSkinWsRawBinArchive:
     @pytest.mark.parametrize(
         "trial_dir",
         [
-            SATS_SOURCE / "d5" / "test1",
+            D5_SMOKE_TRIAL,
+            SATS_SOURCE / "ecomesh" / "xy_1mm" / "d5" / "20260622_test1",
+            SATS_SOURCE / "eco20" / "xy_1mm" / "d5" / "20260619_test5",
         ],
     )
     def test_required_raw_bin_set_exists(self, trial_dir):
@@ -43,11 +47,11 @@ class TestSkinWsRawBinArchive:
 class TestRawBinHeaders:
     @pytest.fixture(scope="class")
     def d5_paths(self):
-        return find_bin_set(SATS_SOURCE / "d5" / "test1")
+        return find_bin_set(D5_SMOKE_TRIAL)
 
     @pytest.fixture(scope="class")
     def d10_paths(self):
-        return None
+        return find_bin_set(D10_SMOKE_TRIAL)
 
     def test_d5_due_header(self, d5_paths):
         magic, header, _ = read_bin_header(d5_paths["due"])
@@ -78,19 +82,25 @@ class TestRawBinHeaders:
 
 
 class TestLearningDataPlan:
-    def test_current_archive_plans_three_force_trials(self, tmp_path):
+    def test_current_archive_plans_all_force_trials(self, tmp_path):
         planned, skipped = discover_planned_trials(
             SOURCE_ROOT,
             tmp_path / "learning_data",
-            source_material="eco20 + mesh",
-            material="ecomesh",
+            source_material="all",
+            material="auto",
             depth_map={"d5": 2.5, "d10": 3.5},
         )
 
-        assert [p.trial_id for p in planned] == [
-            "ecomesh_d5_z2.5_test1",
-        ]
-        assert isinstance(skipped, list)
+        trial_ids = {p.trial_id for p in planned}
+        assert len(planned) == 31
+        assert skipped == []
+        assert {
+            "eco20_xy1_d5_z2.5_test1",
+            "eco50_xy1_d10_z3.5_test1",
+            "ecomesh_xy0p5_d5_z2.5_test1",
+            "ecomesh_xy1_d10_z3.5_test1",
+        } <= trial_ids
+        assert all(p.source_dir.is_dir() for p in planned)
 
 
 class TestTrialRegistryStableNumbering:
@@ -108,8 +118,8 @@ class TestTrialRegistryStableNumbering:
         planned, _ = discover_planned_trials(
             source_root,
             learning_root,
-            source_material="eco20 + mesh",
-            material="ecomesh",
+            source_material="ecomesh",
+            material="auto",
             depth_map={"d10": 3.5},
             registry=registry,
         )
@@ -118,7 +128,7 @@ class TestTrialRegistryStableNumbering:
 
     def test_inserting_earlier_dated_trial_does_not_renumber(self, tmp_path):
         source_root = tmp_path / "raw"
-        d_dir = source_root / "eco20 + mesh" / "d10"
+        d_dir = source_root / "sats" / "ecomesh" / "xy_1mm" / "d10"
         learning_root = tmp_path / "learning_data"
 
         self._make_trial(d_dir, "20260601_test1")
@@ -135,11 +145,35 @@ class TestTrialRegistryStableNumbering:
 
     def test_numbering_is_idempotent_across_reruns(self, tmp_path):
         source_root = tmp_path / "raw"
-        d_dir = source_root / "eco20 + mesh" / "d10"
+        d_dir = source_root / "sats" / "ecomesh" / "xy_1mm" / "d10"
         learning_root = tmp_path / "learning_data"
         self._make_trial(d_dir, "20260601_test1")
         self._make_trial(d_dir, "20260602_test1")
         assert self._plan(source_root, learning_root) == self._plan(source_root, learning_root)
+
+    def test_xy_resolution_has_separate_numbering(self, tmp_path):
+        source_root = tmp_path / "raw"
+        learning_root = tmp_path / "learning_data"
+        self._make_trial(source_root / "sats" / "ecomesh" / "xy_0.5mm" / "d5", "test1")
+        self._make_trial(source_root / "sats" / "ecomesh" / "xy_1mm" / "d5", "test1")
+
+        registry = load_trial_registry(learning_root / REGISTRY_FILENAME)
+        planned, skipped = discover_planned_trials(
+            source_root,
+            learning_root,
+            source_material="ecomesh",
+            material="auto",
+            depth_map={"d5": 2.5},
+            registry=registry,
+        )
+
+        assert skipped == []
+        assert [p.trial_id for p in planned] == [
+            "ecomesh_xy0p5_d5_z2.5_test1",
+            "ecomesh_xy1_d5_z2.5_test1",
+        ]
+        assert registry["ecomesh_xy0p5/d5"]["sats/ecomesh/xy_0.5mm/d5/test1"] == 1
+        assert registry["ecomesh_xy1/d5"]["sats/ecomesh/xy_1mm/d5/test1"] == 1
 
 
 class TestForceConversionContract:

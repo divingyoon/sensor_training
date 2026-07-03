@@ -19,8 +19,8 @@ import torch
 from torch.utils.data import DataLoader, Dataset, random_split
 
 from sats.preprocessing import generate_gt as gt
-from sats.preprocessing.merged_bin import merged_bin_to_frame, read_merged_bin_header
-from .config import SATSConfig, _parse_trial_id
+from sats.preprocessing.merged_bin import merged_bin_to_frame
+from .config import SATSConfig, _parse_trial_id, filter_trial_ids
 from .dataset import _load_baseline, _on_grid_mask, _resolve_merged_input, window_collate_fn
 from .gt_gpu import GT_META_COLUMNS
 
@@ -554,11 +554,17 @@ def build_dataloaders_on_the_fly(
     if all_trial_ids is None:
         all_trial_ids = _all_trial_ids_from_index_or_raw(cfg)
 
-    if cfg.exclude_diameters:
-        all_trial_ids = [
-            t for t in all_trial_ids
-            if _parse_trial_id(t)["d"] not in cfg.exclude_diameters
-        ]
+    if cfg.include_materials or cfg.exclude_diameters:
+        before = len(all_trial_ids)
+        all_trial_ids = filter_trial_ids(
+            all_trial_ids,
+            include_materials=cfg.include_materials,
+            exclude_diameters=cfg.exclude_diameters,
+        )
+        log.info(
+            "on-the-fly trial filters include_materials=%s exclude_diameters=%s: %d -> %d trials",
+            cfg.include_materials, cfg.exclude_diameters, before, len(all_trial_ids),
+        )
     log.info("on-the-fly GT trials=%d: %s", len(all_trial_ids), all_trial_ids)
 
     if cfg.val_ratio > 0:

@@ -8,7 +8,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[3]))
 
-from sats.training.config import SATSConfig
+from sats.training.config import (
+    SATSConfig,
+    _parse_trial_id,
+    filter_trial_ids,
+    trial_id_to_paths,
+)
 
 
 class TestSATSConfigAttentionFields:
@@ -129,6 +134,7 @@ class TestSATSConfigMk555Grid:
         assert cfg.prefer_merged_bin is True
         assert cfg.val_trials == []
         assert cfg.val_ratio == 0.2
+        assert cfg.include_materials == []
 
     def test_training_includes_hold_rows_by_default(self):
         # u_mm은 가상 보간축(max깊이 hold 표식)이라 물리 필터가 아니다.
@@ -149,3 +155,51 @@ class TestSATSConfigMk555Grid:
         paths = cfg.trial_paths("ecomesh_d5_z2.5_test1")
         assert paths["merged_bin"].name == "ecomesh_d5_z2.5_test1_merged.bin"
         assert paths["merged_csv"].name == "ecomesh_d5_z2.5_test1_merged.csv"
+
+    def test_trial_id_parser_allows_resolution_in_material_key(self):
+        parsed = _parse_trial_id("ecomesh_xy0p5_d5_z2.5_test1")
+        assert parsed == {"material": "ecomesh_xy0p5", "d": 5, "z": 2.5, "n": 1}
+
+    def test_trial_paths_include_resolution_material_key(self, tmp_path):
+        paths = trial_id_to_paths("ecomesh_xy0p5_d5_z2.5_test1", raw_dir=str(tmp_path / "raw_data"))
+        assert paths["merged_bin"] == (
+            tmp_path
+            / "raw_data"
+            / "ecomesh_xy0p5"
+            / "d5"
+            / "z_2.5mm"
+            / "test1"
+            / "ecomesh_xy0p5_d5_z2.5_test1_merged.bin"
+        )
+
+    def test_include_materials_custom(self):
+        cfg = SATSConfig(include_materials=["eco20_xy1"])
+        assert cfg.include_materials == ["eco20_xy1"]
+
+    def test_filter_trial_ids_keeps_only_included_materials(self):
+        trial_ids = [
+            "eco20_xy1_d5_z2.5_test1",
+            "eco50_xy1_d5_z2.5_test1",
+            "ecomesh_xy1_d5_z2.5_test1",
+        ]
+
+        assert filter_trial_ids(trial_ids, include_materials=["eco20_xy1"]) == [
+            "eco20_xy1_d5_z2.5_test1",
+        ]
+
+    def test_filter_trial_ids_combines_material_and_diameter_filters(self):
+        trial_ids = [
+            "eco20_xy1_d5_z2.5_test1",
+            "eco20_xy1_d5_z2.5_test2",
+            "eco20_xy1_d10_z3.5_test1",
+            "eco50_xy1_d5_z2.5_test1",
+        ]
+
+        assert filter_trial_ids(
+            trial_ids,
+            include_materials=["eco20_xy1"],
+            exclude_diameters=[10],
+        ) == [
+            "eco20_xy1_d5_z2.5_test1",
+            "eco20_xy1_d5_z2.5_test2",
+        ]

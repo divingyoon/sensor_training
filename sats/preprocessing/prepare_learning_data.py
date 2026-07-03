@@ -30,8 +30,12 @@ except ImportError:  # pragma: no cover - direct script execution fallback
 
 
 D_DIR_RE = re.compile(r"^d(?P<diameter>\d+(?:\.\d+)?)$", re.IGNORECASE)
+XY_DIR_RE = re.compile(r"^xy_(?P<step>\d+(?:\.\d+)?)mm$", re.IGNORECASE)
 SOURCE_TEST_DIR_RE = re.compile(r"^(?:\d{8}_)?test\d+$", re.IGNORECASE)
+SOURCE_TEST_SORT_RE = re.compile(r"^(?:(?P<date>\d{8})_)?test(?P<test_no>\d+)$", re.IGNORECASE)
 DEFAULT_DEPTH_MAP = {"d5": 2.5, "d10": 3.5}
+AUTO_MATERIAL = "auto"
+ALL_SOURCE_MATERIALS = {"all", "*"}
 
 # test 번호를 영구 고정하기 위한 registry. learning_root에 저장한다.
 # 구조: {"<material>/<diameter_key>": {"<source 상대경로>": test_no}}
@@ -80,6 +84,8 @@ class PlannedTrial:
     diameter_mm: float
     depth_mm: float
     test_no: int
+    source_material: str = ""
+    xy_step_mm: float | None = None
 
     @property
     def trial_id(self) -> str:
@@ -89,7 +95,7 @@ class PlannedTrial:
         )
 
     def trial_info(self) -> dict:
-        return {
+        info = {
             "trial_id": self.trial_id,
             "material": self.material,
             "indenter_diameter_mm": self.diameter_mm,
@@ -97,10 +103,46 @@ class PlannedTrial:
             "experiment_no": self.test_no,
             "source_trial_dir": str(self.source_dir),
         }
+        if self.source_material:
+            info["source_material"] = self.source_material
+        if self.xy_step_mm is not None:
+            info["xy_step_mm"] = self.xy_step_mm
+        return info
 
 
 def _format_number(value: float) -> str:
     return f"{value:g}"
+
+
+def _material_key(value: str) -> str:
+    key = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+    return key or "material"
+
+
+def _xy_key(path: Path) -> str:
+    match = XY_DIR_RE.match(path.name)
+    if match is None:
+        raise ValueError(f"xy directory must look like xy_1mm/xy_0.5mm, got {path.name!r}")
+    step = _format_number(float(match.group("step"))).replace(".", "p")
+    return f"xy{step}"
+
+
+def _xy_step_mm(path: Path) -> float | None:
+    match = XY_DIR_RE.match(path.name)
+    return None if match is None else float(match.group("step"))
+
+
+def _output_material_name(source_material: str, requested_material: str, xy_dir: Path | None) -> str:
+    base = source_material if requested_material == AUTO_MATERIAL else requested_material
+    key = _material_key(base)
+    if xy_dir is None:
+        return key
+    return f"{key}_{_xy_key(xy_dir)}"
+
+
+def _source_archive_root(source_root: Path) -> Path:
+    sats_root = source_root / "sats"
+    return sats_root if sats_root.exists() else source_root
 
 
 def parse_depth_map(items: list[str] | None) -> dict[str, float]:
@@ -136,6 +178,96 @@ def _diameter_sort_key(path: Path) -> tuple[float, str]:
     return (float(match.group("diameter")) if match else float("inf"), path.name)
 
 
+def _source_trial_sort_key(path: Path) -> tuple[str, int, str]:
+    match = SOURCE_TEST_SORT_RE.match(path.name)
+    if match is None:
+        return ("", 0, path.name)
+    date = match.group("date") or ""
+    return (date, int(match.group("test_no")), path.name)
+
+
+def _source_layout_sort_key(path: Path) -> tuple[int, float, str]:
+    d_match = D_DIR_RE.match(path.name)
+    if d_match is not None:
+        return (0, float(d_match.group("diameter")), path.name)
+    xy_match = XY_DIR_RE.match(path.name)
+    if xy_match is not None:
+        return (1, float(xy_match.group("step")), path.name)
+    return (2, float("inf"), path.name)
+
+
+def _iter_source_material_dirs(source_root: Path, source_material: str) -> list[Path]:
+    if source_material.lower() in ALL_SOURCE_MATERIALS:
+        archive_root = _source_archive_root(source_root)
+        if not archive_root.exists():
+            raise FileNotFoundError(f"source archive root not found: {archive_root}")
+        return sorted((p for p in archive_root.iterdir() if p.is_dir()), key=lambda p: p.name)
+    return [resolve_source_material_dir(source_root, source_material)]
+
+
+def _append_planned_from_diameter_dir(
+    *,
+    d_dir: Path,
+    source_root: Path,
+    sensor_root: Path,
+    output_material: str,
+    source_material: str,
+    xy_step_mm: float | None,
+    depth_map: dict[str, float],
+    registry: dict,
+    planned: list[PlannedTrial],
+    skipped: list[str],
+) -> None:
+    d_match = D_DIR_RE.match(d_dir.name)
+    if d_match is None:
+        return
+    diameter_key = d_dir.name.lower()
+    if diameter_key not in depth_map:
+        skipped.append(f"{d_dir}: no depth-map entry")
+        return
+    depth_mm = float(depth_map[diameter_key])
+    diameter_mm = float(d_match.group("diameter"))
+
+    usable_source_dirs: list[Path] = []
+    test_dirs = (
+        p for p in d_dir.iterdir()
+        if p.is_dir() and SOURCE_TEST_DIR_RE.match(p.name)
+    )
+    for test_dir in sorted(test_dirs, key=_source_trial_sort_key):
+        try:
+            find_bin_set(test_dir)
+        except Exception as exc:
+            skipped.append(f"{test_dir}: {exc}")
+            continue
+        usable_source_dirs.append(test_dir)
+
+    group_key = f"{output_material}/{diameter_key}"
+    group_map = registry.setdefault(group_key, {})
+    for source_dir in usable_source_dirs:
+        source_key = source_dir.relative_to(source_root).as_posix()
+        test_no = _assign_test_no(group_map, source_key)
+        output_dir = (
+            sensor_root
+            / output_material
+            / diameter_key
+            / f"z_{_format_number(depth_mm)}mm"
+            / f"test{test_no}"
+        )
+        planned.append(
+            PlannedTrial(
+                source_dir=source_dir,
+                output_dir=output_dir,
+                material=output_material,
+                diameter_key=diameter_key,
+                diameter_mm=diameter_mm,
+                depth_mm=depth_mm,
+                test_no=test_no,
+                source_material=source_material,
+                xy_step_mm=xy_step_mm,
+            )
+        )
+
+
 def discover_planned_trials(
     source_root: Path,
     learning_root: Path,
@@ -153,56 +285,44 @@ def discover_planned_trials(
     """
     if registry is None:
         registry = {}
-    source_material_dir = resolve_source_material_dir(source_root, source_material)
     sensor_root = learning_root / "sensor_raw_bin"
     planned: list[PlannedTrial] = []
     skipped: list[str] = []
 
-    for d_dir in sorted((p for p in source_material_dir.iterdir() if p.is_dir()), key=_diameter_sort_key):
-        d_match = D_DIR_RE.match(d_dir.name)
-        if d_match is None:
-            continue
-        diameter_key = d_dir.name.lower()
-        if diameter_key not in depth_map:
-            skipped.append(f"{d_dir}: no depth-map entry")
-            continue
-        depth_mm = float(depth_map[diameter_key])
-        diameter_mm = float(d_match.group("diameter"))
-
-        usable_source_dirs: list[Path] = []
-        for test_dir in sorted(p for p in d_dir.iterdir() if p.is_dir() and SOURCE_TEST_DIR_RE.match(p.name)):
-            try:
-                find_bin_set(test_dir)
-            except Exception as exc:
-                skipped.append(f"{test_dir}: {exc}")
-                continue
-            usable_source_dirs.append(test_dir)
-
-        # usable_source_dirs는 이름(날짜) 정렬 상태. 새 폴더는 그 순서대로 append되고,
-        # 기존 폴더는 registry의 번호를 그대로 유지한다.
-        group_key = f"{material}/{diameter_key}"
-        group_map = registry.setdefault(group_key, {})
-        for source_dir in usable_source_dirs:
-            source_key = source_dir.relative_to(source_root).as_posix()
-            test_no = _assign_test_no(group_map, source_key)
-            output_dir = (
-                sensor_root
-                / material
-                / diameter_key
-                / f"z_{_format_number(depth_mm)}mm"
-                / f"test{test_no}"
-            )
-            planned.append(
-                PlannedTrial(
-                    source_dir=source_dir,
-                    output_dir=output_dir,
-                    material=material,
-                    diameter_key=diameter_key,
-                    diameter_mm=diameter_mm,
-                    depth_mm=depth_mm,
-                    test_no=test_no,
+    for source_material_dir in _iter_source_material_dirs(source_root, source_material):
+        source_material_name = source_material_dir.name
+        for child in sorted((p for p in source_material_dir.iterdir() if p.is_dir()), key=_source_layout_sort_key):
+            if D_DIR_RE.match(child.name):
+                _append_planned_from_diameter_dir(
+                    d_dir=child,
+                    source_root=source_root,
+                    sensor_root=sensor_root,
+                    output_material=_output_material_name(source_material_name, material, None),
+                    source_material=source_material_name,
+                    xy_step_mm=None,
+                    depth_map=depth_map,
+                    registry=registry,
+                    planned=planned,
+                    skipped=skipped,
                 )
-            )
+                continue
+
+            if not XY_DIR_RE.match(child.name):
+                continue
+            output_material = _output_material_name(source_material_name, material, child)
+            for d_dir in sorted((p for p in child.iterdir() if p.is_dir()), key=_diameter_sort_key):
+                _append_planned_from_diameter_dir(
+                    d_dir=d_dir,
+                    source_root=source_root,
+                    sensor_root=sensor_root,
+                    output_material=output_material,
+                    source_material=source_material_name,
+                    xy_step_mm=_xy_step_mm(child),
+                    depth_map=depth_map,
+                    registry=registry,
+                    planned=planned,
+                    skipped=skipped,
+                )
 
     return planned, skipped
 
@@ -301,8 +421,12 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--source-root", type=Path, default=repo_root / "skin_ws" / "raw_data")
-    parser.add_argument("--source-material", default="eco20 + mesh")
-    parser.add_argument("--material", default="ecomesh")
+    parser.add_argument("--source-material", default="all")
+    parser.add_argument(
+        "--material",
+        default=AUTO_MATERIAL,
+        help="Output material key. Use 'auto' to derive it from source material and xy resolution.",
+    )
     parser.add_argument("--learning-root", type=Path, default=repo_root / "learning_data")
     parser.add_argument(
         "--depth-map",

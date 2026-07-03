@@ -25,8 +25,20 @@ loadcell_raw_*.bin           # single-axis loadcell kg stream
 Current source root:
 
 ```text
-skin_ws/raw_data/sats/eco20 + mesh/d5/test1
-skin_ws/raw_data/sats/eco20 + mesh/d5/test2
+skin_ws/raw_data/sats/eco20/xy_1mm/d5/20260619_test5
+skin_ws/raw_data/sats/eco50/xy_1mm/d5/20260620_test1
+skin_ws/raw_data/sats/ecomesh/xy_0.5mm/d5/test1
+skin_ws/raw_data/sats/ecomesh/xy_1mm/d5/20260622_test1
+```
+
+`prepare_learning_data.py` maps the source `xy_*` resolution into the output
+material key:
+
+```text
+eco20/xy_1mm      -> eco20_xy1
+eco50/xy_1mm      -> eco50_xy1
+ecomesh/xy_0.5mm  -> ecomesh_xy0p5
+ecomesh/xy_1mm    -> ecomesh_xy1
 ```
 
 ## Official Build Command
@@ -34,14 +46,23 @@ skin_ws/raw_data/sats/eco20 + mesh/d5/test2
 ```bash
 python3 sats/preprocessing/prepare_learning_data.py \
   --source-root skin_ws/raw_data \
-  --learning-root learning_data
+  --source-material all \
+  --learning-root learning_data \
+  --stage merge
 ```
 
 Dry-run:
 
 ```bash
-python3 sats/preprocessing/prepare_learning_data.py --dry-run --stage all
+python3 sats/preprocessing/prepare_learning_data.py \
+  --source-root skin_ws/raw_data \
+  --source-material all \
+  --learning-root learning_data \
+  --dry-run \
+  --stage merge
 ```
+
+The current archive should plan 31 trials and skip none.
 
 The script:
 
@@ -49,7 +70,11 @@ The script:
 2. assigns stable `testN` numbers using `learning_data/trial_registry.json`,
 3. merges DUE/EtherMotion/loadcell into `*_merged.bin`,
 4. writes baseline and merge summary JSON,
-5. generates Boussinesq `41 x 41` pressure-map GT.
+5. optionally generates Boussinesq `41 x 41` pressure-map GT when `--stage gt`
+   or `--stage all` is requested.
+
+For full training, prefer compact metadata caches and `--gt-mode gpu_on_the_fly`
+instead of precomputing `*_targets.npy` for every raw row.
 
 ## Time Alignment
 
@@ -96,7 +121,7 @@ Useful direct command:
 
 ```bash
 python3 sats/preprocessing/bin_merge.py \
-  --raw-root "skin_ws/raw_data/sats/eco20 + mesh/d5/test2" \
+  --raw-root "skin_ws/raw_data/sats/ecomesh/xy_0.5mm/d5/test2" \
   --target-hz 200 \
   --window-ms 10 \
   --window-agg median \

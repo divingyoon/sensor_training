@@ -46,7 +46,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
 from sats.preprocessing.merged_bin import merged_bin_to_frame, read_merged_bin_header
-from .config import SATSConfig, _parse_trial_id
+from .config import SATSConfig, filter_trial_ids
 
 log = logging.getLogger(__name__)
 
@@ -468,7 +468,6 @@ class SATSWindowDataset(Dataset):
         for local_idx, seq in enumerate(seqs):
             row_indices = seq["row_indices"]
             fz_seq      = seq["fz_seq"]
-            T = len(row_indices)
 
             gt_slice = gt_mmap[row_indices]
             gt_sums  = gt_slice.sum(axis=(1, 2)).copy()
@@ -598,15 +597,16 @@ def build_dataloaders(
             idx = json.load(f)
         all_trial_ids = [t["trial_id"] for t in idx["trials"]]
 
-    if cfg.exclude_diameters:
+    if cfg.include_materials or cfg.exclude_diameters:
         before = len(all_trial_ids)
-        all_trial_ids = [
-            t for t in all_trial_ids
-            if _parse_trial_id(t)["d"] not in cfg.exclude_diameters
-        ]
+        all_trial_ids = filter_trial_ids(
+            all_trial_ids,
+            include_materials=cfg.include_materials,
+            exclude_diameters=cfg.exclude_diameters,
+        )
         log.info(
-            "exclude_diameters=%s 적용: %d → %d trials",
-            cfg.exclude_diameters, before, len(all_trial_ids),
+            "trial filters include_materials=%s exclude_diameters=%s 적용: %d → %d trials",
+            cfg.include_materials, cfg.exclude_diameters, before, len(all_trial_ids),
         )
 
     if cfg.val_ratio > 0:

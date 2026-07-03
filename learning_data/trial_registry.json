@@ -1,4 +1,24 @@
 {
+  "eco20_xy1/d10": {
+    "sats/eco20/xy_1mm/d10/20260619_test2": 1,
+    "sats/eco20/xy_1mm/d10/20260619_test3": 2,
+    "sats/eco20/xy_1mm/d10/20260619_test4": 3
+  },
+  "eco20_xy1/d5": {
+    "sats/eco20/xy_1mm/d5/20260619_test5": 1,
+    "sats/eco20/xy_1mm/d5/20260619_test6": 2,
+    "sats/eco20/xy_1mm/d5/20260619_test7": 3
+  },
+  "eco50_xy1/d10": {
+    "sats/eco50/xy_1mm/d10/20260620_test1": 1,
+    "sats/eco50/xy_1mm/d10/20260620_test2": 2,
+    "sats/eco50/xy_1mm/d10/20260620_test3": 3
+  },
+  "eco50_xy1/d5": {
+    "sats/eco50/xy_1mm/d5/20260620_test1": 1,
+    "sats/eco50/xy_1mm/d5/20260620_test2": 2,
+    "sats/eco50/xy_1mm/d5/20260620_test3": 3
+  },
   "ecomesh/d10": {},
   "ecomesh/d5": {
     "sats/eco20 + mesh/d5/test1": 1,
@@ -11,5 +31,32 @@
     "sats/eco20 + mesh/d5/test7": 8,
     "sats/eco20 + mesh/d5/test8": 9,
     "sats/eco20 + mesh/d5/test9": 10
+  },
+  "ecomesh_xy0p5/d10": {
+    "sats/ecomesh/xy_0.5mm/d10/20260610_test1": 1,
+    "sats/ecomesh/xy_0.5mm/d10/20260611_test0": 2,
+    "sats/ecomesh/xy_0.5mm/d10/20260611_test1": 3
+  },
+  "ecomesh_xy0p5/d5": {
+    "sats/ecomesh/xy_0.5mm/d5/test1": 1,
+    "sats/ecomesh/xy_0.5mm/d5/test10": 10,
+    "sats/ecomesh/xy_0.5mm/d5/test2": 2,
+    "sats/ecomesh/xy_0.5mm/d5/test3": 3,
+    "sats/ecomesh/xy_0.5mm/d5/test4": 4,
+    "sats/ecomesh/xy_0.5mm/d5/test5": 5,
+    "sats/ecomesh/xy_0.5mm/d5/test6": 6,
+    "sats/ecomesh/xy_0.5mm/d5/test7": 7,
+    "sats/ecomesh/xy_0.5mm/d5/test8": 8,
+    "sats/ecomesh/xy_0.5mm/d5/test9": 9
+  },
+  "ecomesh_xy1/d10": {
+    "sats/ecomesh/xy_1mm/d10/20260622_test4": 1,
+    "sats/ecomesh/xy_1mm/d10/20260622_test5": 2,
+    "sats/ecomesh/xy_1mm/d10/20260622_test6": 3
+  },
+  "ecomesh_xy1/d5": {
+    "sats/ecomesh/xy_1mm/d5/20260622_test1": 1,
+    "sats/ecomesh/xy_1mm/d5/20260622_test2": 2,
+    "sats/ecomesh/xy_1mm/d5/20260622_test3": 3
   }
 }

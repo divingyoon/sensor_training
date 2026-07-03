@@ -1,7 +1,8 @@
 """
 SATS 학습 설정.
 
-trial_id 명명 규칙: "ecomesh_d{D}_z{Z}_test{N}"
+trial_id 명명 규칙: "{material}_d{D}_z{Z}_test{N}"
+  - material : 예) ecomesh, ecomesh_xy0p5, eco20_xy1
   - D : 인덴터 직경 (mm), 예) 5, 10
   - Z : z_max (mm), 예) 1 → 1.0mm, 1.5 → 1.5mm
   - N : 반복 번호
@@ -18,7 +19,6 @@ baseline JSON 키: Skin1_mean ~ Skin16_mean  (merged CSV 컬럼: s1 ~ s16)
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,9 +32,9 @@ from typing import List
 def _parse_trial_id(trial_id: str) -> dict:
     """
     "ecomesh_d10_z1.5_test2" → {"material": "ecomesh", "d": 10, "z": 1.5, "n": 2}
-    "ecomesh_d5_z1_test1"   → {"material": "ecomesh", "d": 5,  "z": 1.0, "n": 1}
+    "ecomesh_xy0p5_d5_z2.5_test1" → {"material": "ecomesh_xy0p5", "d": 5, "z": 2.5, "n": 1}
     """
-    m = re.fullmatch(r"([^_]+)_d(\d+)_z([0-9.]+)_test(\d+)", trial_id)
+    m = re.fullmatch(r"(.+)_d(\d+)_z([0-9.]+)_test(\d+)", trial_id)
     if m is None:
         raise ValueError(f"trial_id 파싱 실패: {trial_id!r}")
     return {
@@ -76,6 +76,27 @@ def trial_id_to_paths(trial_id: str, raw_dir: str = "learning_data/sensor_raw_bi
     }
 
 
+def filter_trial_ids(
+    trial_ids: List[str],
+    *,
+    include_materials: List[str] | None = None,
+    exclude_diameters: List[int] | None = None,
+) -> List[str]:
+    """Filter trial ids by material key and indenter diameter while preserving order."""
+
+    include_set = set(include_materials or [])
+    exclude_set = set(exclude_diameters or [])
+    filtered: List[str] = []
+    for trial_id in trial_ids:
+        parsed = _parse_trial_id(trial_id)
+        if include_set and parsed["material"] not in include_set:
+            continue
+        if exclude_set and parsed["d"] in exclude_set:
+            continue
+        filtered.append(trial_id)
+    return filtered
+
+
 # ──────────────────────────────────────────────
 # 메인 설정 dataclass
 # ──────────────────────────────────────────────
@@ -93,6 +114,7 @@ class SATSConfig:
 
     # ── 소재 / trial 선택 ─────────────────────────────────────────────────────
     material: str = "ecomesh"
+    include_materials: List[str] = field(default_factory=list)
 
     # validation에 사용할 trial_id 목록 (나머지는 train).
     # val_ratio > 0 이면 이 값은 무시되고 랜덤 sequence-level split이 사용된다.
@@ -180,6 +202,11 @@ class SATSConfig:
 
     # ── CNN 하이퍼파라미터 ────────────────────────────────────────────────────
     cnn_hidden_channels: int = 16  # CNN Refiner 중간 채널 수 (논문 미명시 → 기본 16)
+
+    # ── Ablation 플래그 (논문 Table S2 / FigS19) ──────────────────────────────
+    ablate_lstm: bool = False       # LSTM → 비순환 통계 인코더(mean/max/last)로 대체
+    ablate_attention: bool = False  # self-attention 출력을 0으로 (이웃 정보 집계 제거)
+    ablate_cnn: bool = False        # CNN refiner 생략 (merged_map 을 최종 출력으로)
 
     # ── 체크포인트 연계 ───────────────────────────────────────────────────────
     lstm_ckpt: str      = ""     # 사전학습된 LSTM 체크포인트 경로 (빈 문자열=미사용)

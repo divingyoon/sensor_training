@@ -8,7 +8,7 @@ import json
 import logging
 from pathlib import Path
 
-from .config import SATSConfig, _parse_trial_id
+from .config import SATSConfig, filter_trial_ids
 from .dataset_on_the_fly import (
     _all_trial_ids_from_index_or_raw,
     meta_cache_path,
@@ -17,6 +17,16 @@ from .dataset_on_the_fly import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _select_trial_ids_for_cache(cfg: SATSConfig, trial_ids: list[str]) -> list[str]:
+    """Apply cache-build trial filters in the same order as training."""
+
+    return filter_trial_ids(
+        trial_ids,
+        include_materials=cfg.include_materials,
+        exclude_diameters=cfg.exclude_diameters,
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -31,6 +41,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dataset-index-path", default="learning_data/gt/dataset_index.json")
     p.add_argument("--trial-ids", nargs="+", default=[],
                    help="specific trial ids. Empty means discover all trials")
+    p.add_argument("--include-materials", nargs="+", default=[],
+                   help="material keys to include, e.g. eco20_xy1 eco50_xy1")
     p.add_argument("--exclude-diameters", nargs="+", type=int, default=[])
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--grid-step-mm", type=float, default=0.5,
@@ -62,6 +74,7 @@ def main() -> None:
         raw_dir=args.raw_dir,
         dataset_index_path=args.dataset_index_path,
         gt_meta_cache_dir=args.out_dir,
+        include_materials=args.include_materials,
         exclude_diameters=args.exclude_diameters,
         grid_step_mm=args.grid_step_mm,
         grid_size=grid_size,
@@ -75,17 +88,15 @@ def main() -> None:
     )
 
     trial_ids = args.trial_ids or _all_trial_ids_from_index_or_raw(cfg)
-    if cfg.exclude_diameters:
-        trial_ids = [
-            t for t in trial_ids
-            if _parse_trial_id(t)["d"] not in cfg.exclude_diameters
-        ]
+    trial_ids = _select_trial_ids_for_cache(cfg, trial_ids)
 
     out_dir = Path(cfg.gt_meta_cache_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = {
         "format": "sats_on_the_fly_meta_cache_manifest_v1",
         "raw_dir": str(Path(cfg.raw_dir)),
+        "include_materials": cfg.include_materials,
+        "exclude_diameters": cfg.exclude_diameters,
         "signature": meta_cache_signature(cfg),
         "trials": [],
     }

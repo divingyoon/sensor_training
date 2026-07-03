@@ -44,35 +44,48 @@ default, so each XY sequence includes both Z motion and stationary relaxation.
 ## Official Data Flow
 
 ```text
-skin_ws/raw_data/sats/eco20 + mesh/d5/testN/
+skin_ws/raw_data/sats/ecomesh/xy_0.5mm/d5/testN/
   ├── due_raw_burst_*.bin
   ├── ethermotion_encoder_*.bin
   └── loadcell_raw_*.bin
 
-learning_data/sensor_raw_bin/ecomesh/d5/z_2.5mm/testN/
-  ├── ecomesh_d5_z2.5_testN_merged.bin
-  ├── ecomesh_d5_z2.5_testN_baseline.json
-  └── ecomesh_d5_z2.5_testN_merge_summary.json
+learning_data/sensor_raw_bin/ecomesh_xy0p5/d5/z_2.5mm/testN/
+  ├── ecomesh_xy0p5_d5_z2.5_testN_merged.bin
+  ├── ecomesh_xy0p5_d5_z2.5_testN_baseline.json
+  └── ecomesh_xy0p5_d5_z2.5_testN_merge_summary.json
 
-learning_data/gt/
-  ├── ecomesh_d5_z2.5_testN_targets.npy
-  ├── ecomesh_d5_z2.5_testN_gt_meta.json
-  └── dataset_index.json
+learning_data/gt_meta_cache/
+  ├── ecomesh_xy0p5_d5_z2.5_testN_*_meta_cache.pt
+  └── manifest.json
 ```
 
-Build/update:
+The current raw archive also includes `eco20`, `eco50`, and `ecomesh`
+materials under `xy_0.5mm` or `xy_1mm`. `prepare_learning_data.py` encodes the
+XY resolution into the output material key, for example `eco20_xy1` and
+`ecomesh_xy0p5`.
+
+Build/update merged BIN artifacts:
 
 ```bash
 python3 sats/preprocessing/prepare_learning_data.py \
   --source-root skin_ws/raw_data \
-  --learning-root learning_data
+  --source-material all \
+  --learning-root learning_data \
+  --stage merge
 ```
 
 Preview:
 
 ```bash
-python3 sats/preprocessing/prepare_learning_data.py --dry-run --stage all
+python3 sats/preprocessing/prepare_learning_data.py \
+  --source-root skin_ws/raw_data \
+  --source-material all \
+  --learning-root learning_data \
+  --dry-run \
+  --stage merge
 ```
+
+Expected current dry-run: `planned trials: 31`.
 
 ## On-The-Fly GT Path
 
@@ -119,7 +132,9 @@ increase XY virtual taxel density, change the GT/model grid, for example from
 
 Example:
 
-Build compact metadata cache once from the merged BIN data:
+Build compact metadata cache once from the merged BIN data. The first training
+pass should use d5 only; d10 remains mapped and can be included later by
+removing `--exclude-diameters 10`.
 
 ```bash
 python3 -m sats.training.build_gt_meta_cache \
@@ -140,7 +155,7 @@ python3 -m sats.training.train_e2e \
   --z-balance-bin-width-mm 0.005 \
   --min-contact-radius-mm 0.05 \
   --exclude-diameters 10 \
-  --run-name e2e_d5_onthefly
+  --run-name e2e_d5_mapped_all
 ```
 
 High-resolution examples:
@@ -203,25 +218,21 @@ Fz rounding: disabled in current merged data
 u_mm: virtual wait axis, not physical shear
 ```
 
-## Current d5 Dataset Status
+## Current Dataset Mapping Status
 
-As of 2026-06-09:
-
-```text
-ecomesh_d5_z2.5_test1
-ecomesh_d5_z2.5_test2
-```
-
-Verified:
+As of the current raw archive:
 
 ```text
-test1 on-grid rows = 2,743,978 = GT rows
-test2 on-grid rows = 2,743,016 = GT rows
-total sequences    = 3,362
-XY points/trial    = 1,681
+planned trials: 31
+materials: eco20_xy1, eco50_xy1, ecomesh_xy0p5, ecomesh_xy1
+diameters: d5, d10
 ```
 
-Sampled GT peaks match row `(x_mm, y_mm)`.
+The first recommended training pool is d5-only:
+
+```text
+--exclude-diameters 10
+```
 
 ## Raw BIN Sufficiency Check
 
@@ -233,7 +244,7 @@ Quick file/record check:
 ```bash
 python3 sats/tools/analyze_raw_bins.py \
   --source-root skin_ws/raw_data \
-  --source-material "eco20 + mesh" \
+  --source-material sats/ecomesh/xy_0.5mm \
   --diameter d5 \
   --out sats/tools/raw_bin_sufficiency_quick.csv
 ```
@@ -243,7 +254,7 @@ Full distribution check:
 ```bash
 python3 sats/tools/analyze_raw_bins.py \
   --source-root skin_ws/raw_data \
-  --source-material "eco20 + mesh" \
+  --source-material sats/ecomesh/xy_0.5mm \
   --diameter d5 \
   --full \
   --out sats/tools/raw_bin_sufficiency_full.csv

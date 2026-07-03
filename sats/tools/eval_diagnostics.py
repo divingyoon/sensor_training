@@ -35,6 +35,34 @@ from sats.training.dataset import build_dataloaders
 D5_D10_DIAMETER_SPLIT_MM = 7.5  # diameter < 이 값이면 d5, 이상이면 d10
 
 
+def collect_samples(
+    se: np.ndarray, tms: np.ndarray, meta: np.ndarray
+) -> dict[str, np.ndarray]:
+    """per-sample 배열을 Fig3 시각화용 dict 로 정리한다.
+
+    - ``se``:  per-sample MSE (pred-target 제곱 HxW 평균)
+    - ``tms``: per-sample target mean-square (스케일 지표)
+    - ``meta``: (N,5) = (diameter, x, y, z_depth, fz)
+
+    반환: rmse(=sqrt(se)), rel(=sqrt(se/tms), target 0 이면 nan),
+    dia/x/y/z/fz, is_d5(diameter < 임계).
+    """
+    dia, x, y, z, fz = (meta[:, i] for i in range(5))
+    rmse = np.sqrt(se)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rel = np.where(tms > 0, rmse / np.sqrt(tms), np.nan)
+    return {
+        "rmse": rmse,
+        "rel": rel,
+        "dia": dia,
+        "x": x,
+        "y": y,
+        "z": z,
+        "fz": fz,
+        "is_d5": dia < D5_D10_DIAMETER_SPLIT_MM,
+    }
+
+
 def load_cfg(run_dir: Path) -> SATSConfig:
     """run_dir/config.json 을 SATSConfig 로 복원한다."""
     data = json.loads((run_dir / "config.json").read_text())
@@ -101,6 +129,7 @@ def diagnose(run_dir: Path) -> dict:
     out["fz_quartile_rmse"] = _quartile_rmse(fz, se, tms)
     out["z_quartile_rmse"] = _quartile_rmse(z, se, tms)
     out["_xy"] = (x, y, np.sqrt(se), fz)
+    out["_samples"] = collect_samples(se, tms, meta)
     return out
 
 
@@ -175,6 +204,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run-dirs", nargs="+", required=True, help="평가할 run 디렉터리들")
     p.add_argument("--out-dir", required=True, help="그림/CSV 출력 디렉터리")
     p.add_argument("--no-fig", action="store_true", help="위치 그림 생성 생략")
+    p.add_argument(
+        "--dump-samples",
+        action="store_true",
+        help="run 별 per-sample 배열을 samples_<run>.npz 로 저장 (Fig3 시각화 입력)",
+    )
     return p
 
 
@@ -191,6 +225,10 @@ def main() -> None:
                 save_position_fig(o, out_dir)
             except Exception as exc:  # 그림 실패는 진단을 막지 않는다
                 print(f"  (figure skipped: {exc})")
+        if args.dump_samples:
+            npz_path = out_dir / f"samples_{o['run']}.npz"
+            np.savez_compressed(npz_path, **o["_samples"])
+            print("  saved:", npz_path)
         rows.append({k: o[k] for k in _CSV_KEYS})
     if rows:
         with open(out_dir / "diag_summary.csv", "w", newline="") as f:
