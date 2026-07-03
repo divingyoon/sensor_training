@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
+
+pytest.importorskip("serial")  # pyserial 미설치(하드웨어 없는 CI/학습 환경)면 이 모듈 skip
 
 from sats.inference.serial_reader import SensorSerialReader
 
