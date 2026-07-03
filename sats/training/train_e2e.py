@@ -57,7 +57,7 @@ from .config import SATSConfig
 from .dataset import build_dataloaders
 from .cnn_module import SATSCNNStage
 from .gt_gpu import BatchGPUTargetGenerator
-from .train_lstm import find_peak_gt, get_target, set_seed, save_checkpoint, write_history
+from .train_lstm import get_target, set_seed, save_checkpoint, write_history
 
 log = logging.getLogger(__name__)
 
@@ -311,6 +311,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--epochs",              type=int,   default=100)
     p.add_argument("--batch-size",          type=int,   default=2048)
     p.add_argument("--lr",                  type=float, default=1e-3)
+    p.add_argument("--weight-decay",        type=float, default=1e-5,
+                   help="Adam weight decay (L2 정규화). overfit 완화용")
     p.add_argument("--hidden-dim",          type=int,   default=64)
     p.add_argument("--attn-dim",            type=int,   default=64)
     p.add_argument("--local-map-size",      type=int,   default=0,
@@ -330,6 +332,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="DataLoader worker를 epoch 사이에 유지")
     p.add_argument("--device",              default="cuda")
     p.add_argument("--seed",                type=int,   default=42)
+    p.add_argument("--include-materials",   nargs="+", default=[],
+                   help="학습/검증에 포함할 material key 목록. 예: --include-materials eco20_xy1")
     p.add_argument("--val-trials",          nargs="+", default=[])
     p.add_argument("--val-ratio",           type=float, default=0.2,
                    help=">0: 논문 방식 랜덤 sequence-level split. 0: --val-trials 기반 trial split.")
@@ -358,13 +362,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    args = _build_parser().parse_args()
+def _config_from_args(args: argparse.Namespace) -> SATSConfig:
     grid_size = args.grid_size
     if grid_size <= 0:
         grid_size = int(round((20.0 / args.grid_step_mm))) + 1
@@ -383,6 +381,7 @@ def main() -> None:
         epochs              = args.epochs,
         batch_size          = args.batch_size,
         lr                  = args.lr,
+        weight_decay        = args.weight_decay,
         hidden_dim          = args.hidden_dim,
         attn_dim            = args.attn_dim,
         local_map_size      = local_map_size,
@@ -397,6 +396,7 @@ def main() -> None:
         persistent_workers  = args.persistent_workers,
         device              = args.device,
         seed                = args.seed,
+        include_materials   = args.include_materials,
         val_trials          = args.val_trials,
         exclude_diameters   = args.exclude_diameters,
         window_size         = args.window_size,
@@ -415,6 +415,17 @@ def main() -> None:
         loading_stride           = args.loading_stride,
         saturation_stride        = args.saturation_stride,
     )
+    return cfg
+
+
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    args = _build_parser().parse_args()
+    cfg = _config_from_args(args)
     train(cfg, init_ckpt=args.init_ckpt)
 
 

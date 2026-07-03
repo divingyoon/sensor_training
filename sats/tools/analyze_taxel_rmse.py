@@ -38,7 +38,7 @@ import dataclasses
 import json
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import numpy as np
 import torch
@@ -52,9 +52,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from sats.training.config import SATSConfig
-from sats.training.dataset import build_dataloaders
-from sats.training.train_lstm import get_target
+from sats.training.config import SATSConfig  # noqa: E402
+from sats.training.dataset import build_dataloaders  # noqa: E402
+from sats.training.gt_gpu import BatchGPUTargetGenerator  # noqa: E402
+from sats.training.train_lstm import get_target  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -78,6 +79,7 @@ def load_cfg_from_dir(cfg_dir: Path, explicit_overrides: dict) -> SATSConfig:
         print(f"  config 로드: {cfg_path}")
         print(f"  use_window_dataset : {base.get('use_window_dataset', False)}")
         print(f"  window_size        : {base.get('window_size', 10)}")
+        print(f"  include_materials  : {base.get('include_materials', [])}")
         print(f"  val_trials         : {base.get('val_trials')}")
         print(f"  exclude_diameters  : {base.get('exclude_diameters', [])}")
     else:
@@ -154,6 +156,7 @@ def compute_taxel_rmse(
     val_loader,
     device: str,
     grid_size: int = 40,
+    target_generator: BatchGPUTargetGenerator | None = None,
 ) -> Tuple[np.ndarray, int, List[float]]:
     """
     val 데이터 전체에서 taxel별 squared error를 누적 → per-taxel RMSE 반환.
@@ -174,7 +177,10 @@ def compute_taxel_rmse(
         gt_b     = gt_b.to(device)
         lengths  = lengths.to(device)
 
-        target = get_target(gt_b, lengths)               # [B, H, W]
+        if target_generator is None:
+            target = get_target(gt_b, lengths)           # [B, H, W]
+        else:
+            target = target_generator(gt_b)              # [B, H, W]
         out    = model(sensor_b, lengths)
         pred   = out[0] if isinstance(out, tuple) else out
 
@@ -333,12 +339,12 @@ def print_stats(label: str, rmse_map: np.ndarray, sample_rmse: List[float]) -> N
     print(f"  모델: {label}")
     print(f"{'─'*54}")
     print(f"  처리 샘플 수:        {len(sample_rmse)}")
-    print(f"  Per-taxel RMSE:")
+    print("  Per-taxel RMSE:")
     print(f"    평균              {flat.mean():.6f}")
     print(f"    중앙값            {float(np.median(flat)):.6f}")
     print(f"    최대              {float(flat.max()):.6f}")
     print(f"    90th percentile   {float(np.percentile(flat, 90)):.6f}")
-    print(f"  Per-sample RMSE:")
+    print("  Per-sample RMSE:")
     print(f"    평균              {float(np.mean(sample_rmse)):.6f}")
     print(f"    중앙값            {float(np.median(sample_rmse)):.6f}")
     print(f"    90th percentile   {float(np.percentile(sample_rmse, 90)):.6f}")
@@ -365,12 +371,17 @@ def run_analysis(
 
         _, val_loader = build_dataloaders(cfg)
         model = load_model(stage, ckpt_path, cfg, device)
+        target_generator = (
+            BatchGPUTargetGenerator(cfg, device)
+            if cfg.gt_mode == "gpu_on_the_fly"
+            else None
+        )
 
         mode = "window" if cfg.use_window_dataset else "sequence"
         print(f"  추론 모드: {mode}  stage={stage}  device={device}")
 
         rmse_map, n, sample_rmse = compute_taxel_rmse(
-            model, val_loader, device, cfg.grid_size,
+            model, val_loader, device, cfg.grid_size, target_generator=target_generator,
         )
         print(f"  처리 완료: {n}개 샘플")
         print_stats(label, rmse_map, sample_rmse)
@@ -469,7 +480,7 @@ def main() -> None:
         ckpt_paths = [Path(c) for c in args.ckpts]
         stages = args.stages if args.stages else ["cnn"] * len(ckpt_paths)
         labels = args.labels if args.labels else [p.parent.name for p in ckpt_paths]
-        entries = [(p, s, l, p.parent) for p, s, l in zip(ckpt_paths, stages, labels)]
+        entries = [(p, s, label_name, p.parent) for p, s, label_name in zip(ckpt_paths, stages, labels)]
 
     elif args.ckpt:
         ckpt_path = Path(args.ckpt)
