@@ -1,4 +1,14 @@
-# Training Pipeline
+# Hitmap Training Pipeline
+
+이 README는 legacy/experimental `hitmap` 학습 경로를 설명한다. 현재 대화에서 정리한
+SATS 학습은 `learning_data`의 merged BIN과 pressure-map GT를 사용하는 별도 경로이며,
+권장 실행은 `python3 -m sats.training.train_lstm --seq-len 1000 ...`에서 시작한다.
+SATS의 DUE/loadcell 200 Hz 정렬, EtherMotion 고정밀 보간, `test1/test2` row alignment,
+GPU batch 권장은 [`sats/README.md`](../../sats/README.md)를 기준으로 본다.
+
+`hitmap`은 CSV/Zarr 기반 XY heatmap, contact 기준 Z depth, Fz 회귀 실험용이다. 여기의
+`--seq-len 50`, `--batch-size 1024`, `heatmap-size 40`, loading-only 조건은 SATS
+pressure-map GT 학습 설정과 직접 호환되는 값이 아니다.
 
 이 디렉토리는 전처리된 tactile dataset으로 XY heatmap, contact 기준 Z depth, Fz를 학습하고 평가하는 스크립트를 담고 있습니다.  
 현재 실험 흐름에서 우선순위는 `train_z_fz_regressor.py`이고, `train_comparison.py` Stage1/2/3는 XY checkpoint 생성 및 비교 실험용입니다.

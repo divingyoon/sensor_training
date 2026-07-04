@@ -1,0 +1,49 @@
+# Final (xy 0.5 mm) — Eco-mesh 최종 flat 데이터 성능
+
+**최종 flat 데이터(xy 0.5 mm) data-rich 모델의 최종 성능** figure 세트. Fig3(xy 1mm 소재비교)와 별도.
+
+## 모델
+
+- run: `sats/training/runs/datarich_probe/ecomesh_xy0p5_datarich_val_d5test10_d10test3`
+- 소재: **Eco-mesh 단일** (xy0.5는 ecomesh만 취득) → 소재 비교(패널 B)는 해당 없음
+- 학습: train 11 trials(data-rich), 15 epoch, best@e14, val_rmse **0.283** (collapse 없음)
+- val holdout: d5 test10 + d10 test3
+
+## 진단 지표 (d5/d10 분리 + 상대오차)
+
+| 구분 | RMSE | 상대오차 | n |
+|---|---|---|---|
+| overall | 0.283 | 0.417 | 2.88M |
+| **d5-only** | **0.129** | **0.171** | 1.61M |
+| d10-only | 0.400 | 0.710 | 1.27M |
+
+→ **d5 상대오차 0.171** = 이전 기억 "~0.1" 성능 재현(최종 flat 데이터 대표 성능). d10은 반복취득(3rep)만이라 상대적으로 약함.
+
+## 패널 (논문 Fig4 대응)
+
+| 파일 | 논문 | 내용 |
+|---|---|---|
+| `FinalA_lineprofile_ecomesh.png` | Fig4A | 중앙선 압력 프로파일(SR, force 색맵) |
+| `FinalC_pressure3d_ecomesh.png` | Fig4A/E | 3D 압력맵 GT/Pred (d5·d10) |
+| `FinalD_poserror3d_ecomesh.png` | Fig4B | 위치별 오차 3D 막대(d5/d10) |
+| `FinalE_error_hist_ecomesh.png` | Fig4C | 상대오차 히스토그램+KDE |
+| `FinalF_force_error_ecomesh.png` | Fig4D | force별 오차 바이올린 |
+
+(패널 B = 소재 비교는 단일 소재라 자동 skip)
+
+## 코드 (재현)
+
+동일 스크립트, figset만 전환:
+
+```bash
+# 1) 진단 재평가 + per-sample npz 덤프
+.venv/bin/python -m sats.tools.eval_diagnostics \
+    --run-dirs sats/training/runs/datarich_probe/ecomesh_xy0p5_datarich_val_d5test10_d10test3 \
+    --out-dir history/fig_data/sats_experiments/final_xy0p5_diag --dump-samples
+
+# 2) figure 생성 (figset=xy0p5_final)
+.venv/bin/python history/fig_data/visualizing_scripts/figure_set/generate_fig3_sats.py \
+    --figset xy0p5_final --panels A C D E F
+```
+
+figset 정의는 `generate_fig3_sats.py`의 `FIGSETS["xy0p5_final"]`.

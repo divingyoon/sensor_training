@@ -13,12 +13,13 @@ h'_i    = ELU(Σ_{j∈N_i} α_{ij} · W·h_j)             (S6)
 --------------------------------------
 인덱스 규칙: sensor i → row = i // 4,  col = i % 4
 
-  col→  0      1      2      3
+  col→  0      1      2      3        (x 방향: -9.75 → +9.75)
 row 0:  S1     S2     S3     S4    (y=-9.75mm)
 row 1:  S5     S6     S7     S8    (y=-3.25mm)
 row 2:  S9    S10    S11    S12    (y=+3.25mm)
 row 3: S13    S14    S15    S16    (y=+9.75mm)
 
+* S1~S4는 x 오름차순(S1=-9.75mm, S4=+9.75mm)이므로 col = i%4
 8-connected 인접 + self-loop: max(|dr|, |dc|) ≤ 1
   · 코너 센서: 4개 이웃
   · 엣지 센서: 6개 이웃
@@ -69,12 +70,14 @@ class SATSSelfAttention(nn.Module):
     Graph Attention Network(GAT) 방식의 Self-Attention.
 
     4×4 센서 그리드에서 인접 센서 간 정보를 집계한다.
+    논문: 2-layer GAT, 각 레이어 hidden=125.
 
     Parameters
     ----------
-    in_dim    : LSTM 인코더 출력 차원 (= hidden_dim or hidden_dim×2)
-    attn_dim  : 선형 투영 차원 (W: in_dim → attn_dim)
-    n_sensors : 센서 수 (기본 16)
+    in_dim      : LSTM 인코더 출력 차원
+    attn_dim    : GAT hidden/output 차원 (논문: 125)
+    n_sensors   : 센서 수 (기본 16)
+    n_layers    : GAT 레이어 수 (논문: 2)
     leaky_slope : LeakyReLU negative slope
 
     Input
@@ -91,16 +94,22 @@ class SATSSelfAttention(nn.Module):
         in_dim: int,
         attn_dim: int = 64,
         n_sensors: int = 16,
+        n_layers: int = 2,
         leaky_slope: float = 0.2,
     ) -> None:
         super().__init__()
         self.n = n_sensors
         self.attn_dim = attn_dim
+        self.n_layers = n_layers
 
-        # W: 선형 투영 (편향 없음 — 논문 표준 GAT)
-        self.W = nn.Linear(in_dim, attn_dim, bias=False)
-        # a: 연결된 feature → scalar attention score
-        self.a = nn.Linear(2 * attn_dim, 1, bias=False)
+        # Layer 1: in_dim → attn_dim
+        self.W1 = nn.Linear(in_dim, attn_dim, bias=False)
+        self.a1 = nn.Linear(2 * attn_dim, 1, bias=False)
+
+        # Layer 2 (optional): attn_dim → attn_dim
+        if n_layers >= 2:
+            self.W2 = nn.Linear(attn_dim, attn_dim, bias=False)
+            self.a2 = nn.Linear(2 * attn_dim, 1, bias=False)
 
         self.leaky_relu = nn.LeakyReLU(negative_slope=leaky_slope)
         self.elu = nn.ELU()
@@ -110,6 +119,30 @@ class SATSSelfAttention(nn.Module):
         self.register_buffer("adj", adj)   # [n, n] bool
 
     # ─────────────────────────────────────────────────────────────────────
+
+    def _gat_layer(
+        self,
+        h: torch.Tensor,
+        W: nn.Linear,
+        a: nn.Linear,
+    ) -> torch.Tensor:
+        """
+        단일 GAT 레이어: [B, n, in] → [B, n, out]
+
+        e_ij = a([W·h_i ∥ W·h_j])
+        α_ij = softmax_j(LeakyReLU(e_ij))  (인접 마스킹 포함)
+        h'_i = ELU(Σ_j α_ij · W·h_j)
+        """
+        B, n, _ = h.shape
+        Wh = W(h)                                               # [B, n, out]
+        Wh_i = Wh.unsqueeze(2).expand(-1, -1, n, -1)          # [B, n, n, out]
+        Wh_j = Wh.unsqueeze(1).expand(-1, n, -1, -1)          # [B, n, n, out]
+        e = a(torch.cat([Wh_i, Wh_j], dim=-1)).squeeze(-1)    # [B, n, n]
+        e = self.leaky_relu(e)
+        mask = self.adj.unsqueeze(0).expand(B, -1, -1)
+        e = e.masked_fill(~mask, float("-inf"))
+        alpha = F.softmax(e, dim=-1)                           # [B, n, n]
+        return self.elu(torch.bmm(alpha, Wh))                  # [B, n, out]
 
     def forward(self, local_feat: torch.Tensor) -> torch.Tensor:
         """
@@ -121,39 +154,17 @@ class SATSSelfAttention(nn.Module):
         -------
         agg_feat : [B, n, attn_dim]
         """
-        B, n, _ = local_feat.shape
-
-        # 1. 선형 투영: Wh [B, n, attn_dim]
-        Wh = self.W(local_feat)
-
-        # 2. 모든 쌍(i, j)에 대한 attention score 계산 — 벡터화
-        #    Wh_i [B, n, 1, attn_dim], Wh_j [B, 1, n, attn_dim]
-        #    브로드캐스팅으로 [B, n, n, attn_dim] 생성
-        Wh_i = Wh.unsqueeze(2).expand(-1, -1, n, -1)   # [B, n, n, attn_dim]
-        Wh_j = Wh.unsqueeze(1).expand(-1, n, -1, -1)   # [B, n, n, attn_dim]
-
-        # e [B, n, n]: e_ij = a([Wh_i ∥ Wh_j])
-        e = self.a(torch.cat([Wh_i, Wh_j], dim=-1)).squeeze(-1)   # [B, n, n]
-
-        # 3. LeakyReLU 적용 후 비인접 위치를 -inf 마스킹
-        e = self.leaky_relu(e)
-        mask = self.adj.unsqueeze(0).expand(B, -1, -1)    # [B, n, n]
-        e = e.masked_fill(~mask, float("-inf"))
-
-        # 4. Softmax 정규화 → α [B, n, n]
-        alpha = F.softmax(e, dim=-1)
-
-        # 5. 집계: h'_i = ELU(Σ_j α_ij · Wh_j)
-        #    [B, n, n] × [B, n, attn_dim] → [B, n, attn_dim]
-        h_agg = torch.bmm(alpha, Wh)   # [B, n, attn_dim]
-        return self.elu(h_agg)
+        h = self._gat_layer(local_feat, self.W1, self.a1)
+        if self.n_layers >= 2:
+            h = self._gat_layer(h, self.W2, self.a2)
+        return h
 
     # ─────────────────────────────────────────────────────────────────────
 
     def extra_repr(self) -> str:
         return (
-            f"in_dim→attn_dim={self.W.in_features}→{self.attn_dim}, "
-            f"n_sensors={self.n}"
+            f"in_dim={self.W1.in_features}, attn_dim={self.attn_dim}, "
+            f"n_layers={self.n_layers}, n_sensors={self.n}"
         )
 
 
@@ -163,7 +174,7 @@ class SATSSelfAttention(nn.Module):
 
 class _AttentionProxyDecoder(nn.Module):
     """
-    [B, n, combined_dim] → flatten → MLP → [B, 40, 40]
+    [B, n, combined_dim] → flatten → MLP → [B, 41, 41]
 
     combined_dim = lstm_out_dim + attn_dim  (concat of local + agg features)
 
@@ -175,7 +186,7 @@ class _AttentionProxyDecoder(nn.Module):
         self,
         n_sensors: int,
         combined_dim: int,
-        grid_size: int = 40,
+        grid_size: int = 41,
     ) -> None:
         super().__init__()
         self.grid_size = grid_size
@@ -222,7 +233,7 @@ class SATSAttentionStage(nn.Module):
 
     Output
     ------
-    pred_map  : [B, 40, 40]
+    pred_map  : [B, 41, 41]
     agg_feat  : [B, 16, attn_dim]   ← 다음 단계(Local Map) 연계용
     """
 
@@ -240,6 +251,7 @@ class SATSAttentionStage(nn.Module):
             in_dim    = self.encoder.out_dim,
             attn_dim  = cfg.attn_dim,
             n_sensors = cfg.n_sensors,
+            n_layers  = cfg.n_gat_layers,
         )
         combined_dim = self.encoder.out_dim + cfg.attn_dim
         self.decoder = _AttentionProxyDecoder(
@@ -258,5 +270,5 @@ class SATSAttentionStage(nn.Module):
         local_feat = self.encoder(sensor_seq, lengths)          # [B, 16, lstm_out]
         agg_feat   = self.attention(local_feat)                 # [B, 16, attn_dim]
         combined   = torch.cat([local_feat, agg_feat], dim=-1) # [B, 16, combined]
-        pred_map   = self.decoder(combined)                     # [B, 40, 40]
+        pred_map   = self.decoder(combined)                     # [B, grid, grid]
         return pred_map, agg_feat

@@ -4,6 +4,9 @@ processed_data/
 hitmap/preprocessing/processed_sweeps/
 hitmap/preprocessing/processed_data/
 raw_data/
+learning_data/*
+!learning_data/README.md
+!learning_data/trial_registry.json
 pytorch/
 
 # Media and large documents
@@ -16,6 +19,7 @@ pytorch/
 # Local env and artifacts
 skin/
 training/runs/
+sats/training/runs/
 **/__pycache__/
 *.pyc
 
@@ -29,3 +33,25 @@ training/runs/
 *.npz
 *.npy
 *.safetensors
+
+# Virtual environment (large)
+.venv/
+
+# Logs and scratch run outputs
+*.log
+
+# Large media / office docs
+*.pptx
+*.bmp
+*.tiff
+
+# Raw acquisition data (large CSVs under fig2_heatmap)
+ethermotion_data.csv
+due_data.csv
+loadcell_data.csv
+unified.csv
+combined_centerline.csv
+figure_set.html
+
+# Large acquisition node data (skin_ws/node/*.node, 31MB total)
+*.node

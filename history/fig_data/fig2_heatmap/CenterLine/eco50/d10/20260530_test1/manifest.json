@@ -1,0 +1,44 @@
+{
+  "created_at": "2026-05-30T18:47:22",
+  "inputs": {
+    "due": "C:\\Users\\SORO7\\Desktop\\Tactile\\skin_ws\\due data\\due_raw_burst_20260530_170222.bin",
+    "ethermotion": "C:\\Users\\SORO7\\Desktop\\Tactile\\skin_ws\\ethermotion data\\ethermotion_encoder_20260530_170222.bin",
+    "afd50": "C:\\Users\\SORO7\\Desktop\\Tactile\\skin_ws\\afd_50 data\\afd50_can_raw_20260513_145652.bin",
+    "loadcell": "C:\\Users\\SORO7\\Desktop\\Tactile\\skin_ws\\loadcell data\\loadcell_raw_20260530_170222.bin"
+  },
+  "outputs": {
+    "due_csv": "C:\\Users\\SORO7\\Desktop\\Tactile\\skin_ws\\full data\\20260530_test1\\due_data.csv",
+    "ethermotion_csv": "C:\\Users\\SORO7\\Desktop\\Tactile\\skin_ws\\full data\\20260530_test1\\ethermotion_data.csv",
+    "afd50_csv": "C:\\Users\\SORO7\\Desktop\\Tactile\\skin_ws\\full data\\20260530_test1\\afd50_data.csv",
+    "loadcell_csv": "C:\\Users\\SORO7\\Desktop\\Tactile\\skin_ws\\full data\\20260530_test1\\loadcell_data.csv"
+  },
+  "conversion": {
+    "afd50_force_formula": "raw / 300.0 - 100.0",
+    "afd50_bias_samples": 200,
+    "afd50_invert_fz": true,
+    "due_payload_layout": "sensor-major uint32 little-endian: sensor[16][frame10]"
+  },
+  "stats": {
+    "due": {
+      "bursts": 23905,
+      "rows": 239050
+    },
+    "ethermotion": {
+      "rows": 451157,
+      "axes": 4
+    },
+    "afd50": {
+      "rows": 0,
+      "bias": {
+        "fx": 0.0,
+        "fy": 0.0,
+        "fz": 0.0,
+        "samples": 0
+      },
+      "invert_fz": true
+    },
+    "loadcell": {
+      "rows": 501225
+    }
+  }
+}

@@ -1,4 +1,14 @@
-# Preprocessing Pipeline
+# Hitmap Preprocessing Pipeline
+
+이 README는 legacy/experimental `hitmap` 경로를 설명한다. 현재 SATS 학습의 공식
+입력은 `learning_data/sensor_raw_bin/**/*_merged.bin`과
+`learning_data/gt/**/*_targets.npy`이며, 200 Hz common timeline으로 정렬된 BIN을
+사용한다. SATS pressure-map GT 생성/학습은 [`sats/README.md`](../../sats/README.md)와
+[`sats/preprocessing/README.md`](../../sats/preprocessing/README.md)를 기준으로 본다.
+
+`hitmap` 경로는 CSV/Zarr 기반 XY heatmap 및 Z/Fz 회귀 실험용이다. AFD 3축 force,
+100 Hz resample, `processed_data/zarr_data` 같은 설정은 이 경로에만 해당하며,
+현재 `eco20 + mesh` d5 `test1/test2` SATS 학습 설정과는 다르다.
 
 이 디렉토리는 raw 장비 로그를 학습 가능한 feature/Zarr dataset으로 바꾸는 단계입니다.  
 실행 순서는 `raw_merge.py` 다음 `preprocess.py`입니다.

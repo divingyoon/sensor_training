@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SENSOR_TRAINING SATS Project Report</title>
+  <style>
+    :root {
+      --ink: #17212b;
+      --muted: #5d6875;
+      --line: #d9e0e7;
+      --paper: #f7f9fb;
+      --panel: #ffffff;
+      --blue: #2457a6;
+      --cyan: #167a8b;
+      --green: #2d7d46;
+      --red: #b0433f;
+      --gold: #9b6a14;
+      --shadow: 0 16px 40px rgba(22, 33, 43, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", Arial, sans-serif;
+      line-height: 1.62;
+    }
+
+    header {
+      background:
+        linear-gradient(90deg, rgba(17, 32, 52, 0.92), rgba(19, 75, 91, 0.78)),
+        url("sats/ref/Super-resolution%20tactile%20sensor%20arrays%20with%20sparse%20units%20enabled%20by%20deep%20learning/Super-resolution%20tactile%20sensor%20arrays%20with%20sparse/image.png");
+      background-size: cover;
+      background-position: center;
+      color: #fff;
+      min-height: 460px;
+      display: flex;
+      align-items: end;
+      padding: 56px 7vw;
+    }
+
+    .hero {
+      max-width: 1060px;
+    }
+
+    .eyebrow {
+      display: inline-block;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      padding: 6px 10px;
+      border: 1px solid rgba(255, 255, 255, 0.45);
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    h1 {
+      margin: 18px 0 16px;
+      max-width: 950px;
+      font-size: clamp(34px, 5vw, 66px);
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    .hero p {
+      max-width: 850px;
+      margin: 0;
+      color: #e7eef5;
+      font-size: clamp(16px, 2vw, 21px);
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 40px 24px 80px;
+    }
+
+    section {
+      margin: 42px 0;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 28px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    p { margin: 0 0 14px; }
+    strong { font-weight: 800; }
+    code {
+      padding: 2px 5px;
+      border-radius: 4px;
+      background: #eef3f7;
+      color: #12304a;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.94em;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 14px 0 0;
+      padding: 16px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #101821;
+      color: #edf6ff;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+
+    .metric {
+      min-height: 118px;
+    }
+
+    .metric .value {
+      display: block;
+      margin: 4px 0 4px;
+      font-size: 30px;
+      font-weight: 800;
+      color: var(--blue);
+      line-height: 1.1;
+    }
+
+    .metric .label {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .note {
+      border-left: 4px solid var(--cyan);
+      padding: 14px 16px;
+      background: #edf8fa;
+      border-radius: 0 8px 8px 0;
+    }
+
+    .warning {
+      border-left-color: var(--gold);
+      background: #fff7e8;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .step {
+      position: relative;
+      min-height: 138px;
+      padding: 15px;
+      border-radius: 8px;
+      color: #fff;
+      background: #244f72;
+    }
+
+    .step:nth-child(2) { background: #167a8b; }
+    .step:nth-child(3) { background: #2d7d46; }
+    .step:nth-child(4) { background: #83651e; }
+    .step:nth-child(5) { background: #6e4f96; }
+
+    .step b {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 8px;
+      color: #f8fbff;
+    }
+
+    .step span {
+      display: block;
+      color: rgba(255, 255, 255, 0.88);
+      font-size: 13px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    th, td {
+      padding: 12px 14px;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      font-size: 14px;
+    }
+
+    th {
+      color: #24384e;
+      background: #eef3f7;
+      font-weight: 800;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    .tag {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      color: #fff;
+      background: var(--blue);
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .tag.green { background: var(--green); }
+    .tag.cyan { background: var(--cyan); }
+    .tag.gold { background: var(--gold); }
+
+    .diagram {
+      display: grid;
+      grid-template-columns: 1fr 1.2fr;
+      gap: 22px;
+      align-items: center;
+    }
+
+    .figure {
+      margin: 0;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      box-shadow: var(--shadow);
+    }
+
+    .figure img {
+      display: block;
+      width: 100%;
+      border-radius: 6px;
+    }
+
+    .figure figcaption {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .roadmap {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      counter-reset: phase;
+    }
+
+    .phase {
+      position: relative;
+      padding-top: 42px;
+    }
+
+    .phase::before {
+      counter-increment: phase;
+      content: counter(phase);
+      position: absolute;
+      left: 18px;
+      top: 16px;
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--blue);
+      color: #fff;
+      font-weight: 800;
+    }
+
+    ul {
+      margin: 10px 0 0;
+      padding-left: 20px;
+    }
+
+    li { margin: 7px 0; }
+
+    footer {
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      padding: 24px 0 0;
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      header { min-height: 390px; padding: 42px 24px; }
+      .cols-2, .cols-3, .cols-4, .diagram, .roadmap, .flow {
+        grid-template-columns: 1fr;
+      }
+      main { padding: 28px 18px 60px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hero">
+      <span class="eyebrow">SENSOR_TRAINING / SATS</span>
+      <h1>16채널 촉각 센서 기반 Sparse-to-Dense 압력맵 학습 보고서</h1>
+      <p>
+        mk555 raw BIN 데이터 수집부터 200Hz 동기화, 구형 인덴터 기반 on-the-fly GT 생성,
+        SATS 논문 구조 기반 학습, 향후 최적화 계획까지 정리한 프로젝트 보고서입니다.
+      </p>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <div class="grid cols-4">
+        <div class="card metric">
+          <span class="value">16</span>
+          <span class="label">physical pressure sensors</span>
+        </div>
+        <div class="card metric">
+          <span class="value">41 x 41</span>
+          <span class="label">current virtual pressure map</span>
+        </div>
+        <div class="card metric">
+          <span class="value">200 Hz</span>
+          <span class="label">merged learning timeline</span>
+        </div>
+        <div class="card metric">
+          <span class="value">0.005 mm</span>
+          <span class="label">z-depth balanced sampling bin</span>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>1. 프로젝트 목표</h2>
+      <div class="grid cols-2">
+        <div class="card">
+          <h3>핵심 문제</h3>
+          <p>
+            실제 촉각 센서는 4 x 4, 총 16개의 sparse sensor만 가지고 있습니다. 목표는 이 제한된
+            센서 응답으로 전체 표면의 dense pressure map을 추론하는 것입니다. 현재 기본 출력은
+            <code>[-10, 10] mm</code> 영역을 <code>0.5 mm</code> 간격으로 표현한
+            <code>41 x 41</code> virtual taxel map입니다.
+          </p>
+        </div>
+        <div class="card">
+          <h3>논문 기반 방향</h3>
+          <p>
+            참고 논문 <em>Super-resolution tactile sensor arrays with sparse units enabled by deep learning</em>은
+            적은 수의 physical taxel 신호를 LSTM, self-attention, local map, CNN으로 처리해
+            훨씬 촘촘한 virtual pressure map을 생성합니다. 본 프로젝트는 이 구조를 mk555 장비와
+            현재 raw BIN 데이터 구조에 맞게 재구성합니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>2. 데이터 수집 구조</h2>
+      <p>
+        각 trial은 동일한 timestamp suffix를 가진 세 종류의 raw BIN으로 구성됩니다. EtherMotion은
+        고속 stage command/log를 제공하고, DUE는 16채널 센서 값을, loadcell은 수직 힘을 제공합니다.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Source</th>
+            <th>파일</th>
+            <th>역할</th>
+            <th>학습에 들어가는 값</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="tag">DUE</span></td>
+            <td><code>due_raw_burst_*.bin</code></td>
+            <td>16개 tactile sensor stream. 1 burst에 FIFO 10 frame 포함.</td>
+            <td><code>s1..s16</code>, baseline normalization 후 model input</td>
+          </tr>
+          <tr>
+            <td><span class="tag cyan">EtherMotion</span></td>
+            <td><code>ethermotion_encoder_*.bin</code></td>
+            <td>고속 stage command/log. 현재 1000Hz 이상으로 기록됨.</td>
+            <td><code>x_mm, y_mm, z_stage_mm, z_depth_mm, u_mm</code></td>
+          </tr>
+          <tr>
+            <td><span class="tag green">Loadcell</span></td>
+            <td><code>loadcell_raw_*.bin</code></td>
+            <td>단일축 loadcell kg stream.</td>
+            <td><code>Fz = (kg - kg_baseline) * 9.80665</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="note">
+        d5 기준으로 stage는 <code>z_stage_mm = 13.0</code>에서 시작하고
+        <code>15.5</code>까지 내려갑니다. 따라서 전처리에서는
+        <code>z_depth_mm = max(z_stage_mm - 13.0, 0)</code>으로 해석합니다.
+        <code>u_mm</code>은 0.5, 1.0, 1.5, 2.0mm 등에서 잠깐 멈추기 위한
+        가상축이며 물리적 shear 축으로 쓰지 않습니다.
+      </div>
+    </section>
+
+    <section>
+      <h2>3. 전처리와 시간 정렬</h2>
+      <p>
+        학습 row는 EtherMotion rate가 아니라 DUE/loadcell과 의미 있게 맞는 200Hz common timeline으로
+        구성합니다. EtherMotion의 고해상도 Z는 이 200Hz row마다 보간되어 붙습니다.
+      </p>
+      <div class="flow">
+        <div class="step">
+          <b>Raw BIN</b>
+          <span>three synchronized device logs per trial</span>
+        </div>
+        <div class="step">
+          <b>Common Time</b>
+          <span>DUE, loadcell, EtherMotion overlap interval at 200Hz</span>
+        </div>
+        <div class="step">
+          <b>Interpolation</b>
+          <span>x/y/z/u and Fz aligned to the same row index</span>
+        </div>
+        <div class="step">
+          <b>Merged BIN</b>
+          <span>sensor, position, depth, force, lag diagnostics</span>
+        </div>
+        <div class="step">
+          <b>Training</b>
+          <span>windowed sensor sequence and pressure-map target</span>
+        </div>
+      </div>
+      <pre><code>python3 sats/preprocessing/prepare_learning_data.py \
+  --source-root skin_ws/raw_data \
+  --learning-root learning_data</code></pre>
+    </section>
+
+    <section>
+      <h2>4. Ground Truth 생성 전략</h2>
+      <div class="grid cols-2">
+        <div class="card">
+          <h3>기존 방식: precomputed GT</h3>
+          <p>
+            모든 200Hz merged row마다 <code>41 x 41 float32</code> pressure map을 미리 계산해
+            <code>learning_data/gt/*_targets.npy</code>로 저장합니다. d5 한 trial은 약 2.74M row라서
+            GT 파일 하나가 약 18GB까지 커집니다.
+          </p>
+          <ul>
+            <li>장점: 학습 중 GT 계산 비용이 작음</li>
+            <li>단점: 10개 trial이면 GT만 약 180GB 이상 필요</li>
+            <li>기존 코드와 실험 호환성 때문에 유지</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>신규 방식: on-the-fly GT</h3>
+          <p>
+            dense GT 파일을 저장하지 않고, 학습 batch를 만들 때 merged row의
+            <code>x/y/z_depth/Fz</code>로 pressure map을 즉석 생성합니다. 같은 접촉 반경과 위치에 대한
+            Boussinesq kernel은 cache합니다.
+          </p>
+          <ul>
+            <li><code>z_s_mm = 2.0</code> fixed</li>
+            <li>FEM beta correction 없음</li>
+            <li>구형 인덴터: <code>a = sqrt(R * z_depth)</code></li>
+            <li>d5 접촉 시작: <code>z_depth &gt; 0.001mm</code></li>
+          </ul>
+        </div>
+      </div>
+      <div class="note warning">
+        현재 <code>0.005mm</code>는 z-depth 샘플링/균형화 단위입니다. XY pressure map의 공간 간격은
+        현재 <code>0.5mm</code>입니다. XY virtual taxel을 더 촘촘하게 하려면 model/GT output grid를
+        <code>81 x 81</code> 같은 구조로 키워야 합니다.
+      </div>
+    </section>
+
+    <section>
+      <h2>5. 논문 SATS 구조와 현재 모델</h2>
+      <div class="diagram">
+        <div>
+          <p>
+            논문은 physical taxel 수보다 훨씬 많은 virtual taxel pressure map을 출력합니다.
+            본 프로젝트도 같은 철학을 따릅니다. 16개의 sparse sensor response를 시간 특징으로
+            인코딩하고, sensor 간 attention으로 공간 정보를 교환한 뒤, local map과 CNN으로 전체
+            pressure map을 복원합니다.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Stage</th>
+                <th>역할</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>LSTM</td>
+                <td>센서별 time-series hysteresis와 동적 응답 인코딩</td>
+              </tr>
+              <tr>
+                <td>Self-Attention</td>
+                <td>인접 센서 신호를 통합해 접촉 위치 정보 분리</td>
+              </tr>
+              <tr>
+                <td>Local Map</td>
+                <td>각 센서 주변의 local pressure patch 생성</td>
+              </tr>
+              <tr>
+                <td>CNN Refiner</td>
+                <td>local map 병합 결과를 smooth하고 전체 pressure map으로 정제</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <figure class="figure">
+          <img src="sats/ref/Super-resolution%20tactile%20sensor%20arrays%20with%20sparse%20units%20enabled%20by%20deep%20learning/Super-resolution%20tactile%20sensor%20arrays%20with%20sparse/image%201.png" alt="SATS reference figure">
+          <figcaption>
+            참고 논문은 sparse sensing unit에서 dense pressure map을 추론하는 tactile SR framework를 제안합니다.
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section>
+      <h2>6. 학습 샘플링 정책</h2>
+      <p>
+        U 축 정지 시간이 trial마다 다르면 plateau row 수가 달라져 특정 깊이 구간이 과대표집됩니다.
+        따라서 모든 200Hz row를 같은 가중치로 쓰지 않고, contact phase를 균형 있게 샘플링합니다.
+      </p>
+      <div class="grid cols-3">
+        <div class="card">
+          <h3><span class="tag green">Dynamic / Loading</span></h3>
+          <p>z-depth와 Fz가 증가하는 구간입니다. 센서의 동적 변화, 지연, hysteresis를 학습하는 핵심 구간입니다.</p>
+        </div>
+        <div class="card">
+          <h3><span class="tag cyan">Plateau / Static</span></h3>
+          <p>stage가 멈춰 있고 압력 분포가 유지되는 구간입니다. 정지 압력맵을 지속적으로 추론하기 위해 일부 보존합니다.</p>
+        </div>
+        <div class="card">
+          <h3><span class="tag gold">Saturation / Peak</span></h3>
+          <p>최대 깊이와 높은 Fz 주변 구간입니다. 큰 압력과 센서 포화 응답을 놓치지 않도록 보존합니다.</p>
+        </div>
+      </div>
+      <pre><code>python3 -m sats.training.train_e2e \
+  --gt-mode on_the_fly \
+  --z-depth-min-mm 0.001 \
+  --z-balance-bin-width-mm 0.005 \
+  --plateau-stride 10 \
+  --loading-stride 1 \
+  --saturation-stride 2</code></pre>
+    </section>
+
+    <section>
+      <h2>7. 데이터 충분성 판단</h2>
+      <p>
+        raw BIN이 충분한지는 파일 수만으로 판단하지 않습니다. trial마다 stream이 모두 존재하는지,
+        200Hz merge 후 XY coverage가 충분한지, z-depth와 Fz 분포가 정상인지 확인해야 합니다.
+      </p>
+      <div class="grid cols-2">
+        <div class="card">
+          <h3>Quick Check</h3>
+          <p>파일 존재, magic header, record count를 확인합니다.</p>
+          <pre><code>python3 sats/tools/analyze_raw_bins.py \
+  --source-root skin_ws/raw_data \
+  --source-material "eco20 + mesh" \
+  --diameter d5 \
+  --out sats/tools/raw_bin_sufficiency_quick.csv</code></pre>
+        </div>
+        <div class="card">
+          <h3>Full Check</h3>
+          <p>메모리에서 200Hz merge를 수행해 sequence length, z/Fz, active contact ratio를 요약합니다.</p>
+          <pre><code>python3 sats/tools/analyze_raw_bins.py \
+  --source-root skin_ws/raw_data \
+  --source-material "eco20 + mesh" \
+  --diameter d5 \
+  --full \
+  --out sats/tools/raw_bin_sufficiency_full.csv</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>8. 학습 실행과 단계별 전략</h2>
+      <p>
+        기본 학습 sample은 <code>sensor_window [10, 16]</code>와 window 마지막 timestep의
+        <code>pressure map [41, 41]</code>입니다. 논문과 동일하게 짧은 window 기반으로 시간 특징을
+        인코딩하되, 현재 데이터에서는 loading, plateau, saturation을 함께 반영합니다.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>실험</th>
+            <th>목적</th>
+            <th>대표 파라미터</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Baseline</td>
+            <td>기존 precomputed GT와 동일한 조건으로 기준 성능 확보</td>
+            <td><code>gt_mode=precomputed</code>, <code>41x41</code>, <code>batch=2048</code></td>
+          </tr>
+          <tr>
+            <td>On-the-fly d5</td>
+            <td>GT 저장공간 제거와 구형 인덴터 접촉반경 반영</td>
+            <td><code>gt_mode=on_the_fly</code>, <code>z_bin=0.005</code></td>
+          </tr>
+          <tr>
+            <td>Sampling Ablation</td>
+            <td>dynamic/static/saturation 비율 최적화</td>
+            <td><code>plateau_stride</code>, <code>loading_stride</code>, <code>saturation_stride</code></td>
+          </tr>
+          <tr>
+            <td>SR Grid Upgrade</td>
+            <td>XY virtual taxel 해상도 향상</td>
+            <td><code>41x41 -> 81x81</code>, <code>0.5mm -> 0.25mm</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>9. 최적화 로드맵</h2>
+      <div class="roadmap">
+        <div class="card phase">
+          <h3>Data Audit</h3>
+          <p>d5 10개 raw BIN에 대해 full sufficiency report를 생성하고 비정상 trial을 제외하거나 재처리합니다.</p>
+        </div>
+        <div class="card phase">
+          <h3>GT Mode Compare</h3>
+          <p>precomputed GT와 on-the-fly spherical GT를 동일 split에서 비교해 RMSE와 peak 위치 오차를 봅니다.</p>
+        </div>
+        <div class="card phase">
+          <h3>Sampling Search</h3>
+          <p>plateau stride, z/Fz bin, saturation 비율을 바꿔 static 유지 성능과 dynamic 추종 성능을 분리 평가합니다.</p>
+        </div>
+        <div class="card phase">
+          <h3>Higher SR Output</h3>
+          <p>성능이 안정되면 81x81 grid와 optional coordinate/Fz regression head를 추가해 sub-grid 추정을 강화합니다.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>10. 주요 리스크와 판단 기준</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>리스크</th>
+            <th>확인 방법</th>
+            <th>대응</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>trial별 U 정지 시간이 달라 plateau 과대표집</td>
+            <td>z/Fz histogram, sequence length distribution</td>
+            <td>plateau downsample, z/Fz balanced sampling</td>
+          </tr>
+          <tr>
+            <td>접촉 시작점이 XY마다 다름</td>
+            <td>low-depth Fz와 sensor response onset 비교</td>
+            <td><code>z_depth_min_mm</code> 조정 또는 위치별 z0 보정 실험</td>
+          </tr>
+          <tr>
+            <td>0.005mm Z 변화가 센서 noise보다 작음</td>
+            <td>z-bin별 normalized sensor response 분리도 확인</td>
+            <td>z-bin 확대, smoothing, force threshold 조정</td>
+          </tr>
+          <tr>
+            <td>0.25mm XY grid에서 학습 불안정</td>
+            <td>validation RMSE, peak localization, memory profile</td>
+            <td>41x41 baseline 유지 후 81x81로 단계적 확장</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>결론</h2>
+      <div class="note">
+        현재 raw 데이터는 그대로 유지하고, 학습 품질은 전처리와 GT 생성 정책에서 개선합니다.
+        핵심 변경은 dense GT 파일을 미리 만들지 않는 on-the-fly GT, 구형 인덴터 접촉 반경,
+        0.005mm z-depth 균형 샘플링, 그리고 raw BIN 충분성 리포트 기반 데이터 선별입니다.
+        이후 최적화는 sampling policy와 output grid 해상도를 단계적으로 조정하는 방향이 가장 안전합니다.
+      </div>
+    </section>
+
+    <footer>
+      Generated for SENSOR_TRAINING. Source workspace: /home/user/sensor_training.
+    </footer>
+  </main>
+</body>
+</html>

@@ -26,6 +26,13 @@ def _load_json(path: Path) -> Any:
         return json.load(handle)
 
 
+def _existing_path(*paths: Path) -> Path | None:
+    for path in paths:
+        if path.exists():
+            return path
+    return None
+
+
 def _round_or_none(value: float | None) -> float | None:
     if value is None:
         return None
@@ -126,8 +133,11 @@ def load_legacy_0409_rows(base_dir: Path) -> list[BaselineRow]:
 
 
 def load_legacy_doc_reference_rows(repo_root: Path) -> list[BaselineRow]:
-    report_path = repo_root / "training/runs/접촉점 기준 학습_0409/md/sensor_learning_report_final_20260406.md"
-    if not report_path.exists():
+    report_path = _existing_path(
+        repo_root / "training/runs/접촉점 기준 학습_0409/md/sensor_learning_report_final_20260406.md",
+        repo_root / "hitmap/training/runs/접촉점 기준 학습_0409/md/sensor_learning_report_final_20260406.md",
+    )
+    if report_path is None:
         return []
     return [
         BaselineRow(
@@ -146,12 +156,80 @@ def load_legacy_doc_reference_rows(repo_root: Path) -> list[BaselineRow]:
     ]
 
 
+def _parse_metric_cell(value: str) -> float | None:
+    value = value.strip()
+    if value == "-":
+        return None
+    return float(value)
+
+
+def load_markdown_report_rows(path: Path) -> list[BaselineRow]:
+    if not path.exists():
+        return []
+
+    rows: list[BaselineRow] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("| ") or line.startswith("| ---") or line.startswith("| Group "):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) != 11:
+            continue
+        group, run_name, table_role, split_policy, condition_policy = cells[:5]
+        x_mae, y_mae, z_mae, fz_mae = (_parse_metric_cell(cell) for cell in cells[5:9])
+        note = cells[9]
+        source = cells[10].strip("`")
+        rows.append(
+            BaselineRow(
+                group=group,
+                run_name=run_name,
+                source=source,
+                split_policy=split_policy,
+                table_role=table_role,
+                condition_policy=condition_policy,
+                x_mae=x_mae,
+                y_mae=y_mae,
+                z_mae=z_mae,
+                fz_mae=fz_mae,
+                note=note,
+            )
+        )
+    return rows
+
+
+def _extend_unique(rows: list[BaselineRow], new_rows: list[BaselineRow]) -> None:
+    seen = {row.run_name for row in rows}
+    for row in new_rows:
+        if row.run_name in seen:
+            continue
+        rows.append(row)
+        seen.add(row.run_name)
+
+
 def collect_baseline_rows(repo_root: Path) -> list[BaselineRow]:
     rows: list[BaselineRow] = []
-    rows.extend(load_current_comparison_rows(repo_root / "training/runs/runs_comparison/comparison_results.json"))
-    rows.extend(load_current_zfz_rows(repo_root / "training/runs/runs_z_fz/cv_summary_z_fz_regressor.json"))
-    rows.extend(load_legacy_0409_rows(repo_root / "training/runs/접촉점 기준 학습_0409/학습결과"))
+    comparison_path = _existing_path(
+        repo_root / "training/runs/runs_comparison/comparison_results.json",
+        repo_root / "hitmap/training/runs/runs_comparison/comparison_results.json",
+    )
+    if comparison_path is not None:
+        rows.extend(load_current_comparison_rows(comparison_path))
+
+    zfz_path = _existing_path(
+        repo_root / "training/runs/runs_z_fz/cv_summary_z_fz_regressor.json",
+        repo_root / "hitmap/training/runs/runs_z_fz/cv_summary_z_fz_regressor.json",
+    )
+    if zfz_path is not None:
+        rows.extend(load_current_zfz_rows(zfz_path))
+
+    legacy_dir = _existing_path(
+        repo_root / "training/runs/접촉점 기준 학습_0409/학습결과",
+        repo_root / "hitmap/training/runs/접촉점 기준 학습_0409/학습결과",
+    )
+    if legacy_dir is not None:
+        rows.extend(load_legacy_0409_rows(legacy_dir))
+
     rows.extend(load_legacy_doc_reference_rows(repo_root))
+    _extend_unique(rows, load_markdown_report_rows(repo_root / "hitmap/md/260415_reconstruction_baseline_report.md"))
     return rows
 
 
