@@ -52,3 +52,6 @@ loadcell_data.csv
 unified.csv
 combined_centerline.csv
 figure_set.html
+
+# Large acquisition node data (skin_ws/node/*.node, 31MB total)
+*.node

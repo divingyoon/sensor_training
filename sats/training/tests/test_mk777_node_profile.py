@@ -18,7 +18,12 @@ NODE_DIR = ROOT / "skin_ws" / "node"
     ],
 )
 def test_mk555_node_grid_and_z_profile(filename, z_min, z_max, depth, u_max):
-    profile = parse_node_profile(NODE_DIR / filename)
+    node_path = NODE_DIR / filename
+    if not node_path.exists():
+        # 대용량 취득 .node 데이터는 저장소에서 제외됨(gitignore). 로컬에 있을 때만 검증.
+        pytest.skip(f"{filename} 미존재 (gitignore된 대용량 취득 데이터)")
+
+    profile = parse_node_profile(node_path)
 
     assert profile.grid_size_x == 41
     assert profile.grid_size_y == 41
