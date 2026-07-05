@@ -62,9 +62,23 @@
 # 2) Fig3 전체 패널 생성 (한 장씩: --panels A / B / C / D / E / F 선택)
 .venv/bin/python history/fig_data/visualizing_scripts/figure_set/generate_fig3_sats.py
 
-# 3) 소재 간 비교용 — 동일 축 범위 버전 (출력: shared_axes/ 하위)
+# 3) 소재 간 비교용 — 동일 축 범위 버전 (출력: shared_axes/ 하위, axis_limits.json 저장)
 .venv/bin/python history/fig_data/visualizing_scripts/figure_set/generate_fig3_sats.py --shared-axes
+
+# 4) final(xy0.5) 을 xy1 소재들과 동일 축으로 렌더 (ref-limits 주입)
+.venv/bin/python history/fig_data/visualizing_scripts/figure_set/generate_fig3_sats.py \
+    --figset xy0p5_final --panels A C D E F --shared-axes \
+    --ref-limits "history/fig_data/fig3_sats and bending/shared_axes/axis_limits.json"
 ```
+
+### final(xy0.5) 을 xy1 과 동일 축으로 (`--ref-limits`)
+
+`--shared-axes` 실행 시 xy1_material 은 계산한 축 한계를 `shared_axes/axis_limits.json` 으로 저장한다.
+final(xy0p5, ecomesh 단일)을 이 JSON으로 렌더하면 **xy1 소재들과 완전히 같은 축 범위**가 되어
+최종 xy0.5 모델을 eco20/eco50/ecomesh(xy1)와 직접 비교할 수 있다(출력=`final_xy0p5/shared_axes/`).
+- 적용 축: A(압력 y+force컬러)·D(오차 z+컬러바)·E(오차 x)·F(오차 y). 상대오차·압력(a.u.)은 동일 정의라 비교 유효.
+- **C(3D 압력맵)는 ref 제외**: 대표 샘플 1개의 z-peak 기준이라 figset 간 강제 통일 시 봉우리가 클리핑됨.
+  C의 핵심 비교는 같은 행 GT vs Pred(동일 z)이므로 figset 자체 스케일로 충분.
 
 ## 동일 축 범위 버전 (`shared_axes/`)
 

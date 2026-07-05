@@ -83,6 +83,20 @@ TAG: str = FIGSETS["xy1_material"]["tag"]
 # True 면 산출물을 OUT_DIR/shared_axes/ 에 저장(원본 자동스케일 버전은 그대로 유지).
 SHARED_AXES: bool = False
 
+# ref-limits: 다른 figset(예: xy1_material)에서 계산한 축 한계를 주입해 그 figset과 동일 축으로 렌더.
+# REF_LIMITS 가 있으면 각 패널은 계산값 대신 이 값을 축 범위로 사용한다.
+REF_LIMITS: dict | None = None
+# 이번 실행에서 각 패널이 계산한 축 한계(공유 목적). shared-axes 실행 종료 시 JSON 저장.
+COMPUTED_LIMITS: dict = {}
+
+
+def _lim(key: str, computed: float) -> float:
+    """패널의 축 한계 반환: 계산값을 저장하고, REF_LIMITS 가 있으면 그 값을 우선 사용."""
+    COMPUTED_LIMITS[key] = float(computed)
+    if REF_LIMITS is not None and key in REF_LIMITS:
+        return float(REF_LIMITS[key])
+    return float(computed)
+
 
 def configure(figset: str) -> None:
     """활성 figset 전역을 전환한다."""
@@ -211,6 +225,8 @@ def panel_pressure_maps() -> None:
     # 1) 전 소재 대표맵 수집(모델 추론 소재당 1회)
     gathered = {m: _representative_maps(REP_RUN[m]) for m in MATERIAL_ORDER}
     # 2) 공통 z축: press-type(d5/d10)별로 소재 간 최대 peak 공유
+    # C는 대표 샘플 1개의 z-peak 기준이라 figset 간 통일(ref-limits) 부적절(클리핑 유발) → figset 자체 스케일만 공유.
+    # 핵심 비교는 같은 행 GT vs Pred(동일 z) 이므로 소재 간 z-공유로 충분.
     gzmax: dict[str, float] = {}
     for key in ("d5", "d10"):
         cand = [max(best[key][0], float(best[key][1].max()))
@@ -264,7 +280,7 @@ def panel_position_error() -> None:
     samples = {m: _load_samples(REP_RUN[m]) for m in MATERIAL_ORDER}
     # 공통 vmax: 전 소재 상대오차 합쳐 0.95 분위(비교축 통일)
     all_rel = np.concatenate([s["rel"][np.isfinite(s["rel"])] for s in samples.values()])
-    g_vmax = float(np.nanquantile(all_rel, 0.95))
+    g_vmax = _lim("d_vmax", float(np.nanquantile(all_rel, 0.95)))
     for m in MATERIAL_ORDER:
         s = samples[m]
         vmax = g_vmax if SHARED_AXES else float(np.nanquantile(s["rel"][np.isfinite(s["rel"])], 0.95))
@@ -297,6 +313,7 @@ def panel_error_hist() -> None:
             v = v[(v >= 0)]
             if v.size >= 10:
                 g_xmax = max(g_xmax, float(np.quantile(v, 0.99)))
+    g_xmax = _lim("e_xmax", g_xmax)
     for m in MATERIAL_ORDER:
         s = samples[m]
         fig, ax = plt.subplots(figsize=(6.0, 4.2))
@@ -342,7 +359,7 @@ def panel_force_error() -> None:
                 groups.append(v); means.append(float(v.mean())); xt.append(centers[i])
         gathered[m] = (groups, means, xt)
     # 2) 공통 y-max(비교축): 전 소재 그룹의 상대오차 최댓값
-    g_ymax = max((float(v.max()) for grp, _, _ in gathered.values() for v in grp), default=0.0)
+    g_ymax = _lim("f_ymax", max((float(v.max()) for grp, _, _ in gathered.values() for v in grp), default=0.0))
     # 3) 렌더
     for m, (groups, means, xt) in gathered.items():
         fig, ax = plt.subplots(figsize=(6.0, 4.2))
@@ -413,9 +430,9 @@ def panel_symmetry_line() -> None:
     if not gathered:
         return
 
-    # 2) 공통 한계(비교축): 압력 y-max, force 컬러 vmax
-    g_ymax = max(float(p.max()) for p, _ in gathered.values())
-    g_fzmax = max(float(np.quantile(f, 0.97)) for _, f in gathered.values())
+    # 2) 공통 한계(비교축): 압력 y-max, force 컬러 vmax (ref-limits 있으면 그 값 우선)
+    g_ymax = _lim("a_ymax", max(float(p.max()) for p, _ in gathered.values()))
+    g_fzmax = _lim("a_fzmax", max(float(np.quantile(f, 0.97)) for _, f in gathered.values()))
 
     # 3) 렌더
     for m, (prof, fzarr) in gathered.items():
@@ -455,18 +472,34 @@ def main() -> None:
     p.add_argument("--panels", nargs="+", default=list(PANELS), choices=list(PANELS))
     p.add_argument("--shared-axes", action="store_true",
                    help="모든 소재에 동일 축 범위 적용(소재 간 비교용). 출력=OUT_DIR/shared_axes/")
+    p.add_argument("--ref-limits", type=str, default=None,
+                   help="다른 figset이 저장한 axis_limits.json 경로. 그 figset과 동일 축으로 렌더(--shared-axes 필요).")
     args = p.parse_args()
     configure(args.figset)
-    global SHARED_AXES
+    global SHARED_AXES, REF_LIMITS
     SHARED_AXES = args.shared_axes
+    if args.ref_limits:
+        import json
+        with open(args.ref_limits) as f:
+            REF_LIMITS = json.load(f)
+        print(f"*** ref-limits 적용: {args.ref_limits} (동일 축으로 렌더) ***")
     if SHARED_AXES:
-        print("*** shared-axes 모드: 모든 소재 동일 축 범위 → shared_axes/ 에 저장 ***")
+        print("*** shared-axes 모드: 동일 축 범위 → shared_axes/ 에 저장 ***")
     for key in args.panels:
         if key == "B" and len(MATERIAL_ORDER) < 2:
             print("--- B 건너뜀 (소재 1종이라 비교 불가) ---")
             continue
         print(f"--- {PREFIX}{key} ---")
         PANELS[key]()
+
+    # shared-axes 이면서 ref 를 안 받았을 때만(=기준 figset) 계산한 축 한계를 저장
+    if SHARED_AXES and REF_LIMITS is None and COMPUTED_LIMITS:
+        import json
+        lim_dir = OUT_DIR / "shared_axes"
+        lim_dir.mkdir(parents=True, exist_ok=True)
+        with open(lim_dir / "axis_limits.json", "w") as f:
+            json.dump(COMPUTED_LIMITS, f, indent=2)
+        print("saved:", lim_dir / "axis_limits.json")
 
 
 if __name__ == "__main__":

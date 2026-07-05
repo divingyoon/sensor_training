@@ -52,10 +52,12 @@ def main() -> None:
 
     ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=9)
     ax.set_ylabel("relative RMSE  (rmse / target RMS)")
+    # 최상단 막대(noAttention d5) 위로 여백을 둬서 주석이 막대에 가리지 않게 함
+    ax.set_ylim(0, max(d5) * 1.33)
     ax.set_title("Ablation study (ecomesh, xy 1 mm) — every module contributes")
-    ax.legend(frameon=False, fontsize=9)
+    ax.legend(frameon=False, fontsize=9, loc="upper right")
     ax.grid(axis="y", ls=":", alpha=0.4)
-    ax.text(0.02, 0.97, "removing attention hurts most → spatial aggregation is key",
+    ax.text(0.02, 0.98, "removing attention hurts most → spatial aggregation is key",
             transform=ax.transAxes, ha="left", va="top", fontsize=8, color="#c0392b")
     fig.savefig(DIR / "S19_ablation_ecomesh.png", dpi=160, bbox_inches="tight")
     plt.close(fig)
