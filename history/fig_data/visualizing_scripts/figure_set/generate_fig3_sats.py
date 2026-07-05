@@ -91,10 +91,14 @@ COMPUTED_LIMITS: dict = {}
 
 
 def _lim(key: str, computed: float) -> float:
-    """패널의 축 한계 반환: 계산값을 저장하고, REF_LIMITS 가 있으면 그 값을 우선 사용."""
+    """패널의 축 한계 반환: 계산값을 저장하고, REF_LIMITS 가 있으면 max(ref, computed).
+
+    ref 를 '하한'으로 써서, 현재 figset 데이터가 ref 범위 안이면 ref 와 동일 축(비교 가능),
+    ref 를 넘으면 축을 확장해 데이터가 잘리지 않게 한다(예: final xy0.5 의 d10 오차는 xy1 보다 넓음).
+    """
     COMPUTED_LIMITS[key] = float(computed)
     if REF_LIMITS is not None and key in REF_LIMITS:
-        return float(REF_LIMITS[key])
+        return max(float(REF_LIMITS[key]), float(computed))
     return float(computed)
 
 
