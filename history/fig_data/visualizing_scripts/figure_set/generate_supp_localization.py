@@ -84,36 +84,46 @@ def collect_localization(run_dir: Path) -> dict[str, np.ndarray]:
     }
 
 
-def plot_localization(label: str, d: dict[str, np.ndarray]) -> None:
+FORCE_EDGES = np.array([0.0, 0.25, 0.5, 1.0, 2.0, 5.0])
+
+
+def _force_bins(d: dict[str, np.ndarray]) -> tuple[list[str], list[float], list[float]]:
+    """force 구간별 평균 위치오차 + SEM."""
+    xt, means, sems = [], [], []
+    for i in range(len(FORCE_EDGES) - 1):
+        sel = (d["fz"] >= FORCE_EDGES[i]) & (d["fz"] < FORCE_EDGES[i + 1])
+        if sel.sum() > 20:
+            v = d["err"][sel]
+            xt.append(f"{FORCE_EDGES[i]:.2g}–{FORCE_EDGES[i+1]:.2g}")
+            means.append(float(v.mean())); sems.append(float(v.std() / np.sqrt(v.size)))
+    return xt, means, sems
+
+
+def plot_localization(label: str, d: dict[str, np.ndarray],
+                      heat_vmax: float, bar_ymax: float) -> None:
+    """heat_vmax(컬러바 상한)·bar_ymax(막대 y상한)는 전 모델 공통값 → 소재 간 비교 가능."""
     from scipy.stats import binned_statistic_2d
 
     mean_err = float(d["err"].mean())
     fig, axes = plt.subplots(1, 2, figsize=(12.4, 4.6), constrained_layout=True)
 
-    # 좌: 실제 위치별 평균 위치오차 2D 맵
+    # 좌: 실제 위치별 평균 위치오차 2D 맵 (공통 컬러 스케일)
     stat, _, _, _ = binned_statistic_2d(
         d["gx"], d["gy"], d["err"], statistic="mean", bins=20,
         range=[(-10, 10), (-10, 10)])
-    vmax = float(np.nanquantile(d["err"], 0.95))
     im = axes[0].imshow(stat.T, origin="lower", extent=[-10, 10, -10, 10],
-                        aspect="equal", cmap="Greens", vmin=0, vmax=vmax)
+                        aspect="equal", cmap="Greens", vmin=0, vmax=heat_vmax)
     axes[0].set_title(f"{label}: localization error by position")
     axes[0].set_xlabel("X [mm]"); axes[0].set_ylabel("Y [mm]")
     fig.colorbar(im, ax=axes[0], fraction=0.046, label="position error [mm]")
 
-    # 우: force 구간별 평균 위치오차 + SEM
-    edges = np.array([0.0, 0.25, 0.5, 1.0, 2.0, 5.0])
-    xt, means, sems = [], [], []
-    for i in range(len(edges) - 1):
-        sel = (d["fz"] >= edges[i]) & (d["fz"] < edges[i + 1])
-        if sel.sum() > 20:
-            v = d["err"][sel]
-            xt.append(f"{edges[i]:.2g}–{edges[i+1]:.2g}")
-            means.append(v.mean()); sems.append(v.std() / np.sqrt(v.size))
+    # 우: force 구간별 평균 위치오차 + SEM (공통 y축)
+    xt, means, sems = _force_bins(d)
     axes[1].bar(range(len(means)), means, yerr=sems, capsize=3,
                 color="#2ca25f", edgecolor="black", alpha=0.85)
     axes[1].set_xticks(range(len(xt)))
     axes[1].set_xticklabels(xt, rotation=30, ha="right", fontsize=8)
+    axes[1].set_ylim(0, bar_ymax)
     axes[1].set_title(f"{label}: error vs force  (mean={mean_err:.2f} mm)")
     axes[1].set_xlabel("force fz [N]"); axes[1].set_ylabel("position error [mm]")
     axes[1].grid(axis="y", ls=":", alpha=0.4)
@@ -131,12 +141,32 @@ def main() -> None:
 
     p = argparse.ArgumentParser(description="FigS20 위치추정 오차 생성")
     p.add_argument("--models", nargs="+", default=list(RUNS), choices=list(RUNS))
+    p.add_argument("--per-model-scale", action="store_true",
+                   help="각 모델 자동 스케일(비교 불가). 기본은 전 모델 공통 스케일.")
     args = p.parse_args()
+
+    # 1) 전 모델 수집 (위치오차는 mm 물리단위라 소재 간 직접 비교 가능)
+    data = {label: collect_localization(RUNS[label]) for label in args.models}
+
+    # 2) 공통 스케일: heatmap vmax·막대 y상한 (모델별 값의 최댓값 → 어느 모델도 포화 안 됨)
+    heat_vmax = max(float(np.nanquantile(d["err"], 0.95)) for d in data.values())
+    bar_ymax = 0.0
+    for d in data.values():
+        _, means, sems = _force_bins(d)
+        bar_ymax = max([bar_ymax, *[m + s for m, s in zip(means, sems)]])
+    bar_ymax *= 1.12
+
+    # 3) 렌더
     rows = []
     for label in args.models:
         print(f"--- {label} ---")
-        d = collect_localization(RUNS[label])
-        plot_localization(label, d)
+        d = data[label]
+        vmax = float(np.nanquantile(d["err"], 0.95)) if args.per_model_scale else heat_vmax
+        ymax = bar_ymax  # 막대는 항상 공통(비교 목적). --per-model-scale 은 heatmap 만 개별.
+        if args.per_model_scale:
+            _, mm, ss = _force_bins(d)
+            ymax = max([m + s for m, s in zip(mm, ss)], default=1.0) * 1.12
+        plot_localization(label, d, vmax, ymax)
         rows.append({"model": label, "mean_loc_error_mm": round(float(d["err"].mean()), 4),
                      "n": int(d["err"].size)})
     OUT_DIR.mkdir(parents=True, exist_ok=True)
