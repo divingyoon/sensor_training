@@ -1,5 +1,5 @@
 model,mean_loc_error_mm,n
 eco20_xy1,0.9527,224378
-eco50_xy1,1.3215,259455
+eco50_xy1,1.3116,259455
 ecomesh_xy1,0.7787,273864
 ecomesh_xy0p5_final,0.8297,1925091
