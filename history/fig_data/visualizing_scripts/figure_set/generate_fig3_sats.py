@@ -79,6 +79,10 @@ REP_RUN: dict[str, str] = FIGSETS["xy1_material"]["rep"]
 PREFIX: str = FIGSETS["xy1_material"]["prefix"]
 TAG: str = FIGSETS["xy1_material"]["tag"]
 
+# --shared-axes: 모든 소재에 동일 축 범위를 적용해 소재 간 비교가 가능하도록 함.
+# True 면 산출물을 OUT_DIR/shared_axes/ 에 저장(원본 자동스케일 버전은 그대로 유지).
+SHARED_AXES: bool = False
+
 
 def configure(figset: str) -> None:
     """활성 figset 전역을 전환한다."""
@@ -102,10 +106,11 @@ def _load_samples(run: str) -> dict[str, np.ndarray]:
 
 
 def _finalize(fig: plt.Figure, name: str) -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    fig.savefig(OUT_DIR / name, dpi=160, bbox_inches="tight")
+    out = OUT_DIR / "shared_axes" if SHARED_AXES else OUT_DIR
+    out.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out / name, dpi=160, bbox_inches="tight")
     plt.close(fig)
-    print("saved:", OUT_DIR / name)
+    print("saved:", out / name)
 
 
 # ----------------------------------------------------------------------------- Fig3B
@@ -203,13 +208,22 @@ def _surface(ax, data: np.ndarray, title: str, zmax: float, cmap: str) -> None:
 
 def panel_pressure_maps() -> None:
     """소재별 3D 압력 분포맵(GT/Pred) — d5·d10 대표 press. 소재당 1 파일."""
-    for m in MATERIAL_ORDER:
-        best = _representative_maps(REP_RUN[m])
+    # 1) 전 소재 대표맵 수집(모델 추론 소재당 1회)
+    gathered = {m: _representative_maps(REP_RUN[m]) for m in MATERIAL_ORDER}
+    # 2) 공통 z축: press-type(d5/d10)별로 소재 간 최대 peak 공유
+    gzmax: dict[str, float] = {}
+    for key in ("d5", "d10"):
+        cand = [max(best[key][0], float(best[key][1].max()))
+                for best in gathered.values() if key in best]
+        if cand:
+            gzmax[key] = max(cand)
+    # 3) 렌더
+    for m, best in gathered.items():
         keys = [k for k in ("d5", "d10") if k in best]
         fig = plt.figure(figsize=(9.4, 4.6 * len(keys)))
         for row, key in enumerate(keys):
             score, pred_m, gt_m, fz, x, y = best[key]
-            zmax = max(score, float(pred_m.max()), 1e-9)
+            zmax = gzmax[key] if SHARED_AXES else max(score, float(pred_m.max()), 1e-9)
             for col, (data, tag) in enumerate([(gt_m, "Ground truth"), (pred_m, "Prediction")]):
                 ax = fig.add_subplot(len(keys), 2, row * 2 + col + 1, projection="3d")
                 _surface(ax, data, f"{key.upper()}  fz={fz:.2f}N  ·  {tag}", zmax, "hot")
@@ -247,9 +261,13 @@ def _bar3d_error(ax, X, Y, Z, vmax: float, bins: int) -> None:
 def panel_position_error() -> None:
     """소재별 감지면 위치별 평균 상대오차 3D 막대(bar3d), d5/d10 분리 — 논문 Fig4B 스타일. 소재당 1 파일."""
     bins = 22
+    samples = {m: _load_samples(REP_RUN[m]) for m in MATERIAL_ORDER}
+    # 공통 vmax: 전 소재 상대오차 합쳐 0.95 분위(비교축 통일)
+    all_rel = np.concatenate([s["rel"][np.isfinite(s["rel"])] for s in samples.values()])
+    g_vmax = float(np.nanquantile(all_rel, 0.95))
     for m in MATERIAL_ORDER:
-        s = _load_samples(REP_RUN[m])
-        vmax = float(np.nanquantile(s["rel"][np.isfinite(s["rel"])], 0.95))
+        s = samples[m]
+        vmax = g_vmax if SHARED_AXES else float(np.nanquantile(s["rel"][np.isfinite(s["rel"])], 0.95))
         fig = plt.figure(figsize=(12.0, 4.8))
         fig.subplots_adjust(left=0.02, right=0.9, wspace=0.05)
         for col, (lab, mask) in enumerate([("d5 contact", s["is_d5"]), ("d10 contact", ~s["is_d5"])]):
@@ -270,19 +288,33 @@ def panel_error_hist() -> None:
     """소재별 상대오차 히스토그램 + KDE + 평균선(d5/d10) — 소재당 1 파일(논문 Fig4C)."""
     from scipy.stats import gaussian_kde
 
+    samples = {m: _load_samples(REP_RUN[m]) for m in MATERIAL_ORDER}
+    # 공통 x-max(비교축): 전 소재·d5/d10 상대오차 0.99 분위의 최댓값
+    g_xmax = 0.0
+    for s in samples.values():
+        for mask in (s["is_d5"], ~s["is_d5"]):
+            v = s["rel"][mask & np.isfinite(s["rel"])]
+            v = v[(v >= 0)]
+            if v.size >= 10:
+                g_xmax = max(g_xmax, float(np.quantile(v, 0.99)))
     for m in MATERIAL_ORDER:
-        s = _load_samples(REP_RUN[m])
+        s = samples[m]
         fig, ax = plt.subplots(figsize=(6.0, 4.2))
         for lab, mask, color in [("d5", s["is_d5"], "#e07b39"), ("d10", ~s["is_d5"], "#2ca25f")]:
             v = s["rel"][mask & np.isfinite(s["rel"])]
             if v.size < 10:
                 continue
-            v = v[(v >= 0) & (v < np.quantile(v, 0.99))]
+            hi = g_xmax if SHARED_AXES else float(np.quantile(v, 0.99))
+            v = v[(v >= 0) & (v < hi)]
+            if v.size < 10:
+                continue
             ax.hist(v, bins=55, density=True, alpha=0.42, color=color,
                     label=f"{lab} (mean={v.mean():.3f})")
             xs = np.linspace(0, v.max(), 200)
             ax.plot(xs, gaussian_kde(v)(xs), color=color, lw=1.6)
             ax.axvline(v.mean(), color=color, ls="--", lw=1)
+        if SHARED_AXES and g_xmax > 0:
+            ax.set_xlim(0, g_xmax)
         ax.set_title(f"{MATERIAL_LABEL[m]} ({TAG}): inference error distribution", fontsize=11)
         ax.set_xlabel("relative RMSE  (rmse / target RMS)")
         ax.set_ylabel("density")
@@ -296,6 +328,8 @@ def panel_force_error() -> None:
     """소재별 force(fz) 구간별 d10 상대오차 바이올린 — 소재당 1 파일(논문 Fig4D)."""
     edges = np.array([0.0, 0.25, 0.5, 1.0, 2.0, 5.0])
     centers = [f"{edges[i]:.2g}–{edges[i+1]:.2g}" for i in range(len(edges) - 1)]
+    # 1) 소재별 force-구간 그룹 수집
+    gathered: dict[str, tuple[list, list, list]] = {}
     for m in MATERIAL_ORDER:
         s = _load_samples(REP_RUN[m])
         mask = ~s["is_d5"]  # d10 (반복취득 있는 주 조건)
@@ -306,6 +340,11 @@ def panel_force_error() -> None:
             if v.size > 20:
                 v = v[v < np.quantile(v, 0.99)]
                 groups.append(v); means.append(float(v.mean())); xt.append(centers[i])
+        gathered[m] = (groups, means, xt)
+    # 2) 공통 y-max(비교축): 전 소재 그룹의 상대오차 최댓값
+    g_ymax = max((float(v.max()) for grp, _, _ in gathered.values() for v in grp), default=0.0)
+    # 3) 렌더
+    for m, (groups, means, xt) in gathered.items():
         fig, ax = plt.subplots(figsize=(6.0, 4.2))
         if groups:
             parts = ax.violinplot(groups, showmeans=True, showextrema=False)
@@ -315,6 +354,8 @@ def panel_force_error() -> None:
             ax.set_xticks(range(1, len(xt) + 1))
             ax.set_xticklabels(xt, rotation=30, ha="right", fontsize=8)
             ax.legend(frameon=False, fontsize=9)
+        if SHARED_AXES and g_ymax > 0:
+            ax.set_ylim(0, g_ymax * 1.05)
         ax.set_title(f"{MATERIAL_LABEL[m]} ({TAG}): error vs. force (d10)", fontsize=11)
         ax.set_xlabel("force fz [N]")
         ax.set_ylabel("relative RMSE")
@@ -336,6 +377,8 @@ def panel_symmetry_line() -> None:
     from sats.training.dataset import build_dataloaders
 
     rng = np.random.default_rng(0)
+    # 1) 전 소재 프로파일 수집(모델 추론은 소재당 1회)
+    gathered: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for m in MATERIAL_ORDER:
         run_dir = RUN_ROOT / REP_RUN[m]
         cfg = load_cfg(run_dir)
@@ -361,21 +404,33 @@ def panel_symmetry_line() -> None:
                     profiles.append(p[i, int(pr[i]), :]); fzs.append(float(fz[i]))
         if not profiles:
             continue
-        profiles = np.array(profiles); fzs = np.array(fzs)
-        if profiles.shape[0] > 160:  # 과밀 방지 subsample
-            keep = rng.choice(profiles.shape[0], 160, replace=False)
-            profiles, fzs = profiles[keep], fzs[keep]
+        prof = np.array(profiles); fzarr = np.array(fzs)
+        if prof.shape[0] > 160:  # 과밀 방지 subsample
+            keep = rng.choice(prof.shape[0], 160, replace=False)
+            prof, fzarr = prof[keep], fzarr[keep]
+        gathered[m] = (prof, fzarr)
 
-        xs = np.linspace(-CONTACT_HALF_MM, CONTACT_HALF_MM, profiles.shape[1])
-        vmax = float(np.quantile(fzs, 0.97))
+    if not gathered:
+        return
+
+    # 2) 공통 한계(비교축): 압력 y-max, force 컬러 vmax
+    g_ymax = max(float(p.max()) for p, _ in gathered.values())
+    g_fzmax = max(float(np.quantile(f, 0.97)) for _, f in gathered.values())
+
+    # 3) 렌더
+    for m, (prof, fzarr) in gathered.items():
+        vmax = g_fzmax if SHARED_AXES else float(np.quantile(fzarr, 0.97))
+        xs = np.linspace(-CONTACT_HALF_MM, CONTACT_HALF_MM, prof.shape[1])
         fig, ax = plt.subplots(figsize=(7.2, 4.0))
-        order = np.argsort(fzs)  # 저force 먼저(뒤에 고force)
+        order = np.argsort(fzarr)  # 저force 먼저(뒤에 고force)
         for i in order:
-            ax.plot(xs, profiles[i], color=plt.cm.turbo(np.clip(fzs[i] / vmax, 0, 1)),
+            ax.plot(xs, prof[i], color=plt.cm.turbo(np.clip(fzarr[i] / vmax, 0, 1)),
                     lw=0.7, alpha=0.55)
         ax.set_title(f"{MATERIAL_LABEL[m]} ({TAG}): pressure profiles along center line", fontsize=11)
         ax.set_xlabel("distance x [mm]")
         ax.set_ylabel(f"inferred pressure [{PRESSURE_UNIT}]")
+        if SHARED_AXES:
+            ax.set_ylim(top=g_ymax * 1.02)
         ax.grid(ls=":", alpha=0.4)
         mappable = plt.cm.ScalarMappable(cmap="turbo")
         mappable.set_clim(0, vmax)
@@ -398,8 +453,14 @@ def main() -> None:
     p.add_argument("--figset", default="xy1_material", choices=list(FIGSETS),
                    help="시각화할 학습 결과 집합")
     p.add_argument("--panels", nargs="+", default=list(PANELS), choices=list(PANELS))
+    p.add_argument("--shared-axes", action="store_true",
+                   help="모든 소재에 동일 축 범위 적용(소재 간 비교용). 출력=OUT_DIR/shared_axes/")
     args = p.parse_args()
     configure(args.figset)
+    global SHARED_AXES
+    SHARED_AXES = args.shared_axes
+    if SHARED_AXES:
+        print("*** shared-axes 모드: 모든 소재 동일 축 범위 → shared_axes/ 에 저장 ***")
     for key in args.panels:
         if key == "B" and len(MATERIAL_ORDER) < 2:
             print("--- B 건너뜀 (소재 1종이라 비교 불가) ---")

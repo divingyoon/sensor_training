@@ -61,7 +61,25 @@
 
 # 2) Fig3 전체 패널 생성 (한 장씩: --panels A / B / C / D / E / F 선택)
 .venv/bin/python history/fig_data/visualizing_scripts/figure_set/generate_fig3_sats.py
+
+# 3) 소재 간 비교용 — 동일 축 범위 버전 (출력: shared_axes/ 하위)
+.venv/bin/python history/fig_data/visualizing_scripts/figure_set/generate_fig3_sats.py --shared-axes
 ```
+
+## 동일 축 범위 버전 (`shared_axes/`)
+
+소재별 파일은 y축(비교 축)이 각자 자동 스케일돼 **소재 간 눈대중 비교가 불가**하다.
+`--shared-axes` 는 전 소재에서 공통 축 범위를 계산해 모든 소재 그림에 동일 적용한다(원본 자동스케일 버전은 유지).
+
+| 패널 | 통일되는 비교 축 | 공통값 산정 |
+|---|---|---|
+| A 라인프로파일 | 압력 y축 + force 컬러 | 전 소재 압력 max / fz 0.97분위 max |
+| C 3D 압력맵 | 압력 z축 | press-type(d5/d10)별 소재 간 peak max |
+| D 3D 위치오차 | 상대오차 z축·컬러바 | 전 소재 rel 합쳐 0.95분위 |
+| E 오차 히스토 | 상대오차 x축 | 전 소재·d5/d10 rel 0.99분위 max |
+| F force별 오차 | 상대오차 y축 | 전 소재 그룹 rel max |
+
+(B는 이미 한 그림에 전 소재를 담아 비교 가능하므로 별도 통일 불필요.)
 
 ## 한계 / 미해결
 
