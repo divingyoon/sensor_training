@@ -80,21 +80,22 @@ def main() -> None:
     axb.axvline(n_xy1 - 0.5, color="0.5", ls="--", lw=1)
     axb.text((n_xy1 - 1) / 2, ymax * 0.97, "material comparison (xy1, fair)",
              ha="center", va="top", fontsize=8, color="0.35")
-    # final d10: 저force 홀드아웃이라 rel 부풀려짐 → 절대 rmse·경고 주석
+    # final d10: 진짜로 나쁨(force-matched 로도 xy1 대비 3~4배) — 원인은 d5-편중 학습.
     for xi, r in zip(x, rows):
         if r["is_final"]:
-            axb.annotate(f"d10 rel inflated (low-fz holdout)\nabs RMSE={r['d10_abs']:.2f} (normal)",
+            axb.annotate(f"d10 genuinely weak (abs {r['d10_abs']:.2f})\n"
+                         "train d5:d10 = 9:2 imbalance\n(force-matched 로도 xy1 대비 ~4x)",
                          xy=(xi, min(r["d10_rel"], ymax * 0.98)),
-                         xytext=(xi - 0.1, ymax * 0.72), ha="center", fontsize=7.5,
-                         color="#b5651d",
-                         arrowprops=dict(arrowstyle="->", color="#b5651d", lw=1))
+                         xytext=(xi - 0.15, ymax * 0.66), ha="center", fontsize=7,
+                         color="#c0392b",
+                         arrowprops=dict(arrowstyle="->", color="#c0392b", lw=1))
     axb2 = axb.twinx()
     axb2.plot(x, [r["loc_mm"] for r in rows], "o-", c="0.15", label="loc-error [mm]")
     axb2.set_ylabel("localization error [mm]")
     axb2.set_ylim(0, max(r["loc_mm"] for r in rows) * 1.3)
     axb.set_xticks(x); axb.set_xticklabels(labels, rotation=20, ha="right", fontsize=8)
     axb.set_ylabel("relative RMSE")
-    axb.set_title("Key metrics by model  (d10 rel: xy1 vs xy0p5 not comparable — different force dist.)",
+    axb.set_title("Key metrics by model  (xy0p5_final d10 genuinely weak — d5-dominated training)",
                   fontsize=9.5)
     axb.legend(loc="upper left", fontsize=8, frameon=False)
     axb2.legend(loc="upper right", fontsize=8, frameon=False)
@@ -113,9 +114,10 @@ def main() -> None:
         t[0, c].set_facecolor("#dddddd"); t[0, c].set_text_props(weight="bold")
     axt.set_title(f"SR scale factor (Note S1) = {GRID_SIZE}²/{N_PHYSICAL} ≈ {SR_SCALE:.0f}\n"
                   f"(virtual {GRID_SIZE*GRID_SIZE} / physical {N_PHYSICAL} taxels)", fontsize=10)
-    axt.text(0.5, -0.02, "* xy0p5_final d10 rel is inflated by low-force holdout (small denominator); "
-             "abs RMSE is normal. Compare materials on xy1 d10 or force-matched (Fig3G).",
-             transform=axt.transAxes, ha="center", va="top", fontsize=7.5, color="#b5651d", wrap=True)
+    axt.text(0.5, -0.02, "* xy0p5_final d10 is genuinely weak (force-matched ~4x worse than xy1, rel AND abs). "
+             "Cause: datarich training d5:d10 = 9:2 imbalance (+ scarce/low-force xy0.5 d10). "
+             "Fix: balance d10 in training / acquire more xy0.5 d10.",
+             transform=axt.transAxes, ha="center", va="top", fontsize=7.3, color="#c0392b", wrap=True)
 
     fig.suptitle("SATS summary — relative error, localization, super-resolution scale", y=1.02)
     fig.tight_layout()
