@@ -318,6 +318,19 @@ def panel_error_hist() -> None:
             if v.size >= 10:
                 g_xmax = max(g_xmax, float(np.quantile(v, 0.99)))
     g_xmax = _lim("e_xmax", g_xmax)
+    # 공통 y-max(density): shared 모드에서 세로축도 통일 (렌더와 동일 bins/range 로 산정)
+    g_ydens = 0.0
+    if SHARED_AXES:
+        for s in samples.values():
+            for mask in (s["is_d5"], ~s["is_d5"]):
+                v = s["rel"][mask & np.isfinite(s["rel"])]
+                v = v[(v >= 0) & (v < g_xmax)]
+                if v.size < 10:
+                    continue
+                h, _ = np.histogram(v, bins=55, density=True)
+                k = gaussian_kde(v)(np.linspace(0, v.max(), 200))
+                g_ydens = max(g_ydens, float(h.max()), float(k.max()))
+        g_ydens = _lim("e_ymax", g_ydens)
     for m in MATERIAL_ORDER:
         s = samples[m]
         fig, ax = plt.subplots(figsize=(6.0, 4.2))
@@ -336,6 +349,8 @@ def panel_error_hist() -> None:
             ax.axvline(v.mean(), color=color, ls="--", lw=1)
         if SHARED_AXES and g_xmax > 0:
             ax.set_xlim(0, g_xmax)
+        if SHARED_AXES and g_ydens > 0:
+            ax.set_ylim(0, g_ydens * 1.05)
         ax.set_title(f"{MATERIAL_LABEL[m]} ({TAG}): inference error distribution", fontsize=11)
         ax.set_xlabel("relative RMSE  (rmse / target RMS)")
         ax.set_ylabel("density")
