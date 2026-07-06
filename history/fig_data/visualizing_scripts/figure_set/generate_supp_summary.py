@@ -52,7 +52,9 @@ def collect() -> list[dict]:
             "label": label,
             "d5_rel": float(d["d5_rel_rmse"]),
             "d10_rel": float(d["d10_rel_rmse"]),
+            "d10_abs": float(d["d10_rmse"]),   # 절대 rmse(분모 무관)
             "loc_mm": float(loc[label]["mean_loc_error_mm"]),
+            "is_final": label == "ecomesh_xy0p5_final",
         })
     return rows
 
@@ -64,33 +66,56 @@ def main() -> None:
                                    gridspec_kw={"width_ratios": [1.4, 1]})
 
     # 좌: 상대오차(d5/d10) + 위치오차 막대
+    # 주의: xy1 소재(고force d10)와 xy0p5_final(저force 홀드아웃 d10)의 상대오차는
+    # 분모(target_rms) 차이로 직접 비교 불가 → 구분선 + final d10 은 절대 rmse 병기.
     x = np.arange(len(labels)); w = 0.26
+    n_xy1 = sum(1 for r in rows if not r["is_final"])
     axb.bar(x - w, [r["d5_rel"] for r in rows], w, label="d5 rel-RMSE",
             color=[COLOR[r["label"]] for r in rows], alpha=0.55, edgecolor="k")
     axb.bar(x, [r["d10_rel"] for r in rows], w, label="d10 rel-RMSE",
             color=[COLOR[r["label"]] for r in rows], alpha=0.9, edgecolor="k", hatch="//")
+    ymax = max(r["d10_rel"] for r in rows if not r["is_final"]) * 1.6
+    axb.set_ylim(0, ymax)
+    # 구분선: xy1 소재 | xy0p5_final
+    axb.axvline(n_xy1 - 0.5, color="0.5", ls="--", lw=1)
+    axb.text((n_xy1 - 1) / 2, ymax * 0.97, "material comparison (xy1, fair)",
+             ha="center", va="top", fontsize=8, color="0.35")
+    # final d10: 저force 홀드아웃이라 rel 부풀려짐 → 절대 rmse·경고 주석
+    for xi, r in zip(x, rows):
+        if r["is_final"]:
+            axb.annotate(f"d10 rel inflated (low-fz holdout)\nabs RMSE={r['d10_abs']:.2f} (normal)",
+                         xy=(xi, min(r["d10_rel"], ymax * 0.98)),
+                         xytext=(xi - 0.1, ymax * 0.72), ha="center", fontsize=7.5,
+                         color="#b5651d",
+                         arrowprops=dict(arrowstyle="->", color="#b5651d", lw=1))
     axb2 = axb.twinx()
     axb2.plot(x, [r["loc_mm"] for r in rows], "o-", c="0.15", label="loc-error [mm]")
     axb2.set_ylabel("localization error [mm]")
     axb2.set_ylim(0, max(r["loc_mm"] for r in rows) * 1.3)
     axb.set_xticks(x); axb.set_xticklabels(labels, rotation=20, ha="right", fontsize=8)
     axb.set_ylabel("relative RMSE")
-    axb.set_title("Key metrics by model")
+    axb.set_title("Key metrics by model  (d10 rel: xy1 vs xy0p5 not comparable — different force dist.)",
+                  fontsize=9.5)
     axb.legend(loc="upper left", fontsize=8, frameon=False)
     axb2.legend(loc="upper right", fontsize=8, frameon=False)
     axb.grid(axis="y", ls=":", alpha=0.4)
 
     # 우: 지표 표 + SR scale factor
     axt.axis("off")
-    table = [["model", "d5 rel", "d10 rel", "loc [mm]"]]
+    table = [["model", "d5 rel", "d10 rel", "d10 abs", "loc [mm]"]]
     for r in rows:
-        table.append([r["label"], f"{r['d5_rel']:.3f}", f"{r['d10_rel']:.3f}", f"{r['loc_mm']:.2f}"])
+        d10rel = f"{r['d10_rel']:.3f}" + (" *" if r["is_final"] else "")
+        table.append([r["label"], f"{r['d5_rel']:.3f}", d10rel,
+                      f"{r['d10_abs']:.3f}", f"{r['loc_mm']:.2f}"])
     t = axt.table(cellText=table, cellLoc="center", loc="center")
     t.auto_set_font_size(False); t.set_fontsize(9); t.scale(1, 1.5)
-    for c in range(4):
+    for c in range(5):
         t[0, c].set_facecolor("#dddddd"); t[0, c].set_text_props(weight="bold")
     axt.set_title(f"SR scale factor (Note S1) = {GRID_SIZE}²/{N_PHYSICAL} ≈ {SR_SCALE:.0f}\n"
                   f"(virtual {GRID_SIZE*GRID_SIZE} / physical {N_PHYSICAL} taxels)", fontsize=10)
+    axt.text(0.5, -0.02, "* xy0p5_final d10 rel is inflated by low-force holdout (small denominator); "
+             "abs RMSE is normal. Compare materials on xy1 d10 or force-matched (Fig3G).",
+             transform=axt.transAxes, ha="center", va="top", fontsize=7.5, color="#b5651d", wrap=True)
 
     fig.suptitle("SATS summary — relative error, localization, super-resolution scale", y=1.02)
     fig.tight_layout()
