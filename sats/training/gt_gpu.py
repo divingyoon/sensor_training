@@ -94,7 +94,16 @@ class BatchGPUTargetGenerator:
                 + z_sq
             )
             inv_r5_sum += torch.sum(torch.pow(r_sq, -2.5), dim=2)
-        return inv_r5_sum.mul(float(pre)).contiguous()
+        base = inv_r5_sum.mul(float(pre))
+
+        # (B) β_geom force conservation: the base kernel approximates σ_zz / F,
+        # so ∫∫ base dA must equal 1 (Boussinesq equilibrium). Coarse patch
+        # discretization for small radii breaks this; rescale to restore it.
+        if bool(getattr(self.cfg, "gt_beta_force_conservation", False)):
+            integral = base.sum() * (self.grid_step_mm ** 2)
+            if float(integral) > 1e-9:
+                base = base.div(integral)
+        return base.contiguous()
 
     def _base_kernel(self, diameter_mm: float, radius_mm: float) -> torch.Tensor:
         key = (float(diameter_mm), float(radius_mm))
@@ -149,6 +158,23 @@ class BatchGPUTargetGenerator:
             row_idx = self.ext_half - iy[sel].view(-1, 1, 1) + self._row_offsets
             col_idx = self.ext_half - ix[sel].view(-1, 1, 1) + self._col_offsets
             maps = base[row_idx, col_idx]
-            out[sel] = maps * (fz_n[sel].view(-1, 1, 1) * float(self.cfg.gt_scale))
+            scale = fz_n[sel] * float(self.cfg.gt_scale)
+            if str(getattr(self.cfg, "gt_beta_mode", "none")) == "poly2":
+                scale = scale * self._beta_material(fz_n[sel], r_val)
+            out[sel] = maps * scale.view(-1, 1, 1)
 
         return out
+
+    def _beta_material(self, fz_n: torch.Tensor, radius_mm: float) -> torch.Tensor:
+        """(C) β(p) rectification factor (paper S9), p = |fz|/(π·a²) in kPa.
+
+        Mirrors generate_gt.compute_beta poly2 so on-the-fly GT matches the
+        precomputed path. Material-specific coefficients (hyperelastic stiffening).
+        """
+        area = math.pi * float(radius_mm) * float(radius_mm)
+        p_kpa = (fz_n.abs() / max(area, 1e-9)) * 1000.0   # N/mm² → kPa
+        c0 = float(self.cfg.gt_beta_c0)
+        c1 = float(self.cfg.gt_beta_c1)
+        c2 = float(self.cfg.gt_beta_c2)
+        beta = c0 + c1 * p_kpa + c2 * p_kpa * p_kpa
+        return beta.clamp(float(self.cfg.gt_beta_min), float(self.cfg.gt_beta_max))

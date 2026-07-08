@@ -97,6 +97,23 @@ def init_from_staged_ckpt(ckpt_path: Union[str, Path], model: SATSCNNStage) -> N
 # 학습 / 검증 루프
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+def _size_from_meta(
+    cfg: SATSConfig,
+    gt_b: torch.Tensor,
+    target_generator: BatchGPUTargetGenerator | None,
+) -> torch.Tensor | None:
+    """Indenter diameter [B] for size conditioning, else None.
+
+    Only available in the on-the-fly path where ``gt_b`` is compact GT metadata
+    (column 0 = diameter). Precomputed-map mode has no diameter → returns None.
+    """
+    if not bool(getattr(cfg, "use_indenter_size_input", False)):
+        return None
+    if target_generator is None:
+        return None
+    return gt_b[:, 0]
+
 def train_epoch(
     model: SATSCNNStage,
     loader,
@@ -121,8 +138,11 @@ def train_epoch(
         else:
             target = target_generator(gt_b).detach()         # [B, grid, grid]
 
-        refined_map, _ = model(sensor_b, lengths)            # [B, grid, grid]
-        loss = F.mse_loss(refined_map, target)
+        size = _size_from_meta(cfg, gt_b, target_generator)
+        use_amp = bool(getattr(cfg, "use_amp", False)) and str(device).startswith("cuda")
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+            refined_map, _ = model(sensor_b, lengths, size)  # [B, grid, grid]
+            loss = F.mse_loss(refined_map, target)
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -145,6 +165,7 @@ def val_epoch(
     device: str,
     target_generator: BatchGPUTargetGenerator | None = None,
     progress_desc: str | None = None,
+    cfg: SATSConfig | None = None,
 ) -> dict:
     model.eval()
     total_mse = 0.0
@@ -160,9 +181,12 @@ def val_epoch(
             target = get_target(gt_b, lengths)
         else:
             target = target_generator(gt_b)
-        refined_map, _ = model(sensor_b, lengths)
+        size = _size_from_meta(cfg, gt_b, target_generator) if cfg is not None else None
+        use_amp = bool(getattr(cfg, "use_amp", False)) and str(device).startswith("cuda")
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+            refined_map, _ = model(sensor_b, lengths, size)
 
-        total_mse += F.mse_loss(refined_map, target).item()
+        total_mse += F.mse_loss(refined_map.float(), target).item()
         n_batches += 1
         if progress_desc is not None:
             running_mse = total_mse / n_batches
@@ -248,6 +272,7 @@ def train(cfg: SATSConfig, init_ckpt: str = "") -> None:
             device,
             target_generator=target_generator,
             progress_desc=f"val   {epoch}/{cfg.epochs}",
+            cfg=cfg,
         )
 
         lr_now = optimizer.param_groups[0]["lr"]
@@ -358,6 +383,17 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="on_the_fly balanced_contact에서 high-force/saturation 샘플 stride")
     p.add_argument("--use-window-dataset",  action=argparse.BooleanOptionalAction, default=True,
                    help="윈도우 데이터셋 사용 (논문 방식). 끄려면 --no-use-window-dataset")
+    p.add_argument("--use-indenter-size-input", action=argparse.BooleanOptionalAction, default=False,
+                   help="인덴터 지름을 FiLM 조건 입력으로 추가 (d5/d10 blend 해소). on_the_fly 전용")
+    p.add_argument("--gt-beta-mode", choices=["none", "poly2"], default="none",
+                   help="(C) β(p) 물성보정 GT: β=c0+c1·p+c2·p² (p in kPa). 논문 S9")
+    p.add_argument("--gt-beta-c0", type=float, default=1.0)
+    p.add_argument("--gt-beta-c1", type=float, default=0.0)
+    p.add_argument("--gt-beta-c2", type=float, default=0.0)
+    p.add_argument("--gt-beta-min", type=float, default=0.2)
+    p.add_argument("--gt-beta-max", type=float, default=5.0)
+    p.add_argument("--use-amp", action=argparse.BooleanOptionalAction, default=False,
+                   help="bf16 mixed precision (~2x 속도·메모리 절반). 고해상도(0.25/0.1mm) 필수")
     p.add_argument("--no-lr-scheduler",     action="store_true")
     return p
 
@@ -414,6 +450,14 @@ def _config_from_args(args: argparse.Namespace) -> SATSConfig:
         plateau_stride           = args.plateau_stride,
         loading_stride           = args.loading_stride,
         saturation_stride        = args.saturation_stride,
+        use_indenter_size_input  = args.use_indenter_size_input,
+        gt_beta_mode             = args.gt_beta_mode,
+        gt_beta_c0               = args.gt_beta_c0,
+        gt_beta_c1               = args.gt_beta_c1,
+        gt_beta_c2               = args.gt_beta_c2,
+        gt_beta_min              = args.gt_beta_min,
+        gt_beta_max              = args.gt_beta_max,
+        use_amp                  = args.use_amp,
     )
     return cfg
 

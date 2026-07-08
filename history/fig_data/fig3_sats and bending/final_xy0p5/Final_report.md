@@ -1,5 +1,7 @@
 # Final (xy 0.5 mm) — Eco-mesh 최종 flat 데이터 성능
 
+> **2026-07-08 A 갱신**: **크기 입력(A) 모델**(`runs/size_input/ecomesh_xy0p5_sizeinput_val_d5t10_d10t3`)로 재생성. 크기 입력이 d10 blend 해소(pedestal 전구간↓). 순수 d5 성능 개선 트랙(다해상도)은 `../d5_final/README.md` 및 `sats_experiments/d5_multires_diag/README.md` 참조.
+
 **최종 flat 데이터(xy 0.5 mm) data-rich 모델의 최종 성능** figure 세트. Fig3(xy 1mm 소재비교)와 별도.
 
 ## 모델

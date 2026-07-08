@@ -24,7 +24,7 @@ from scipy.stats import binned_statistic_2d  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[4]
 EXP = REPO / "history/fig_data/sats_experiments"
-DIRS = [EXP / "fig3_diag", EXP / "pool_diag", EXP / "final_xy0p5_diag"]
+DIRS = [EXP / "sizeA_diag", EXP / "sizeA_final_xy0p5_diag"]  # A(indenter-size) 최종 모델
 BINS = 40
 
 

@@ -95,7 +95,8 @@ def diagnose(run_dir: Path) -> dict:
         meta_b = meta_b.to(device, non_blocking=True)
         lengths = lengths.to(device, non_blocking=True)
         target = tgen(meta_b)
-        pred, _ = model(sensor_b, lengths)
+        size = meta_b[:, 0] if bool(getattr(cfg, "use_indenter_size_input", False)) else None
+        pred, _ = model(sensor_b, lengths, size)
         per_se.append(((pred - target) ** 2).mean(dim=(1, 2)).cpu().numpy())
         tgt_ms.append((target ** 2).mean(dim=(1, 2)).cpu().numpy())
         metas.append(meta_b[:, :5].cpu().numpy())

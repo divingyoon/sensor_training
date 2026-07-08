@@ -33,10 +33,10 @@ CONTACT_EPS = 1e-3  # GT peak 이 이보다 작으면 비접촉으로 제외
 
 # 처리할 모델: label -> run_dir (xy1 대표 3소재 + xy0p5 최종)
 RUNS: dict[str, Path] = {
-    "eco20_xy1": REPO / "sats/training/runs/xy1_material_d5d10/xy1_d5d10_eco20_xy1_fold2_e2e_g05",
-    "eco50_xy1": REPO / "sats/training/runs/xy1_material_d5d10/xy1_d5d10_eco50_xy1_fold1_e2e_g05",
-    "ecomesh_xy1": REPO / "sats/training/runs/xy1_material_d5d10/xy1_d5d10_ecomesh_xy1_fold3_e2e_g05",
-    "ecomesh_xy0p5_final": REPO / "sats/training/runs/datarich_probe/ecomesh_xy0p5_datarich_val_d5test10_d10test3",
+    "eco20_xy1": REPO / "sats/training/runs/size_input_material/sizeA_eco20_xy1_fold2_e2e_g05",
+    "eco50_xy1": REPO / "sats/training/runs/size_input_material/sizeA_eco50_xy1_fold1_e2e_g05",
+    "ecomesh_xy1": REPO / "sats/training/runs/size_input_material/sizeA_ecomesh_xy1_fold3_e2e_g05",
+    "ecomesh_xy0p5_final": REPO / "sats/training/runs/size_input/ecomesh_xy0p5_sizeinput_val_d5t10_d10t3",
 }
 
 
@@ -67,7 +67,8 @@ def collect_localization(run_dir: Path) -> dict[str, np.ndarray]:
         for sensor_b, meta_b, lengths in val_loader:
             sensor_b, meta_b, lengths = (t.to(device) for t in (sensor_b, meta_b, lengths))
             target = tgen(meta_b)
-            pred, _ = model(sensor_b, lengths)
+            _sz = meta_b[:, 0] if getattr(cfg, "use_indenter_size_input", False) else None
+            pred, _ = model(sensor_b, lengths, _sz)
             g, p = target.cpu().numpy(), pred.cpu().numpy()
             contact = g.max(axis=(1, 2)) > CONTACT_EPS
             if not contact.any():

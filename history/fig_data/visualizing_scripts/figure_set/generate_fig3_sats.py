@@ -40,29 +40,41 @@ CONTACT_HALF_MM = 9.75  # 감지면 반경(맵 extent)
 FIGSETS: dict[str, dict] = {
     # xy 1 mm 소재 비교 (eco20/eco50/ecomesh 대표 healthy fold)
     "xy1_material": {
-        "diag": REPO / "history/fig_data/sats_experiments/fig3_diag",
-        "run_root": REPO / "sats/training/runs/xy1_material_d5d10",
+        "diag": REPO / "history/fig_data/sats_experiments/sizeA_diag",
+        "run_root": REPO / "sats/training/runs/size_input_material",
         "out": REPO / "history/fig_data/fig3_sats and bending",
         "order": ["eco20", "eco50", "ecomesh"],
         "colors": {"eco20": "#e07b39", "eco50": "#5b8def", "ecomesh": "#2ca25f"},
         "labels": {"eco20": "Eco20", "eco50": "Eco50", "ecomesh": "Eco-mesh"},
         "rep": {
-            "eco20": "xy1_d5d10_eco20_xy1_fold2_e2e_g05",
-            "eco50": "xy1_d5d10_eco50_xy1_fold1_e2e_g05",
-            "ecomesh": "xy1_d5d10_ecomesh_xy1_fold3_e2e_g05",
+            "eco20": "sizeA_eco20_xy1_fold2_e2e_g05",
+            "eco50": "sizeA_eco50_xy1_fold1_e2e_g05",
+            "ecomesh": "sizeA_ecomesh_xy1_fold3_e2e_g05",
         },
         "prefix": "Fig3",
         "tag": "xy 1 mm",
     },
-    # xy 0.5 mm 최종(flat) 데이터 data-rich 모델 — ecomesh 단일. 최종 성능.
+    # d5-only 최종 (β 물성보정, 크기입력 불필요). 순수 SATS 구조, xy0.5 d5, 0.5mm 출력.
+    "d5_final": {
+        "diag": REPO / "history/fig_data/sats_experiments/d5_multires_diag",
+        "run_root": REPO / "sats/training/runs/d5_only_multires",
+        "out": REPO / "history/fig_data/fig3_sats and bending/d5_final",
+        "order": ["ecomesh"],
+        "colors": {"ecomesh": "#2ca25f"},
+        "labels": {"ecomesh": "Eco-mesh d5"},
+        "rep": {"ecomesh": "d5only_beta_g0p5"},
+        "prefix": "D5",
+        "tag": "d5-only + beta (0.5mm)",
+    },
+    # xy 0.5 mm 최종(flat) 데이터 — ecomesh 단일, indenter-size input(A). 최종 성능.
     "xy0p5_final": {
-        "diag": REPO / "history/fig_data/sats_experiments/final_xy0p5_diag",
-        "run_root": REPO / "sats/training/runs/datarich_probe",
+        "diag": REPO / "history/fig_data/sats_experiments/sizeA_final_xy0p5_diag",
+        "run_root": REPO / "sats/training/runs/size_input",
         "out": REPO / "history/fig_data/fig3_sats and bending/final_xy0p5",
         "order": ["ecomesh"],
         "colors": {"ecomesh": "#2ca25f"},
         "labels": {"ecomesh": "Eco-mesh"},
-        "rep": {"ecomesh": "ecomesh_xy0p5_datarich_val_d5test10_d10test3"},
+        "rep": {"ecomesh": "ecomesh_xy0p5_sizeinput_val_d5t10_d10t3"},
         "prefix": "Final",
         "tag": "xy 0.5 mm final",
     },
@@ -186,7 +198,8 @@ def _representative_maps(run: str) -> dict[str, tuple]:
         for sensor_b, meta_b, lengths in val_loader:
             sensor_b, meta_b, lengths = (t.to(device) for t in (sensor_b, meta_b, lengths))
             target = tgen(meta_b)
-            pred, _ = model(sensor_b, lengths)
+            _sz = meta_b[:, 0] if getattr(cfg, "use_indenter_size_input", False) else None
+            pred, _ = model(sensor_b, lengths, _sz)
             peaks = target.amax(dim=(1, 2)).cpu().numpy()
             dia = meta_b[:, 0].cpu().numpy()
             x = meta_b[:, 1].cpu().numpy(); y = meta_b[:, 2].cpu().numpy()
@@ -429,7 +442,8 @@ def panel_symmetry_line() -> None:
             for sensor_b, meta_b, lengths in val_loader:
                 sensor_b, meta_b, lengths = (t.to(device) for t in (sensor_b, meta_b, lengths))
                 target = tgen(meta_b)
-                pred, _ = model(sensor_b, lengths)
+                _sz = meta_b[:, 0] if getattr(cfg, "use_indenter_size_input", False) else None
+                pred, _ = model(sensor_b, lengths, _sz)
                 g = target.cpu().numpy(); p = pred.cpu().numpy()
                 fz = meta_b[:, 4].cpu().numpy()
                 H, W = g.shape[1], g.shape[2]

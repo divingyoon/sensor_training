@@ -154,6 +154,28 @@ class SATSConfig:
     contact_radius_step_mm: float = 0.05
     min_contact_radius_mm: float = 0.05
     z_depth_min_mm: float = 0.001
+    # (B) β_geom force conservation: rescale base kernel so ∫∫(σ_zz/F) dA = 1
+    # (Boussinesq equilibrium). Corrects patch-discretization over/under-conservation.
+    # Near no-op for radii ≥1mm; matters for sub-patch-step radii / fine grids.
+    gt_beta_force_conservation: bool = False
+    # Indenter-size conditioning: feed the known indenter diameter as a FiLM
+    # condition so the model can produce size-appropriate pressure peaks for
+    # mixed d5/d10 data (resolves the size-blend d10 low-force over-prediction).
+    # Diameter is a known probe property; radius/depth are NOT (unknown at inference).
+    use_indenter_size_input: bool = False
+    # (C) β(p) material rectification (paper Note S3/S9): β(p)=c0+c1·p+c2·p²,
+    # p = mean contact pressure in kPa = |fz|/(π·a²)·1000. Ported from the
+    # precomputed generate_gt.compute_beta so on-the-fly GT matches. Coefficients
+    # are material-specific (hyperelastic stiffening) and must be calibrated.
+    gt_beta_mode: str = "none"          # "none" | "poly2"
+    gt_beta_c0: float = 1.0
+    gt_beta_c1: float = 0.0
+    gt_beta_c2: float = 0.0
+    gt_beta_min: float = 0.2
+    gt_beta_max: float = 5.0
+    # Mixed precision (bf16 autocast): ~2x speed + ~half activation memory.
+    # Needed for very fine output grids (0.25/0.1mm). bf16 needs no GradScaler.
+    use_amp: bool = False
 
     # on-the-fly GT window sampling.
     # balanced_contact는 loading/dynamic, plateau/static, saturation, z/Fz bin
