@@ -1,5 +1,7 @@
 # 요약 지표 + SR scale factor (Note S1)
 
+> **2026-07-08 A 갱신**: **A(크기 입력) 모델** 진단(`sizeA_diag`, `sizeA_final_xy0p5_diag`) 기반으로 재생성. 그림 주석도 "크기 입력 최종·β 배제"로 정정됨. d10 blend는 크기 입력이 해소, β 물성보정은 무이득(저force d10 악화)으로 배제. 해석 방법 동일. 상세는 `../../sats_experiments/sizeA_diag/README.md`.
+
 모델별 핵심 지표 통합. 재학습·추가추론 없이 기존 CSV(diag_summary + loc_summary)만 사용.
 
 ## SR scale factor (Note S1)

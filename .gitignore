@@ -54,3 +54,6 @@ figure_set.html
 
 # Large acquisition node data (skin_ws/node/*.node, 31MB total)
 *.node
+
+# 재생성 가능한 진단 per-sample 덤프(대용량) — pngs/csv/README만 추적
+samples_*.npz

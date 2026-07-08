@@ -24,9 +24,9 @@ LABELS = {
     "noAttention": "noAttention",
     "noLSTM": "noLSTM",
     "noCNN": "noCNN",
-    "xy1_d5d10_ecomesh_xy1_fold3_e2e_g05": "SATS (full)",
+    "sizeA_ecomesh_xy1_fold3_e2e_g05": "SATS (full)",
 }
-ORDER = ["noAttention", "noLSTM", "noCNN", "xy1_d5d10_ecomesh_xy1_fold3_e2e_g05"]
+ORDER = ["noAttention", "noLSTM", "noCNN", "sizeA_ecomesh_xy1_fold3_e2e_g05"]
 
 
 def main() -> None:

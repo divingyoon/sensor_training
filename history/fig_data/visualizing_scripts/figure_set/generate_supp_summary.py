@@ -18,8 +18,9 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[4]
 OUT_DIR = REPO / "history/fig_data/sats_supplementary/summary_metrics"
-DIAG_XY1 = REPO / "history/fig_data/sats_experiments/fig3_diag/diag_summary.csv"
-DIAG_XY0P5 = REPO / "history/fig_data/sats_experiments/final_xy0p5_diag/diag_summary.csv"
+# A(indenter-size input) 최종 모델 진단. β는 배제(무이득), 크기입력만.
+DIAG_XY1 = REPO / "history/fig_data/sats_experiments/sizeA_diag/diag_summary.csv"
+DIAG_XY0P5 = REPO / "history/fig_data/sats_experiments/sizeA_final_xy0p5_diag/diag_summary.csv"
 LOC_CSV = REPO / "history/fig_data/sats_supplementary/S20_localization/loc_summary.csv"
 
 GRID_SIZE = 41            # virtual taxel 격자
@@ -28,10 +29,10 @@ SR_SCALE = GRID_SIZE * GRID_SIZE / N_PHYSICAL  # Note S1: N_v / N_r
 
 # (label, diag run key, diag csv)
 MODELS = [
-    ("eco20_xy1", "xy1_d5d10_eco20_xy1_fold2_e2e_g05", DIAG_XY1),
-    ("eco50_xy1", "xy1_d5d10_eco50_xy1_fold1_e2e_g05", DIAG_XY1),
-    ("ecomesh_xy1", "xy1_d5d10_ecomesh_xy1_fold3_e2e_g05", DIAG_XY1),
-    ("ecomesh_xy0p5_final", "ecomesh_xy0p5_datarich_val_d5test10_d10test3", DIAG_XY0P5),
+    ("eco20_xy1", "sizeA_eco20_xy1_fold2_e2e_g05", DIAG_XY1),
+    ("eco50_xy1", "sizeA_eco50_xy1_fold1_e2e_g05", DIAG_XY1),
+    ("ecomesh_xy1", "sizeA_ecomesh_xy1_fold3_e2e_g05", DIAG_XY1),
+    ("ecomesh_xy0p5_final", "ecomesh_xy0p5_sizeinput_val_d5t10_d10t3", DIAG_XY0P5),
 ]
 COLOR = {"eco20_xy1": "#e07b39", "eco50_xy1": "#5b8def",
          "ecomesh_xy1": "#2ca25f", "ecomesh_xy0p5_final": "#8856a7"}
@@ -80,22 +81,24 @@ def main() -> None:
     axb.axvline(n_xy1 - 0.5, color="0.5", ls="--", lw=1)
     axb.text((n_xy1 - 1) / 2, ymax * 0.97, "material comparison (xy1, fair)",
              ha="center", va="top", fontsize=8, color="0.35")
-    # final d10: 진짜로 나쁨(force-matched 로도 xy1 대비 3~4배) — 원인은 d5-편중 학습.
+    # 최종 모델 = indenter-size input(A). d10 blend(모델 크기-무지)이 저force 과대예측 원인,
+    # A가 해소(pedestal 전구간↓). β 물성보정은 무이득·소폭악화로 배제(인프라만 보존).
     for xi, r in zip(x, rows):
         if r["is_final"]:
-            axb.annotate(f"d10 genuinely weak (abs {r['d10_abs']:.2f})\n"
-                         "train d5:d10 = 9:2 imbalance\n(force-matched 로도 xy1 대비 ~4x)",
+            axb.annotate(f"final = indenter-size input (A)\n"
+                         f"d10 abs={r['d10_abs']:.2f}; blend resolved\n"
+                         "β material rect. tried, no gain (excluded)",
                          xy=(xi, min(r["d10_rel"], ymax * 0.98)),
-                         xytext=(xi - 0.15, ymax * 0.66), ha="center", fontsize=7,
-                         color="#c0392b",
-                         arrowprops=dict(arrowstyle="->", color="#c0392b", lw=1))
+                         xytext=(xi - 0.15, ymax * 0.6), ha="center", fontsize=6.7,
+                         color="#2c7a2c",
+                         arrowprops=dict(arrowstyle="->", color="#2c7a2c", lw=1))
     axb2 = axb.twinx()
     axb2.plot(x, [r["loc_mm"] for r in rows], "o-", c="0.15", label="loc-error [mm]")
     axb2.set_ylabel("localization error [mm]")
     axb2.set_ylim(0, max(r["loc_mm"] for r in rows) * 1.3)
     axb.set_xticks(x); axb.set_xticklabels(labels, rotation=20, ha="right", fontsize=8)
     axb.set_ylabel("relative RMSE")
-    axb.set_title("Key metrics by model  (xy0p5_final d10 genuinely weak — d5-dominated training)",
+    axb.set_title("Key metrics by model  (xy0p5_final d10 = low-force magnitude over-prediction, GT/EHS cause)",
                   fontsize=9.5)
     axb.legend(loc="upper left", fontsize=8, frameon=False)
     axb2.legend(loc="upper right", fontsize=8, frameon=False)
@@ -114,10 +117,11 @@ def main() -> None:
         t[0, c].set_facecolor("#dddddd"); t[0, c].set_text_props(weight="bold")
     axt.set_title(f"SR scale factor (Note S1) = {GRID_SIZE}²/{N_PHYSICAL} ≈ {SR_SCALE:.0f}\n"
                   f"(virtual {GRID_SIZE*GRID_SIZE} / physical {N_PHYSICAL} taxels)", fontsize=10)
-    axt.text(0.5, -0.02, "* xy0p5_final d10 is genuinely weak (force-matched ~4x worse than xy1, rel AND abs). "
-             "Cause: datarich training d5:d10 = 9:2 imbalance (+ scarce/low-force xy0.5 d10). "
-             "Fix: balance d10 in training / acquire more xy0.5 d10.",
-             transform=axt.transAxes, ha="center", va="top", fontsize=7.3, color="#c0392b", wrap=True)
+    axt.text(0.5, -0.02, "* All models use indenter-size (diameter) input (A): resolves the d5/d10 size-blend that caused "
+             "d10 low-force over-prediction (model had no size cue). d10 pedestal reduced across all forces. "
+             "beta(p) material rectification (S3/S9) was implemented & tested but gave no calibration gain (slightly worse d10) "
+             "-> excluded; infra kept for paper reproduction. Residual low-force d10 = data scarcity (needs more xy0.5 d10).",
+             transform=axt.transAxes, ha="center", va="top", fontsize=6.8, color="#2c7a2c", wrap=True)
 
     fig.suptitle("SATS summary — relative error, localization, super-resolution scale", y=1.02)
     fig.tight_layout()

@@ -150,6 +150,18 @@ class SATSCNNStage(nn.Module):
             # LSTM 대체: 센서별 시퀀스의 mean/max/last 통계 → 선형 투영 (비순환)
             self._nolstm_proj = nn.Linear(3, self.encoder.out_dim)
 
+        # ── Indenter-size FiLM conditioning ──────────────────────────────────
+        # Normalized diameter → per-feature (γ, β) applied to combined_feat, so
+        # the decoder produces size-appropriate pressure peaks for mixed d5/d10.
+        # Last layer is zero-init → γ=1, β=0 at start (identity warm start).
+        self.use_size_input = bool(getattr(cfg, "use_indenter_size_input", False))
+        if self.use_size_input:
+            self.size_film = nn.Sequential(
+                nn.Linear(1, 32), nn.ReLU(), nn.Linear(32, 2 * combined_dim),
+            )
+            nn.init.zeros_(self.size_film[-1].weight)
+            nn.init.zeros_(self.size_film[-1].bias)
+
     def _nolstm_encode(self, seq: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
         """LSTM 없이 [B,T,16] → [B,16,out_dim]. 유효 길이 마스킹된 mean/max/last 통계."""
         b, t, s = seq.shape
@@ -166,8 +178,9 @@ class SATSCNNStage(nn.Module):
 
     def forward(
         self,
-        sensor_seq: torch.Tensor,   # [B, T, 16]
-        lengths: torch.Tensor,      # [B]
+        sensor_seq: torch.Tensor,          # [B, T, 16]
+        lengths: torch.Tensor,             # [B]
+        size: torch.Tensor | None = None,  # [B] indenter diameter (mm), optional
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.ablate_lstm:
             local_feat = self._nolstm_encode(sensor_seq, lengths)   # [B, 16, lstm_out]
@@ -179,6 +192,18 @@ class SATSCNNStage(nn.Module):
         else:
             agg_feat = self.attention(local_feat)                   # [B, 16, attn_dim]
         combined_feat = torch.cat([local_feat, agg_feat], dim=-1)   # [B, 16, combined]
+        if self.use_size_input and size is not None:
+            combined_feat = self._apply_size_film(combined_feat, size)
         merged_map    = self.local_map_decoder(combined_feat)        # [B, grid, grid]
         refined_map   = merged_map if self.ablate_cnn else self.cnn_refiner(merged_map)
         return refined_map, merged_map
+
+    def _apply_size_film(self, combined_feat: torch.Tensor, size: torch.Tensor) -> torch.Tensor:
+        """FiLM-modulate per-sensor features by normalized indenter diameter.
+
+        Diameter is normalized so d5→-1, d10→+1 (split threshold 7.5 mm, half-span
+        2.5 mm). Zero-init film keeps γ=1, β=0 at start → identity warm start.
+        """
+        s = ((size.to(combined_feat.dtype).view(-1, 1) - 7.5) / 2.5)   # [B, 1]
+        gamma, beta = self.size_film(s).chunk(2, dim=-1)               # [B, combined] each
+        return combined_feat * (1.0 + gamma).unsqueeze(1) + beta.unsqueeze(1)

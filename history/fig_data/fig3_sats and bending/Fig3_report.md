@@ -1,5 +1,7 @@
 # Fig3 — SATS(xy_1mm) 학습 결과 리포트
 
+> **2026-07-08 A 갱신**: 모든 fig3 패널은 **인덴터 크기 입력(A) 모델**(`runs/size_input_material/sizeA_*`, xy0p5_final은 `runs/size_input/`)로 재생성됨. 크기 입력이 d5/d10 blend를 해소(d10 pedestal 전구간↓). β 물성보정은 무이득으로 배제. 소재 d10 서열 유지: **ecomesh 0.182 < eco20 0.259 < eco50 0.336**. 아래 해석 방법은 그대로 유효(모델만 A). d5-only 최종 트랙은 `d5_final/README.md` 참조.
+
 참고 논문(*Super-resolution tactile sensor arrays with sparse units*, Fig.4) 시각화를
 우리 xy_1mm 학습 SATS 체크포인트로 재현. **핵심 메시지 = 소재 비교(가설 검증) + SATS 추론 품질.**
 

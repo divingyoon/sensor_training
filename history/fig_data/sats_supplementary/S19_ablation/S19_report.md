@@ -1,5 +1,7 @@
 # S19 / Table S2 — Ablation study (ecomesh, xy 1 mm)
 
+> **2026-07-08 A 갱신**: 변형들을 **A(크기 입력) 베이스**로 재학습(`scratchpad_run_ablation_A.py` → `runs/ablation_ecomesh_A/`), full = `sizeA_ecomesh_xy1_fold3`. A 결과 overall_rel: **noAttention 0.403 > noLSTM 0.352 > noCNN 0.186 ≈ full 0.189** → attention 최핵심·LSTM 핵심, CNN 기여는 이 홀드아웃에선 미미. 해석 방법 동일.
+
 논문 FigS19 / Table S2 대응. SATS의 각 모듈(LSTM·self-attention·CNN)을 제거한 변형을
 **동일 데이터·split(ecomesh_xy1 fold3)**로 재학습해 기여도를 비교.
 

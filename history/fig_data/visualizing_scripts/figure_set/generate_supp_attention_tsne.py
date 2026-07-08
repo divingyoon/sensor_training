@@ -31,10 +31,10 @@ N_TSNE = 2500      # t-SNE 입력 표본 수(과밀·속도 균형)
 CONTACT_HALF_MM = 9.75
 
 RUNS: dict[str, Path] = {
-    "eco20_xy1": REPO / "sats/training/runs/xy1_material_d5d10/xy1_d5d10_eco20_xy1_fold2_e2e_g05",
-    "eco50_xy1": REPO / "sats/training/runs/xy1_material_d5d10/xy1_d5d10_eco50_xy1_fold1_e2e_g05",
-    "ecomesh_xy1": REPO / "sats/training/runs/xy1_material_d5d10/xy1_d5d10_ecomesh_xy1_fold3_e2e_g05",
-    "ecomesh_xy0p5_final": REPO / "sats/training/runs/datarich_probe/ecomesh_xy0p5_datarich_val_d5test10_d10test3",
+    "eco20_xy1": REPO / "sats/training/runs/size_input_material/sizeA_eco20_xy1_fold2_e2e_g05",
+    "eco50_xy1": REPO / "sats/training/runs/size_input_material/sizeA_eco50_xy1_fold1_e2e_g05",
+    "ecomesh_xy1": REPO / "sats/training/runs/size_input_material/sizeA_ecomesh_xy1_fold3_e2e_g05",
+    "ecomesh_xy0p5_final": REPO / "sats/training/runs/size_input/ecomesh_xy0p5_sizeinput_val_d5t10_d10t3",
 }
 
 

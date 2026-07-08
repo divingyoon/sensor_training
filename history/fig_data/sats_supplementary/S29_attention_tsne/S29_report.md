@@ -1,5 +1,7 @@
 # FigS29 — self-attention 해석성 (t-SNE)
 
+> **2026-07-08 A 갱신**: **A(크기 입력) 모델**(`runs/size_input_material/sizeA_*`, final=`runs/size_input/`)로 재생성. attention 특징은 FiLM(크기 조건) 이전 단계라 결과는 크기 입력과 무관 → 해석·논지 동일.
+
 논문 FigS29 대응. 한 감지 유닛(node)의 인코딩 feature를 **self-attention 모듈 전/후**로 각각
 t-SNE 2D 축소하고 press 위치로 색을 매핑한다.
 
