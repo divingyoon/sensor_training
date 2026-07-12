@@ -161,6 +161,8 @@ $$ \mathbf{p}_{\text{raw}}(\text{contact},\kappa) \approx \underbrace{\mathbf{p}
 ---
 
 ## 7. Experiment / Data Checklist (2026-07-12 갱신 — 폴더 = §6 매핑, `PROJECT_STRUCTURE.md` 참조)
+
+> **투고 로드맵 마스터 = `SUBMISSION_CHECKLIST.md`** (기여별 상태·P0 critical path·결정사항 D1~D4·§9 수치 확보 현황·실행 순서). 아래는 취득 항목 요약.
 - **Fig.2:** [x] 인덴터/지그 제작(원형 d5/10/15, 사각 5/10/15 fillet2) · [x] 소재별 중앙점·baseline % 시각화 · [x] 인덴터별(d5·d10)·소재별 CSV 변환+패널 A/B/C 생성(→ `fig2_material_ablation/Analysis_Results/Fig2_report.md`) · [x] **소재별 SATS 학습 비교(패널 D)** — 크기입력(A) 모델, d10_rel ecomesh 0.182 < eco20 0.259 < eco50 0.336(→ `fig2_material_ablation/panelD_sats/`) · [ ] molding 변경·아랫면 소재 통일 · [ ] 소재별 3 set 반복(통계 강건성)
 - **Fig.3:** [x] ecomesh flat SR(xy0.5 13 trial 취득·A 모델 학습·패널 완료 → `fig3_sats_bending/flat_sr/`) · [ ] **각도별 bending baseline 10 set(jig, 무하중, signed deg)** — 취득 스펙 `fig3_sats_bending/bending/README.md`, 코드 `sats/bending/`(Phase 0 완료) · [ ] 밴딩+접촉 세트(대표 각도, xy0.5 프로토콜) · [ ] 곡률 회귀 MAE/R²(P1) · [ ] flat vs bent SR 보정 전/후 비교(P3)
 - **Fig.4:** [ ] 로봇핸드+센서 실시간 데모 · [ ] 사람 손 곡면 부착 데모

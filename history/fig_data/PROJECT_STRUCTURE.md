@@ -81,10 +81,6 @@
 시각화: visualizing_scripts/* → fig2/fig3/supplementary 폴더 PNG + report
 ```
 
-## 다음 할 일 (2026-07-12 기준)
+## 다음 할 일
 
-1. **Fig.3 밴딩 데이터 취득** — 스펙: `fig3_sats_bending/bending/README.md` (signed deg, 밴딩-only + 밴딩+접촉) → `sats/bending` P1→P4.
-2. 저force d10 반복취득(xy0.5 동일 프로토콜) — d10 magnitude 개선의 유일한 남은 해법.
-3. 다점(2·3점) zero-shot 테스트 취득 — SATS 논문 Fig4E 재현용(재학습 불필요).
-4. Fig.1 컨셉 일러스트, Fig.4 데모.
-5. Fig.2: molding 변경·아랫면 소재 통일 후 소재별 3 set 반복(통계 강건성).
+**→ `SUBMISSION_CHECKLIST.md`** (투고 로드맵 마스터 — P0 critical path = 밴딩 취득→P1~P4→Fig.3, 결정 필요 D1~D4, §9 수치 확보 현황 포함).
