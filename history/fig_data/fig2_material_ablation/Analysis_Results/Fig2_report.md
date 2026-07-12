@@ -104,9 +104,34 @@
 ## 한계 & 남은 작업
 
 - **σ_prop의 저SNR 취약성**: peak이 낮은 소재(d5 eco20)는 σ가 노이즈로 inflated(절대 floor 0.5%로 0 퇴화는 해소했으나 d5 eco20 σ는 여전히 높게 나옴) → 확산 판단은 d10 + active·entropy 로. 향후 SNR metric 추가로 eco50의 "포화/SNR 손실" 주장 직접 입증 권장.
-- **단일 세트**: 소재·지름당 1 test. 통계적 강건성 위해 3 set 반복(§7 체크리스트) 후 평균·분산 보고 필요.
+- ~~**단일 세트**~~ → **해소(2026-07-13)**: 3-set 통계판 완료, 아래 '3-set 통계' 절 참조.
 - **패널 (D) 미진행**: 소재별 SATS 학습 RMSE/R² 비교는 `sensor_training/sats` 모델 학습이 필요 → 별도 진행. 완료 시 본 보고서에 추가.
 - **인덴터 확장**: 논문 §6은 d15·사각(fillet2)도 명시 → 데이터 변환·동일 파이프라인 적용 가능(`DATASETS`에 추가).
+
+
+---
+
+## 3-set 통계 (2026-07-13 추가 — 체크리스트 §2.4, D2)
+
+소재·인덴터당 **3 반복 세트 전체**를 `.bin→CSV` 변환 후 동일 메트릭으로 재계산
+(`visualizing_scripts/xy_1mm/generate_panelC_3set.py` → `Analysis_Results/{d5,d10}/Fig2C_metrics_3set.{png,csv}`,
+막대=3-set 평균, 오차막대=set간 std(n=3), 점=개별 set).
+
+**결과: set 간 재현성이 매우 높음(변동계수 <2%) → 기존 1-set 결론 전부 유지.**
+
+| d10 (3-set 평균±std) | eco20 | eco50 | ecomesh |
+|---|---|---|---|
+| Total \|ΔS\| (%) | 68.2±1.1 | **112.2±0.3** | 101.1±0.6 |
+| Active taxels (N) | 4.81±0.06 | 6.17±0.03 | **6.82±0.08** |
+| Propagation σ (mm) | 2.81±0.01 | **3.61±0.00** | 3.54±0.03 |
+| Entropy H_norm | 0.24±0.00 | **0.35±0.00** | 0.33±0.00 |
+
+d5도 동일 경향(eco20 Total 13.3±0.03·Active 1.37 ≪ eco50 25.5±0.1·3.73 ≈ ecomesh 24.2±0.1·**3.94**).
+C1 논지 재확인: **ecomesh = active taxel 최다(수용장 중첩 최대) + eco50급 민감도 유지, eco20 undersampling**.
+
+**캐빗 (taxel health, `taxel_health_3set.csv`)**: eco50 d5 는 3세트 모두 dead 채널 존재
+(test1 Skin16 / test2 Skin1·2 / test3 Skin1) → eco50 d5 의 Active·σ 는 약간 과소평가일 수 있음.
+d10 은 전 세트 dead 없음 — 소재 비교의 주지표(d10)는 깨끗함.
 
 ---
 

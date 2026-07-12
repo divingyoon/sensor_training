@@ -21,7 +21,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-REPO = r"C:/Users/yky56/OneDrive/Desktop/fig_data"
+# fig_data 루트를 파일 위치 기준으로 해석(환경 무관: 구 Windows 절대경로 하드코딩 제거)
+REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 BASE = os.path.join(REPO, "fig2_material_ablation/xy_1mm")
 OUT_ROOT = os.path.join(REPO, "fig2_material_ablation/Analysis_Results")  # 출력 일원화(2026-06-25): 데이터 폴더 곁
 

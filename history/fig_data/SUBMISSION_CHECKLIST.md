@@ -51,9 +51,10 @@
 - [ ] 패널 (B)~(E) ← 2.2 산출물
 - [x] flat 기준 패널 (`flat_sr/final_xy0p5/`, A 모델)
 
-### 2.4 Fig.2 3-set 통계 재분석 (D2 확정 — 취득 불필요, 분석만)
-- [ ] 소재별 나머지 test 폴더 `.bin→CSV` 변환 (`skin_ws/acquisition_code/convert_bins.py`)
-- [ ] Fig.2 B/C를 3-set 평균±std로 재생성 (수용장·메트릭 오차막대) → report 갱신
+### 2.4 Fig.2 3-set 통계 재분석 (D2 확정 — 취득 불필요, 분석만) ✅ 2026-07-13 완료
+- [x] 소재별 나머지 test 폴더 10개 `.bin→CSV` 변환 (18/18 세트 CSV 확보)
+- [x] Fig.2C 3-set 평균±std 재생성 (`generate_panelC_3set.py` → `Fig2C_metrics_3set.{png,csv}` + taxel health)
+  — **set간 재현성 매우 높음(CV<2%), 기존 결론 유지**. 캐빗: eco50 d5 전 세트 dead 채널 1~2개(d10은 깨끗)
 
 ---
 
@@ -94,7 +95,7 @@
 | Flat SR 상대 RMSE | 최종(A): d5_rel **0.188** / d10_rel 0.749(저force magnitude 잔존) | ✅ `experiments_archive/sizeA_final_xy0p5_diag/` (§3.4 보강으로 개선 여지) |
 | SR scale factor | **≈105×** (41²/16; 다해상도 27×~2525× 안정 실증) | ✅ `supplementary/summary_metrics/` + `d5_final/` |
 | 소재별 SR 비교 | d10_rel **ecomesh 0.182 < eco20 0.259 < eco50 0.336** · loc **0.79 < 1.02 < 1.27 mm** | ✅ `fig2_material_ablation/panelD_sats/` |
-| 소재별 ΔS·확산·active taxel | §9.1 표 확보 (d5/d10) — 3-set 오차막대는 §2.4 | ✅/🔄 `fig2_material_ablation/Analysis_Results/Fig2_report.md` |
+| 소재별 ΔS·확산·active taxel | §9.1 표 확보 + **3-set 평균±std 완료**(CV<2%, 결론 유지) | ✅ `fig2_material_ablation/Analysis_Results/Fig2_report.md` |
 | **곡률 추정 MAE(°)/R²** | — | ⬜ P0 §2.2 |
 | **Bent SR 보정 전/후 RMSE/R²·저하폭** | — | ⬜ P0 §2.2 |
 | 다중 접점 분리 / 동적(슬립) 지표 | — | ⬜ P1 §3.1 (zero-shot) |

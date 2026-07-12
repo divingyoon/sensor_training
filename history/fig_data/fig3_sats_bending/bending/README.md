@@ -1,6 +1,11 @@
 # Fig.3 밴딩 파트 — 데이터 취득 준비 (논문 §6 Fig.3 B–E)
 
-> 상태: **데이터 취득 대기** (코드 Phase 0 완료 — `sats/bending/README.md` 참조).
+> 상태: **데이터 취득 대기** (코드 Phase 0 + **합성 리허설 완료** — `rehearsal/rehearsal_report.md`).
+> 리허설 결과(2026-07-13, `scripts/rehearse_bending_pipeline.py`): P1 deg MAE 0.77°(밴딩-only) ·
+> P2 오프셋 제거율 98.5% · P3 동결 SATS(A, size 전달) 출력 회복률 97.8%.
+> 발견 2건 수정/문서화: ①pipeline size 미전달 버그 fix ②B안 e2e 학습 시 cudnn RNN backward 제약
+> (`torch.backends.cudnn.flags(enabled=False)` 필요). ⚠️ 밴딩+접촉 혼합 시 deg MAE 16.8°로 저하
+> (밴딩-only 학습 estimator 기준) — 실데이터 사전검증 항목 그대로 유효.
 > 목표: flat 학습 SATS를 동결한 채, 밴딩 baseline에서 곡률(signed deg)을 자가 추정하고
 > flat 등가 신호를 복원해 밴딩 상태에서도 SR을 유지 (논문 C2).
 
