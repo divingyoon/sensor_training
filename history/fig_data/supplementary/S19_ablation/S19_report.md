@@ -1,6 +1,6 @@
 # S19 / Table S2 — Ablation study (ecomesh, xy 1 mm)
 
-> **2026-07-08 A 갱신**: 변형들을 **A(크기 입력) 베이스**로 재학습(`scratchpad_run_ablation_A.py` → `runs/ablation_ecomesh_A/`), full = `sizeA_ecomesh_xy1_fold3`. A 결과 overall_rel: **noAttention 0.403 > noLSTM 0.352 > noCNN 0.186 ≈ full 0.189** → attention 최핵심·LSTM 핵심, CNN 기여는 이 홀드아웃에선 미미. 해석 방법 동일.
+> **2026-07-08 A 갱신**: 변형들을 **A(크기 입력) 베이스**로 재학습(`scripts/scratchpad_run_ablation_A.py` → `runs/ablation_ecomesh_A/`), full = `sizeA_ecomesh_xy1_fold3`. A 결과 overall_rel: **noAttention 0.403 > noLSTM 0.352 > noCNN 0.186 ≈ full 0.189** → attention 최핵심·LSTM 핵심, CNN 기여는 이 홀드아웃에선 미미. 해석 방법 동일.
 
 논문 FigS19 / Table S2 대응. SATS의 각 모듈(LSTM·self-attention·CNN)을 제거한 변형을
 **동일 데이터·split(ecomesh_xy1 fold3)**로 재학습해 기여도를 비교.
@@ -10,7 +10,7 @@
   - noLSTM: LSTM → 비순환 통계 인코더(mean/max/last + 선형)
   - noAttention: self-attention 출력을 0 (이웃 정보 집계 제거)
   - noCNN: CNN refiner 생략 (merged_map 을 최종 출력)
-- 각 변형 50 epoch 재학습(`scratchpad_run_ablation.py`), full = 기존 ecomesh_xy1 fold3.
+- 각 변형 50 epoch 재학습(`scripts/scratchpad_run_ablation.py`), full = 기존 ecomesh_xy1 fold3.
 
 ## 결과 (상대오차, 낮을수록 좋음)
 
@@ -28,7 +28,7 @@
 ## 코드 (재현)
 ```bash
 # 1) ablation 재학습 (noLSTM/noAttention/noCNN)
-.venv/bin/python scratchpad_run_ablation.py
+.venv/bin/python scripts/scratchpad_run_ablation.py
 # 2) 진단 평가 (full + 3 ablation)
 .venv/bin/python -m sats.tools.eval_diagnostics --no-fig \
     --run-dirs sats/training/runs/xy1_material_d5d10/xy1_d5d10_ecomesh_xy1_fold3_e2e_g05 \

@@ -7,6 +7,16 @@ XY heatmap, contact 기준 Z/Fz 회귀를 실험하는 workspace입니다.
 `learning_data`로 정리한 뒤 `sats` 학습을 돌리는 흐름입니다. 기존
 CSV/Zarr 기반 `hitmap` 경로는 XY/Z/Fz 회귀 실험용으로 유지됩니다.
 
+## 현재 상태 (2026-07-12)
+
+- **최종 모델 = `train_e2e` + 인덴터 크기 입력(A, FiLM conditioning)**. β GT 보정은 인프라만 보존(무이득 확정).
+  소재 서열(d10 상대오차): **ecomesh 0.182 < eco20 0.259 < eco50 0.336** / 위치오차 ecomesh_xy1 0.79 mm.
+- 데이터: xy1 소재 3종(각 6 trial) + ecomesh xy0.5(13 trial) 병합 완료. 진단은 `sats/tools/eval_diagnostics.py`.
+- **밴딩 보상 모듈** `sats/bending/` Phase 0 완료 — 데이터 취득 대기.
+- **논문 워크스페이스 = `history/fig_data/`** (Figure·분석·투고 로드맵). 진행 관리:
+  `history/fig_data/SUBMISSION_CHECKLIST.md` · 구조 색인: `history/fig_data/PROJECT_STRUCTURE.md`.
+- 실험 러너·검증 스크립트는 `scripts/` (구 루트 scratchpad_* — `scripts/README.md` 참조).
+
 ## Current Official SATS Flow
 
 ```text
@@ -219,27 +229,32 @@ Use this report to confirm that each trial reaches the expected `2.5 mm` d5
 depth, has comparable force distribution, covers all `41 x 41` XY points, and
 does not have abnormal sequence lengths or missing streams.
 
-## Current mk555 d5 Dataset
+## Current Dataset (2026-07 기준)
 
-As of 2026-06-09, the current SATS d5 learning data contains:
-
-```text
-ecomesh_d5_z2.5_test1
-ecomesh_d5_z2.5_test2
-```
-
-Both trials have been checked for SATS training alignment:
+`learning_data/sensor_raw_bin` 병합 완료 31 trials:
 
 ```text
-test1 on-grid rows = 2,743,978 = GT rows
-test2 on-grid rows = 2,743,016 = GT rows
-trial count        = 2
-sequence count     = 3,362  # 1,681 XY points per trial
+eco20_xy1   : d5 x3 + d10 x3  (6)
+eco50_xy1   : d5 x3 + d10 x3  (6)   # d10 test3 loadcell tare 교정됨 (retare_meta_cache)
+ecomesh_xy1 : d5 x3 + d10 x3  (6)
+ecomesh_xy0p5 : d5 x10 + d10 x3 (13)  # 최종 모델 학습 데이터
 ```
 
-GT peak positions match the row `(x_mm, y_mm)` coordinates in sampled checks.
+GT meta cache: `learning_data/gt_meta_cache_xy_d5d10_g05` (31개 + manifest, grid-step 0.5).
+trial 번호 추적: `learning_data/trial_registry.json`, controlled 비교용 인덱스: `learning_data/trial_indices/`.
 
-## SATS Training
+## SATS Training (현행 = train_e2e + 크기입력 A)
+
+현행 학습은 **`train_e2e` 단일 커맨드** (위 on-the-fly GT 예시 참조)에
+`--use-indenter-size-input`(A)을 켠 구성이 최종이다. 현행 run:
+
+```text
+sats/training/runs/size_input/           # 최종 flat 모델 (ecomesh xy0.5)
+sats/training/runs/size_input_material/  # 소재 비교 대표 fold (eco20 f2 / eco50 f1 / ecomesh f3)
+```
+
+재현 러너는 `scripts/`(예: `scratchpad_rollout_A.sh`), 진단·figure 재생성은
+`sats/tools/eval_diagnostics.py` + `history/fig_data/visualizing_scripts/`.
 
 Default training follows the paper-style SATS data contract:
 
@@ -257,59 +272,16 @@ only for the older peak-map experiment:
 old mode: sensor_seq [B, 1000, 16] -> peak pressure map [B, 41, 41]
 ```
 
-Smoke test:
+### Legacy: 4단계 분리 학습 (train_lstm → attention → local_map → cnn)
+
+초기 재현용으로 유지되는 단계별 파이프라인이다. 현행 실험은 모두 `train_e2e`를 사용한다.
 
 ```bash
-python3 -m sats.training.train_lstm \
-  --run-name smoke_lstm_window10 \
-  --epochs 1 \
-  --batch-size 256 \
-  --num-workers 0 \
-  --device cuda
-```
-
-Recommended LSTM training on RTX 4090:
-
-```bash
-python3 -m sats.training.train_lstm \
-  --run-name lstm_d5_test12_window10_bs2048 \
-  --epochs 50 \
-  --batch-size 2048 \
-  --num-workers 2 \
-  --device cuda
-```
-
-Why `batch-size=2048`: window mode transfers only one `[41,41]` target map per
-sample instead of a full `[1000,41,41]` GT sequence, so the 4090 has enough VRAM
-headroom. Keep `num-workers=2` as the default while the dataset grows to 10
-sets; more workers can increase mmap/RAM pressure without improving epoch time.
-
-Continue the staged SATS pipeline:
-
-```bash
-python3 -m sats.training.train_attention \
-  --lstm-ckpt sats/training/runs/lstm_d5_test12_window10_bs2048/best_model.pt \
-  --run-name attn_d5_test12_window10_bs2048 \
-  --epochs 50 \
-  --batch-size 2048 \
-  --num-workers 2 \
-  --device cuda
-
-python3 -m sats.training.train_local_map \
-  --attn-ckpt sats/training/runs/attn_d5_test12_window10_bs2048/best_model.pt \
-  --run-name local_map_d5_test12_window10_bs2048 \
-  --epochs 50 \
-  --batch-size 2048 \
-  --num-workers 2 \
-  --device cuda
-
-python3 -m sats.training.train_cnn \
-  --local-map-ckpt sats/training/runs/local_map_d5_test12_window10_bs2048/best_model.pt \
-  --run-name cnn_d5_test12_window10_bs2048 \
-  --epochs 50 \
-  --batch-size 2048 \
-  --num-workers 2 \
-  --device cuda
+# 예시 (legacy): 단계별 학습 체인
+python3 -m sats.training.train_lstm      --run-name lstm_run --epochs 50 --batch-size 2048 --device cuda
+python3 -m sats.training.train_attention --lstm-ckpt sats/training/runs/lstm_run/best_model.pt --run-name attn_run ...
+python3 -m sats.training.train_local_map --attn-ckpt sats/training/runs/attn_run/best_model.pt --run-name local_run ...
+python3 -m sats.training.train_cnn       --local-map-ckpt sats/training/runs/local_run/best_model.pt --run-name cnn_run ...
 ```
 
 Batch tuning rule for 2 to 10 sets:
@@ -333,7 +305,9 @@ utilization stays fixed at 90%.
 ## Directory Map
 
 - `skin_ws/`: raw acquisition archive, node files, acquisition scripts.
-- `learning_data/`: managed SATS merged BIN and GT workspace.
-- `sats/`: SATS preprocessing, GT generation, training, and references.
-- `hitmap/`: Zarr/heatmap/Z-Fz experimental training pipelines.
-- `history/`: dated implementation and experiment notes.
+- `learning_data/`: managed SATS merged BIN and GT meta cache workspace (대용량, git-ignored).
+- `sats/`: SATS preprocessing, GT generation, training(e2e+A), inference, tools(eval_diagnostics), **bending/**(밴딩 보상 모듈).
+- `scripts/`: 실험 러너·검증 스크립트 (구 루트 scratchpad_* — `scripts/README.md`).
+- `history/fig_data/`: **논문 워크스페이스** — Figure(fig1~4)·supplementary·experiments_archive·투고 체크리스트.
+- `hitmap/`: Zarr/heatmap/Z-Fz experimental training pipelines (legacy, 데이터 컨트랙트 다름).
+- `cnn_lstm/`: 사이드 프로젝트.

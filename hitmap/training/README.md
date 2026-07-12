@@ -1,8 +1,8 @@
 # Hitmap Training Pipeline
 
-이 README는 legacy/experimental `hitmap` 학습 경로를 설명한다. 현재 대화에서 정리한
-SATS 학습은 `learning_data`의 merged BIN과 pressure-map GT를 사용하는 별도 경로이며,
-권장 실행은 `python3 -m sats.training.train_lstm --seq-len 1000 ...`에서 시작한다.
+이 README는 legacy/experimental `hitmap` 학습 경로를 설명한다. 현재 공식
+SATS 학습은 `learning_data`의 merged BIN과 on-the-fly GT를 사용하는 별도 경로이며,
+현행 엔트리는 `python3 -m sats.training.train_e2e`(+인덴터 크기 입력 A)다.
 SATS의 DUE/loadcell 200 Hz 정렬, EtherMotion 고정밀 보간, `test1/test2` row alignment,
 GPU batch 권장은 [`sats/README.md`](../../sats/README.md)를 기준으로 본다.
 

@@ -42,6 +42,6 @@ force 구간별로도 미세 등락뿐(0.25–0.5N 상대 1.74→1.57 소폭↓,
 
 ## 코드 (재현)
 ```bash
-bash scratchpad_rerun_all.sh   # eco50 재학습 + ecomesh pooled + diag + figure 재생성
+bash scripts/scratchpad_rerun_all.sh   # eco50 재학습 + ecomesh pooled + diag + figure 재생성
 .venv/bin/python history/fig_data/visualizing_scripts/figure_set/verify_d10_magnitude.py  # d10 magnitude 검증
 ```

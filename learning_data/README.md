@@ -8,25 +8,17 @@ read only the artifacts collected here.
 
 ```text
 learning_data/
-├── sensor_raw_bin/
-│   └── ecomesh/
-│       └── d5/
-│           └── z_2.5mm/
-│               ├── test1/
-│               │   ├── ecomesh_d5_z2.5_test1_merged.bin
-│               │   ├── ecomesh_d5_z2.5_test1_baseline.json
-│               │   └── ecomesh_d5_z2.5_test1_merge_summary.json
-│               └── test2/
-│                   ├── ecomesh_d5_z2.5_test2_merged.bin
-│                   ├── ecomesh_d5_z2.5_test2_baseline.json
-│                   └── ecomesh_d5_z2.5_test2_merge_summary.json
-├── gt/
-│   ├── ecomesh_d5_z2.5_test1_targets.npy
-│   ├── ecomesh_d5_z2.5_test1_gt_meta.json
-│   ├── ecomesh_d5_z2.5_test2_targets.npy
-│   ├── ecomesh_d5_z2.5_test2_gt_meta.json
-│   └── dataset_index.json
-├── trial_registry.json
+├── sensor_raw_bin/                    # 병합 BIN (31 trials, git-ignored)
+│   ├── eco20_xy1/{d5,d10}/testN/      # 각 3 rep
+│   ├── eco50_xy1/{d5,d10}/testN/      # 각 3 rep (d10 test3 = tare 교정됨, .bak 보존)
+│   ├── ecomesh_xy1/{d5,d10}/testN/    # 각 3 rep
+│   └── ecomesh_xy0p5/{d5,d10}/testN/  # d5 10 + d10 3 (최종 모델 학습 데이터)
+│       └── testN/ *_merged.bin · *_baseline.json · *_merge_summary.json
+├── gt_meta_cache_xy_d5d10_g05/        # ★ 현행 GT meta cache (31개 + manifest, grid 0.5)
+├── trial_indices/                     # controlled 비교용 curated dataset_index.json
+│   └── {eco50_xy1, ecomesh_xy1_common, ecomesh_xy0p5_common, ecomesh_pool_d10, ...}
+├── gt/                                # legacy dense GT (*_targets.npy) — 현행은 on-the-fly
+├── trial_registry.json                # testN 고정 매핑 (tracked)
 └── README.md
 ```
 
@@ -53,33 +45,18 @@ python3 sats/preprocessing/prepare_learning_data.py --dry-run --stage all
 The script creates trial-level merged BIN files and GT files. Full CSV export is
 optional and should be avoided unless debugging.
 
-## Current Trials
-
-The current `eco20 + mesh` d5 archive has been mapped to:
+## Current Trials (2026-07 기준, 31 trials)
 
 ```text
-skin_ws/raw_data/sats/eco20 + mesh/d5/test1
-  -> ecomesh_d5_z2.5_test1
-
-skin_ws/raw_data/sats/eco20 + mesh/d5/test2
-  -> ecomesh_d5_z2.5_test2
+eco20_xy1     : d5 test1-3, d10 test1-3
+eco50_xy1     : d5 test1-3, d10 test1-3   # d10 test3 loadcell 영점 -2.269N → retare_meta_cache 로 교정
+ecomesh_xy1   : d5 test1-3, d10 test1-3
+ecomesh_xy0p5 : d5 test1-10, d10 test1-3
 ```
 
-Verified row alignment:
-
-```text
-test1 merged rows  = 2,743,979
-test1 on-grid rows = 2,743,978
-test1 GT rows      = 2,743,978
-
-test2 merged rows  = 2,743,017
-test2 on-grid rows = 2,743,016
-test2 GT rows      = 2,743,016
-```
-
-The one-row difference comes from the off-grid row dropped during GT generation
-and SATS dataset loading. The drop policy is consistent, so training row
-indices map 1:1 to GT rows.
+취득 프로토콜 차이(중요): **xy0.5 = 계단식 느린 하강**(고force), **xy1 = straight press**(저force).
+점탄성 때문에 두 프로토콜은 사실상 다른 도메인 — pooling 이득 없음이 실증됨
+(`history/fig_data/experiments_archive/pool_diag/pool_result.md`).
 
 ## Alignment Principles
 

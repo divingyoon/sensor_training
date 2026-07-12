@@ -48,7 +48,7 @@
 ## 재현 (코드)
 ```bash
 # 학습(다해상도): 1.0/0.5/0.25
-bash scratchpad_d5_multires.sh
+bash scripts/scratchpad_d5_multires.sh
 # 0.1mm (AMP 필수): --grid-step-mm 0.1 --use-amp --num-workers 8 (README 상단 표 참조)
 # 진단 재덤프
 .venv/bin/python -m sats.tools.eval_diagnostics --run-dirs <runs> --out-dir <this dir> --dump-samples --no-fig
