@@ -26,7 +26,7 @@ RUNS = [
     ("0.25mm (410x)", REPO / "sats/training/runs/d5_only_multires/d5only_beta_g0p25"),
     ("0.1mm (2525x)", REPO / "sats/training/runs/d5_only_multires/d5only_beta_g0p1"),
 ]
-OUT = REPO / "history/fig_data/sats_experiments/d5_multires_diag/d5_SR_progression.png"
+OUT = REPO / "history/fig_data/experiments_archive/d5_multires_diag/d5_SR_progression.png"
 TARGET_FZ = 3.0   # 대표 힘(N): 이 근처의 중앙 접촉 샘플 선택
 
 

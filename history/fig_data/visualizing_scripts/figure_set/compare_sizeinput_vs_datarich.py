@@ -24,7 +24,7 @@ from sats.training.dataset import build_dataloaders  # noqa: E402
 
 DATARICH = REPO / "sats/training/runs/datarich_probe/ecomesh_xy0p5_datarich_val_d5test10_d10test3"
 SIZEIN = REPO / "sats/training/runs/size_input/ecomesh_xy0p5_sizeinput_val_d5t10_d10t3"
-OUT = REPO / "history/fig_data/sats_experiments/pool_diag/compare_sizeinput_vs_datarich.png"
+OUT = REPO / "history/fig_data/experiments_archive/pool_diag/compare_sizeinput_vs_datarich.png"
 FORCE_BINS = [(0.1, 0.4), (0.4, 0.8), (0.8, 1.3), (1.3, 2.2)]
 
 

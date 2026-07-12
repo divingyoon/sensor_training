@@ -73,6 +73,6 @@ for lab, i in rows:
     r += 1
 fig.suptitle("xy0.5 final — d10 추론 검증 (GT vs Pred): 형태 일치하면 지표 문제, 어긋나면 진짜 약함", fontsize=11)
 fig.tight_layout()
-out = REPO / "history/fig_data/sats_experiments/pool_diag/verify_d10_final.png"
+out = REPO / "history/fig_data/experiments_archive/pool_diag/verify_d10_final.png"
 fig.savefig(out, dpi=140, bbox_inches="tight")
 print("saved:", out)

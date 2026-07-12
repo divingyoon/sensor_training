@@ -6,8 +6,11 @@ logs. The current production path is:
 ```text
 skin_ws/raw_data/**/*raw*.bin
   -> learning_data/sensor_raw_bin/**/*_merged.bin
-  -> learning_data/gt/*_targets.npy
+  -> learning_data/gt_meta_cache_xy_d5d10_g05/   # 현행: compact meta cache + GPU on-the-fly GT
 ```
+
+(legacy: dense `learning_data/gt/*_targets.npy` — precomputed 모드에서만 사용.
+`generate_gt.py`에는 β(p) 물성보정 `compute_beta`가 있으나 기본 off.)
 
 CSV export and CSV-based preprocessing are retained for inspection and legacy
 experiments, but current SATS pressure-map training should use merged BIN files.

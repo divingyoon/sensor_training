@@ -21,8 +21,8 @@ from pathlib import Path
 import pandas as pd
 
 # ── 상수 ────────────────────────────────────────────────────────────────────
-ROOT_DEFAULT = Path(__file__).resolve().parent.parent / "fig2_heatmap" / "CenterLine"
-OUT_DEFAULT  = Path(__file__).resolve().parent.parent / "fig2_heatmap" / "consolidated.csv"
+ROOT_DEFAULT = Path(__file__).resolve().parent.parent / "fig2_material_ablation" / "CenterLine"
+OUT_DEFAULT  = Path(__file__).resolve().parent.parent / "fig2_material_ablation" / "consolidated.csv"
 
 # loading phase z 간격 (mm) — 변경 가능
 LOADING_Z_STEP_MM = 0.5

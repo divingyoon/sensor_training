@@ -17,11 +17,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[4]
-OUT_DIR = REPO / "history/fig_data/sats_supplementary/summary_metrics"
+OUT_DIR = REPO / "history/fig_data/supplementary/summary_metrics"
 # A(indenter-size input) 최종 모델 진단. β는 배제(무이득), 크기입력만.
-DIAG_XY1 = REPO / "history/fig_data/sats_experiments/sizeA_diag/diag_summary.csv"
-DIAG_XY0P5 = REPO / "history/fig_data/sats_experiments/sizeA_final_xy0p5_diag/diag_summary.csv"
-LOC_CSV = REPO / "history/fig_data/sats_supplementary/S20_localization/loc_summary.csv"
+DIAG_XY1 = REPO / "history/fig_data/experiments_archive/sizeA_diag/diag_summary.csv"
+DIAG_XY0P5 = REPO / "history/fig_data/experiments_archive/sizeA_final_xy0p5_diag/diag_summary.csv"
+LOC_CSV = REPO / "history/fig_data/supplementary/S20_localization/loc_summary.csv"
 
 GRID_SIZE = 41            # virtual taxel 격자
 N_PHYSICAL = 16           # physical taxel 수

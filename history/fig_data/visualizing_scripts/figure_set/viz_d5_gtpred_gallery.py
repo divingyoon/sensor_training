@@ -25,7 +25,7 @@ from sats.training.dataset import build_dataloaders  # noqa: E402
 
 TAG = sys.argv[1] if len(sys.argv) > 1 else "g0p5"
 RUN = REPO / f"sats/training/runs/d5_only_multires/d5only_beta_{TAG}"
-OUT = REPO / f"history/fig_data/sats_experiments/d5_multires_diag/d5_gtpred_gallery_{TAG}.png"
+OUT = REPO / f"history/fig_data/experiments_archive/d5_multires_diag/d5_gtpred_gallery_{TAG}.png"
 FZ_LO, FZ_HI = 2.0, 5.0     # 뚜렷한 접촉 위해 중간~높은 force
 # 표면 3x3 영역 중심 (mm). 중앙 반드시 포함.
 REGIONS = [(-6, 6), (0, 6), (6, 6), (-6, 0), (0, 0), (6, 0), (-6, -6), (0, -6), (6, -6)]

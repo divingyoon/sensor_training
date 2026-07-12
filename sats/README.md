@@ -5,6 +5,12 @@ SATS maps the 16 physical pressure sensors of a sparse tactile array to a dense
 idea from *Super-resolution tactile sensor arrays with sparse units enabled by
 deep learning*, adapted to the current mk555 raw BIN data.
 
+> **현행 최종 구성 (2026-07-12)**: `train_e2e` + **인덴터 크기 입력(A, FiLM)** =
+> `--use-indenter-size-input`. β GT 보정(`gt_beta_*` config)은 인프라만 보존(기본 off, d5-only에서만 사용).
+> 출력 grid는 `--grid-step-mm`으로 자유(0.5 기본, 0.1까지 검증·AMP `--use-amp` 지원).
+> 진단 = `sats/tools/eval_diagnostics.py`(d5/d10 분리·상대오차·`--dump-samples`).
+> 밴딩 보상 프론트엔드 = `sats/bending/`(별도 README). 학습 환경은 반드시 `.venv`(RTX 5090).
+
 ## What This Pipeline Learns
 
 Current `sats.training` learns a **dense pressure-map GT**:
@@ -350,7 +356,7 @@ RAM pressure:  batch_size=1024, num_workers=1 or 0
 stable/idle:   batch_size=4096, num_workers=2
 ```
 
-## Staged SATS Training
+## Staged SATS Training (legacy — 현행은 train_e2e)
 
 ```bash
 python3 -m sats.training.train_attention \
@@ -386,17 +392,22 @@ sats/
 │   ├── prepare_learning_data.py
 │   ├── bin_merge.py
 │   ├── merged_bin.py
-│   └── generate_gt.py
+│   └── generate_gt.py            # β(p) 물성보정 포함(compute_beta, 기본 off)
 ├── training/
-│   ├── dataset.py
-│   ├── dataset_on_the_fly.py
-│   ├── train_lstm.py
-│   ├── train_attention.py
-│   ├── train_local_map.py
-│   └── train_cnn.py
+│   ├── config.py                 # ablate_*, use_indenter_size_input, use_amp, gt_beta_* 노브
+│   ├── cnn_module.py             # SATS 모듈(FiLM 크기 컨디셔닝 포함)
+│   ├── dataset.py / dataset_on_the_fly.py / gt_gpu.py
+│   ├── train_e2e.py              # ★ 현행 학습 엔트리 (end-to-end)
+│   ├── train_lstm/attention/local_map/cnn.py   # legacy 4단계
+│   ├── build_gt_meta_cache.py
+│   └── tests/                    # TDD (contract·GT·size-input·β 등)
 ├── tools/
+│   ├── eval_diagnostics.py       # ★ d5/d10 분리 진단 + --dump-samples
+│   ├── compare_sats_runs.py / analyze_taxel_rmse.py
+│   ├── retare_meta_cache.py      # loadcell 영점 교정 (eco50 test3 사례)
 │   └── analyze_raw_bins.py
-├── inference/
+├── bending/                      # ★ 밴딩 보상 프론트엔드 (Phase 0 — 자체 README)
+├── inference/                    # realtime 추론
 └── ref/
 ```
 

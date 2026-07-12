@@ -27,7 +27,7 @@ REPO = Path(__file__).resolve().parents[4]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-OUT_DIR = REPO / "history/fig_data/sats_supplementary/S20_localization"
+OUT_DIR = REPO / "history/fig_data/supplementary/S20_localization"
 CONTACT_HALF_MM = 9.75
 CONTACT_EPS = 1e-3  # GT peak 이 이보다 작으면 비접촉으로 제외
 

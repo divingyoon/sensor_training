@@ -33,7 +33,7 @@ ZC = 13.0           # mm 접촉 구간 시작(travel~12, onset~13.3) → penetra
 ZMAX = 14.0
 PEN_MAX = ZMAX - ZC  # 1.0 mm
 CENTRAL = ["Skin6", "Skin7", "Skin10", "Skin11"]
-OUT = os.path.join(g2.REPO, "fig2_heatmap", "hitmap")   # hitmap 전용 폴더(fig2_heatmap 안)
+OUT = os.path.join(g2.REPO, "fig2_material_ablation", "hitmap")   # hitmap 전용 폴더(fig2_material_ablation 안)
 os.makedirs(OUT, exist_ok=True)
 matplotlib.rcParams.update({"font.family": "DejaVu Sans", "axes.unicode_minus": False})
 

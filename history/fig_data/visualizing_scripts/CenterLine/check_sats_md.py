@@ -16,7 +16,7 @@ MD (Mahalanobis Distance):
 
 사용:
     python scripts/check_sats_md.py
-    python scripts/check_sats_md.py --data fig2_heatmap/sats_data/ecomesh/d5
+    python scripts/check_sats_md.py --data fig2_material_ablation/sats_data/ecomesh/d5
     python scripts/check_sats_md.py --data ... --out result.csv --stride 20
 """
 from __future__ import annotations
@@ -312,7 +312,7 @@ def print_report(active: pd.DataFrame, baseline: pd.Series) -> None:
 
 def main() -> None:
     here    = Path(__file__).resolve().parent
-    default = here.parent / "fig2_heatmap" / "sats_data" / "ecomesh" / "d5"
+    default = here.parent / "fig2_material_ablation" / "sats_data" / "ecomesh" / "d5"
 
     ap = argparse.ArgumentParser(description="sats_data MD 검사 (s5,s6,s9,s10)")
     ap.add_argument("--data",   type=Path, default=default,

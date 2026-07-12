@@ -10,7 +10,7 @@
 
 신호: per-press local baseline ΔS, 셀별 최대(=z_max 압입) 값. dead 채널(peak<1%)은 표기/제외.
 
-출력: fig2_heatmap/hitmap/
+출력: fig2_material_ablation/hitmap/
 """
 import os
 import numpy as np
@@ -24,7 +24,7 @@ import generate_2d_heatmap as g2
 ORDER = ["eco20", "eco50", "ecomesh"]
 LABEL = {"eco20": "eco20", "eco50": "eco50", "ecomesh": "ecomesh (mesh20)"}
 SK = g2.SKIN_COLS
-OUT = os.path.join(g2.REPO, "fig2_heatmap", "hitmap")
+OUT = os.path.join(g2.REPO, "fig2_material_ablation", "hitmap")
 os.makedirs(OUT, exist_ok=True)
 EXT = [g2.CENTERS[0], g2.CENTERS[-1], g2.CENTERS[0], g2.CENTERS[-1]]
 matplotlib.rcParams.update({"font.family": "DejaVu Sans", "axes.unicode_minus": False})

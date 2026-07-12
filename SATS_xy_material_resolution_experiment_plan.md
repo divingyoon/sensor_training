@@ -241,14 +241,14 @@ done
 ### 5.3 결과 수집
 
 ```bash
-mkdir -p history/fig_data/sats_experiments/xy1_material_d5d10
+mkdir -p history/fig_data/experiments_archive/xy1_material_d5d10
 
 RUN_DIRS=$(find sats/training/runs/xy1_material_d5d10 \
   -mindepth 1 -maxdepth 1 -type d | sort)
 
 python3 -m sats.tools.compare_sats_runs \
   --run-dirs $RUN_DIRS \
-  --out history/fig_data/sats_experiments/xy1_material_d5d10/summary_by_run.csv
+  --out history/fig_data/experiments_archive/xy1_material_d5d10/summary_by_run.csv
 ```
 
 taxel-wise RMSE maps:
@@ -256,7 +256,7 @@ taxel-wise RMSE maps:
 ```bash
 python3 -m sats.tools.analyze_taxel_rmse \
   --run-dirs $RUN_DIRS \
-  --out-dir history/fig_data/sats_experiments/xy1_material_d5d10/taxel_rmse
+  --out-dir history/fig_data/experiments_archive/xy1_material_d5d10/taxel_rmse
 ```
 
 ### 5.4 논문용 분석
@@ -358,18 +358,18 @@ done
 ### 6.3 controlled 결과 수집
 
 ```bash
-mkdir -p history/fig_data/sats_experiments/ecomesh_resolution_controlled_d5d10
+mkdir -p history/fig_data/experiments_archive/ecomesh_resolution_controlled_d5d10
 
 RUN_DIRS=$(find sats/training/runs/ecomesh_resolution_controlled_d5d10 \
   -mindepth 1 -maxdepth 1 -type d | sort)
 
 python3 -m sats.tools.compare_sats_runs \
   --run-dirs $RUN_DIRS \
-  --out history/fig_data/sats_experiments/ecomesh_resolution_controlled_d5d10/summary_by_run.csv
+  --out history/fig_data/experiments_archive/ecomesh_resolution_controlled_d5d10/summary_by_run.csv
 
 python3 -m sats.tools.analyze_taxel_rmse \
   --run-dirs $RUN_DIRS \
-  --out-dir history/fig_data/sats_experiments/ecomesh_resolution_controlled_d5d10/taxel_rmse
+  --out-dir history/fig_data/experiments_archive/ecomesh_resolution_controlled_d5d10/taxel_rmse
 ```
 
 ### 6.4 해석 기준
@@ -442,15 +442,15 @@ python3 -m sats.training.train_e2e \
 RUN_DIRS=$(find sats/training/runs/ecomesh_final_d5d10 \
   -mindepth 1 -maxdepth 1 -type d | sort)
 
-mkdir -p history/fig_data/sats_experiments/ecomesh_final_d5d10
+mkdir -p history/fig_data/experiments_archive/ecomesh_final_d5d10
 
 python3 -m sats.tools.compare_sats_runs \
   --run-dirs $RUN_DIRS \
-  --out history/fig_data/sats_experiments/ecomesh_final_d5d10/summary_by_run.csv
+  --out history/fig_data/experiments_archive/ecomesh_final_d5d10/summary_by_run.csv
 
 python3 -m sats.tools.analyze_taxel_rmse \
   --run-dirs $RUN_DIRS \
-  --out-dir history/fig_data/sats_experiments/ecomesh_final_d5d10/taxel_rmse
+  --out-dir history/fig_data/experiments_archive/ecomesh_final_d5d10/taxel_rmse
 ```
 
 ---
@@ -518,7 +518,7 @@ sats/training/runs/
 논문/분석 산출물:
 
 ```text
-history/fig_data/sats_experiments/
+history/fig_data/experiments_archive/
   xy1_material_d5d10/
     summary_by_run.csv
     summary_by_material.csv

@@ -1,7 +1,7 @@
 # SATS 논문 전 figure/분석 — 우리 데이터 기준 구현 가능성 판정
 
 기준 논문: *Super-resolution tactile sensor arrays with sparse units enabled by deep learning*
-우리 자산: 단일점 grid press (xy1 eco20/eco50/ecomesh, xy0p5 ecomesh · d5/d10 인덴터 · 23ch 센서+좌표+힘) · 학습된 e2e SATS · EHS형 GT 생성기(gpu_on_the_fly) · fig2_heatmap 소재특성 분석.
+우리 자산: 단일점 grid press (xy1 eco20/eco50/ecomesh, xy0p5 ecomesh · d5/d10 인덴터 · 23ch 센서+좌표+힘) · 학습된 e2e SATS · EHS형 GT 생성기(gpu_on_the_fly) · fig2_material_ablation 소재특성 분석.
 
 핵심 제약: **단일점 접촉 데이터만 보유**. 다점·형상·2점식별·키보드·로봇손 데이터 없음. 소재는 xy1 3종 + xy0p5 ecomesh.
 
@@ -11,12 +11,12 @@
 
 | 논문 | 내용 | 우리 산출물 |
 |---|---|---|
-| Fig4A | 대칭선 압력 프로파일(SR/수용영역 중첩) | `Fig3A_lineprofile_*` / `FinalA_*` |
-| Fig4B | 위치별 오차 3D 막대 | `Fig3D_poserror3d_*` |
-| Fig4C | 오차 히스토그램+KDE | `Fig3E_error_hist_*` |
-| Fig4D | force별 오차 | `Fig3F_force_error_*` |
-| FigS17 | 학습 후 추론 예시(GT/Pred) | `Fig3C_pressure3d_*` |
-| Fig3 B·E·G·H | 상대저항·수용영역·커버리지·중첩 | `fig2_heatmap/`(hitmap·coverage·overlap·centerline) |
+| Fig4A | 대칭선 압력 프로파일(SR/수용영역 중첩) | `Fig2D_A_lineprofile_*` / `FinalA_*` |
+| Fig4B | 위치별 오차 3D 막대 | `Fig2D_D_poserror3d_*` |
+| Fig4C | 오차 히스토그램+KDE | `Fig2D_E_error_hist_*` |
+| Fig4D | force별 오차 | `Fig2D_F_force_error_*` |
+| FigS17 | 학습 후 추론 예시(GT/Pred) | `Fig2D_C_pressure3d_*` |
+| Fig3 B·E·G·H | 상대저항·수용영역·커버리지·중첩 | `fig2_material_ablation/`(hitmap·coverage·overlap·centerline) |
 
 ## B. 기존 데이터로 즉시 구현 가능 (추가 취득·학습 불필요) ⭐
 
@@ -34,7 +34,7 @@
 |---|---|---|
 | **FigS30** | 좌표/힘 회귀 + localization scale factor(≈19547) | local-map 모듈 → 3층 MLP 회귀로 교체 후 재학습 (좌표·힘 GT 보유) |
 | FigS19(ablation) | noLSTM / noAttention / noCNN 비교 | 모듈 제거 변형 각각 재학습 |
-| Note S8/시뮬 | 순수 시뮬레이션 학습 | EHS GT로 sim-only 데이터 생성 후 학습 (생성기 이미 있음) |
+| ~~Note S8/시뮬~~ ✅ | 순수 시뮬레이션 학습 — **완료(2026-07-13)**: sim@sim 0.074 vs sim@real 1.109(전이 실패, 실측 필수 근거) | `supplementary/S8_sim_only/` |
 
 ## D. 추가 데이터 취득 필요 📥
 

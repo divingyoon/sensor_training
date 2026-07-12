@@ -31,7 +31,7 @@ RUNS = {
     "size+beta_gentle": REPO / "sats/training/runs/size_beta_gentle/ecomesh_xy0p5_sizebeta_gentle_val_d5t10_d10t3",
     "size+beta_physical": REPO / "sats/training/runs/size_beta_physical/ecomesh_xy0p5_sizebeta_physical_val_d5t10_d10t3",
 }
-OUT = REPO / "history/fig_data/sats_experiments/pool_diag/compare_three_ABbeta.png"
+OUT = REPO / "history/fig_data/experiments_archive/pool_diag/compare_three_ABbeta.png"
 FORCE_BINS = [(0.1, 0.4), (0.4, 0.8), (0.8, 1.3), (1.3, 2.2)]
 COLORS = {"datarich": "#8856a7", "size": "#e6550d", "size+beta": "#2ca25f",
           "size+beta_gentle": "#1f78b4", "size+beta_physical": "#d62728"}

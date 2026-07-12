@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Fig3G — force-matched d10 소재 비교 (분모 교란 제거).
+"""Fig2D_G(구 Fig3G) — force-matched d10 소재 비교 (분모 교란 제거).
 
 소재별 d10 상대오차는 검증셋의 force 분포(→target_rms=분모)에 좌우돼 직접 비교가 왜곡된다.
 force 구간별로 나눠 '같은 force 에서' 소재를 비교하면 교란 없이 소재 우열을 볼 수 있다.
 → 결과: eco-mesh 가 전 force 구간에서 d10 최상(최저 오차). 물리 직관(mesh 우수) 확증.
 
-입력: history/fig_data/sats_experiments/fig3_diag/samples_<run>.npz (대표 fold).
-산출: history/fig_data/fig3_sats and bending/Fig3G_forcematched_d10.png (2패널: 상대/절대).
+입력: history/fig_data/experiments_archive/fig3_diag/samples_<run>.npz (대표 fold).
+산출: history/fig_data/fig2_material_ablation/panelD_sats/xy1_material/Fig2D_G_forcematched_d10.png (2패널: 상대/절대).
 
 사용::
 
@@ -23,8 +23,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[4]
-DIAG = REPO / "history/fig_data/sats_experiments/fig3_diag"
-OUT = REPO / "history/fig_data/fig3_sats and bending"
+DIAG = REPO / "history/fig_data/experiments_archive/fig3_diag"
+OUT = REPO / "history/fig_data/fig2_material_ablation/panelD_sats/xy1_material"
 
 REP_RUN = {
     "eco20": "xy1_d5d10_eco20_xy1_fold2_e2e_g05",
@@ -91,11 +91,11 @@ def main() -> None:
         if metric_idx == 1:
             ax.legend(frameon=False, fontsize=9, title="material (d10)")
 
-    fig.suptitle("Fig3G — force-matched d10 material comparison "
+    fig.suptitle("Fig2D(G) — force-matched d10 material comparison "
                  "(Eco-mesh best at every force; bar=median, whisker=IQR)", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     OUT.mkdir(parents=True, exist_ok=True)
-    path = OUT / "Fig3G_forcematched_d10.png"
+    path = OUT / "Fig2D_G_forcematched_d10.png"
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
     print("saved:", path)

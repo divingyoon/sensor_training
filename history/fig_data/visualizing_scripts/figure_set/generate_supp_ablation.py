@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """S19 / Table S2 — ablation 비교. full SATS vs noLSTM/noAttention/noCNN.
 
-입력: history/fig_data/sats_supplementary/S19_ablation/diag_summary.csv
+입력: history/fig_data/supplementary/S19_ablation/diag_summary.csv
       (eval_diagnostics 로 4개 run 재평가한 결과).
 산출: S19_ablation/S19_ablation_ecomesh.png (overall/d5/d10 상대오차 막대).
 """
@@ -17,7 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[4]
-DIR = REPO / "history/fig_data/sats_supplementary/S19_ablation"
+DIR = REPO / "history/fig_data/supplementary/S19_ablation"
 
 # run 이름 → 표시 라벨 (표시 순서 = 성능 나쁜→좋은)
 LABELS = {

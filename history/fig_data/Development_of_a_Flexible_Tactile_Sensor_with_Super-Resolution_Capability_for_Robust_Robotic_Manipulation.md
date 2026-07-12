@@ -86,13 +86,13 @@ SR tactile sensing은 물리적 taxel 수를 늘리는 대신, 소수의 센싱 
 ### 4.2 3중층 구조(rationale 포함)
 3층으로 분리한 이유는 **압력 전달 / 센싱 / 기계적 지지**의 역할을 분리해 각각을 독립적으로 튜닝하기 위함이다(선행 논문 근거).
 
-| 층 | 구성(현재) | 두께 | 역할 |
+| 층 | 구성(확정, 2026-07-12) | 두께 | 역할 |
 |---|---|---|---|
-| **Top** | Ecoflex 20/50/20 + **mesh** | — | 외부 접촉 압력 수용 및 **인접 taxel로 분산(수용장 중첩 형성)** |
-| **Mid** | Ecoflex 20/45, **MEMS embedded** | 2 mm | 센싱 유닛(챔버)층 |
-| **Bot** | Ecoflex 20 | 1 mm | 베이스/기계적 지지·밀봉 |
+| **Top** | Ecoflex 00-20 **·** 00-50 **·** 00-20+**mesh**(ecomesh) 중 택1 — **소재 비교군(C1)** | — | 외부 접촉 압력 수용 및 **인접 taxel로 분산(수용장 중첩 형성)** |
+| **Mid** | Ecoflex 00-20, **MEMS embedded** | 2 mm | 센싱 유닛(챔버)층 |
+| **Bot** | Ecoflex 00-20 | 1 mm | 베이스/기계적 지지·밀봉 |
 
-> 표기 확정 필요: "eco20/45", "eco20/50/20"이 Ecoflex 경도(00-20/00-45/00-50)의 **적층 순서**인지 **혼합비**인지 본문에서 명시. 혼합비라면 mix ratio·경화 조건, 적층이라면 각 sub-layer 두께를 기재.
+> 표기 확정(D4): 각 층은 **층별 단일 소재 적층**(혼합비 아님). 기본 시편 = Bot eco20 / Mid eco20 / Top {eco20 | eco50 | ecomesh}. **변형 시편**: Mid를 Ecoflex 00-45로 한 버전, Bot·Top 동일 소재 버전 존재 → 본문에는 시편별 층 구성을 표로 명시. molding 변경·아랫면 소재 통일은 진행 중(D3).
 
 ### 4.3 Mesh가 SR을 돕는 메커니즘(C1의 물리적 근거)
 점 접촉 하중이 표면에 가해지면, 그 압력이 하부의 sparse한 MEMS 챔버까지 전달되어야 한다.
@@ -160,10 +160,13 @@ $$ \mathbf{p}_{\text{raw}}(\text{contact},\kappa) \approx \underbrace{\mathbf{p}
 
 ---
 
-## 7. Experiment / Data Checklist
-- **Fig.2:** [x] 인덴터/지그 제작(원형 d5/10/15, 사각 5/10/15 fillet2) · [x] 소재별 중앙점·baseline % 시각화 · [x] 인덴터별(d5·d10)·소재별 CSV 변환+패널 A/B/C 생성(→ `visualizing_scripts/xy_1mm/Analysis_Results/Fig2_report.md`) · [ ] molding 변경·아랫면 소재 통일 · [ ] 소재별 3 set 반복 · [ ] 소재별 SATS 학습 비교(패널 D)
-- **Fig.3:** [ ] ecomesh flat SR 10 set(gap0.5, z1.5, d5, raw) · [ ] 각도별 bending baseline 10 set(jig, 무하중) · [ ] 곡률 회귀 MAE/R² · [ ] flat vs bent SR 보정 전/후 비교
+## 7. Experiment / Data Checklist (2026-07-12 갱신 — 폴더 = §6 매핑, `PROJECT_STRUCTURE.md` 참조)
+
+> **투고 로드맵 마스터 = `SUBMISSION_CHECKLIST.md`** (기여별 상태·P0 critical path·결정사항 D1~D4·§9 수치 확보 현황·실행 순서). 아래는 취득 항목 요약.
+- **Fig.2:** [x] 인덴터/지그 제작(원형 d5/10/15, 사각 5/10/15 fillet2) · [x] 소재별 중앙점·baseline % 시각화 · [x] 인덴터별(d5·d10)·소재별 CSV 변환+패널 A/B/C 생성(→ `fig2_material_ablation/Analysis_Results/Fig2_report.md`) · [x] **소재별 SATS 학습 비교(패널 D)** — 크기입력(A) 모델, d10_rel ecomesh 0.182 < eco20 0.259 < eco50 0.336(→ `fig2_material_ablation/panelD_sats/`) · [~] molding 변경·아랫면 소재 통일(**진행 중**, D3) · [x] 소재별 3-set **재분석 완료**(2026-07-13 — set간 CV<2%로 기존 결론 유지, `Fig2C_metrics_3set`, eco50 d5 dead채널 캐빗)
+- **Fig.3:** [x] ecomesh flat SR(xy0.5 13 trial 취득·A 모델 학습·패널 완료 → `fig3_sats_bending/flat_sr/`) · [ ] **각도별 bending baseline 10 set(jig, 무하중, signed deg)** — 취득 스펙 `fig3_sats_bending/bending/README.md`, 코드 `sats/bending/`(Phase 0 완료) · [ ] 밴딩+접촉 세트(대표 각도, xy0.5 프로토콜) · [ ] 곡률 회귀 MAE/R²(P1) · [ ] flat vs bent SR 보정 전/후 비교(P3)
 - **Fig.4:** [ ] 로봇핸드+센서 실시간 데모 · [ ] 사람 손 곡면 부착 데모
+- **보강 취득(성능):** [ ] 저force d10 반복취득(xy0.5 계단식 동일 프로토콜 — d10 magnitude 개선 유일 해법) · [ ] 다점 2·3점 zero-shot 테스트 세트(SATS 논문 Fig4E 재현, 재학습 불필요)
 - 로깅 코드: `...\acquisition_code\final_logger_integrated_v3_gui\final_logger_integrated_v3_gui.py` / CSV: `...\due_data_v2_csv`
 
 ---

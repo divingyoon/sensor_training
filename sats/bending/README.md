@@ -31,7 +31,7 @@ trial별 `.npz`: `sensor` float[N,16], `bend_deg` float[N] **(signed)**, 선택 
 - **Phase 1**: estimator 학습 → signed deg (지표 deg MAE). `train_estimator()`.
 - **Phase 2**: restorer 학습 — (A)오프셋 지도(bending-only=순수 오프셋, 중첩 선형성 가정) 또는 (B)end-to-end(동결 SATS 통과 grad).
 - **Phase 3**: pipeline 검증 — 밴딩 하 SATS 정확도 vs flat 기준(재학습 0).
-- **Phase 4**: figure/README (곡률 정확도·복원 품질·밴딩 하 SATS 정확도), `history/fig_data/bending/`.
+- **Phase 4**: figure/README (곡률 정확도·복원 품질·밴딩 하 SATS 정확도), `history/fig_data/fig3_sats_bending/bending/`.
 
 ## 리스크
 - 신호 분리 ill-posed(밴딩·접촉 중첩) → 시간 스케일 차·중첩 선형성 **데이터로 사전 검증** 권장.

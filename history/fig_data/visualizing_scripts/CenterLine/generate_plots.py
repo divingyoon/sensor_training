@@ -7,7 +7,8 @@ import os
 # Configuration
 # ======================================================
 
-BASE_DIR = r"C:\Users\yky56\OneDrive\Desktop\fig2_heatmap"
+# fig_data 루트 기준 상대 경로(구 Windows 절대경로 하드코딩 제거)
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "fig2_material_ablation"))
 
 CENTERLINE_DATA = {
     "ECO20": os.path.join(BASE_DIR, "CenterLine", "eco20", "d10", "20260529_test2"),

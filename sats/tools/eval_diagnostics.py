@@ -9,7 +9,7 @@ diameter/force/depth/위치별로 분리하고, 스케일 불변 상대오차(rm
 
     python3 -m sats.tools.eval_diagnostics \
         --run-dirs sats/training/runs/.../run_a sats/training/runs/.../run_b \
-        --out-dir history/fig_data/sats_experiments/diagnostics
+        --out-dir history/fig_data/experiments_archive/diagnostics
 """
 from __future__ import annotations
 

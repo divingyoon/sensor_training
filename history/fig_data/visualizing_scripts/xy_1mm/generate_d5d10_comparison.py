@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
 import generate_2d_heatmap as g2
-ROOT = g2.OUT_ROOT   # 출력 일원화: fig2_heatmap/Analysis_Results
+ROOT = g2.OUT_ROOT   # 출력 일원화: fig2_material_ablation/Analysis_Results
 ORDER = ["eco20", "eco50", "ecomesh"]
 COLORS = {"eco20": "#3b6ea5", "eco50": "#e08a1e", "ecomesh": "#2e8b57"}
 

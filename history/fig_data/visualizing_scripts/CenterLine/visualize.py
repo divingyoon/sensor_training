@@ -43,7 +43,7 @@ VIEW_ELEV: float = 28.0   # 仰角 (도)
 VIEW_AZIM: float = -50.0  # 방위각 (도)
 
 # 출력/입력 기본 경로
-CSV_DEFAULT = Path(__file__).resolve().parent.parent / "fig2_heatmap" / "consolidated.csv"
+CSV_DEFAULT = Path(__file__).resolve().parent.parent / "fig2_material_ablation" / "consolidated.csv"
 OUT_DEFAULT  = Path(__file__).resolve().parent.parent / "response_png"
 
 # ── 센서 물리적 위치 (mm) ─────────────────────────────────────────────────────
