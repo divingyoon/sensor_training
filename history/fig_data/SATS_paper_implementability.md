@@ -11,11 +11,11 @@
 
 | 논문 | 내용 | 우리 산출물 |
 |---|---|---|
-| Fig4A | 대칭선 압력 프로파일(SR/수용영역 중첩) | `Fig3A_lineprofile_*` / `FinalA_*` |
-| Fig4B | 위치별 오차 3D 막대 | `Fig3D_poserror3d_*` |
-| Fig4C | 오차 히스토그램+KDE | `Fig3E_error_hist_*` |
-| Fig4D | force별 오차 | `Fig3F_force_error_*` |
-| FigS17 | 학습 후 추론 예시(GT/Pred) | `Fig3C_pressure3d_*` |
+| Fig4A | 대칭선 압력 프로파일(SR/수용영역 중첩) | `Fig2D_A_lineprofile_*` / `FinalA_*` |
+| Fig4B | 위치별 오차 3D 막대 | `Fig2D_D_poserror3d_*` |
+| Fig4C | 오차 히스토그램+KDE | `Fig2D_E_error_hist_*` |
+| Fig4D | force별 오차 | `Fig2D_F_force_error_*` |
+| FigS17 | 학습 후 추론 예시(GT/Pred) | `Fig2D_C_pressure3d_*` |
 | Fig3 B·E·G·H | 상대저항·수용영역·커버리지·중첩 | `fig2_material_ablation/`(hitmap·coverage·overlap·centerline) |
 
 ## B. 기존 데이터로 즉시 구현 가능 (추가 취득·학습 불필요) ⭐

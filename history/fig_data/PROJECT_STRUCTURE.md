@@ -13,9 +13,9 @@
 | `Development_...md` | 본문 | working draft (Fig.1~4 계획 §6, 체크리스트 §7) |
 | `fig1_concept/` | Fig.1 | 컨셉 일러스트 — **미제작**, 후보 소재는 README |
 | `fig2_material_ablation/` | Fig.2 (C1) | 소재 ablation: 패널 A~C(`Analysis_Results/`) + **패널 D**(`panelD_sats/` — 소재별 SATS 성능, 구 fig3 소재비교 이동) |
-| `fig3_sats_bending/` | Fig.3 (C2) | `algorithm/`(구조도) + `flat_sr/`(final_xy0p5·d5_final 완료) + `bending/`(**취득 대기**, 스펙 README) |
+| `fig3_sats_bending/` | Fig.3 (C2) | `algorithm/`(구조도) + `flat_sr/final_xy0p5/`(완료) + `bending/`(**취득 대기**, 스펙 README) |
 | `fig4_application/` | Fig.4 | 로봇핸드/사람손 데모 — 미착수 |
-| `supplementary/` | Supp. | S19 ablation·S20 localization·S29 t-SNE·S30 regression·summary_metrics (A 모델 일관화 완료) |
+| `supplementary/` | Supp. | S19 ablation·S20 localization·S29 t-SNE·S30 regression·summary_metrics(SATS 원논문 번호, README 참조) + **d5_final**(d5-only 다해상도, §6 비패널이라 여기 배치) |
 | `experiments_archive/` | — | 과정 진단·null result 보존 (**sizeA_diag = 현행 A 모델 진단 데이터 소스**) |
 | `visualizing_scripts/` | — | Figure 생성 Python (figure↔스크립트 매핑은 각 폴더 README) |
 | `reference/` | — | 선행 논문(SATS, TVI/Barodome 등) |
@@ -37,7 +37,7 @@
 - `xy_1mm/` — **2D 격자(±10mm, 1mm 간격) 압입. Fig.2B 핵심 데이터.** 대부분 raw `.bin`, 일부만 CSV 변환.
 - `hitmap/` — coverage/overlap/spreading 분석 PNG + md.
 - `Analysis_Results/` — 패널 A~C 산출물 + `Fig2_report.md`(통합 보고서).
-- `panelD_sats/xy1_material/` — **패널 D**: 소재별 SATS 패널(Fig3* 접두어는 구명명 유산) + `shared_axes/` + `Fig3_report.md`.
+- `panelD_sats/xy1_material/` — **패널 D**: 소재별 SATS 패널 `Fig2D_{A~G}_*`(2026-07-12 구 Fig3*에서 개명·재생성) + `shared_axes/` + `Fig2D_report.md`.
 
 소재/인덴터 폴더 규칙: `xy_1mm/{ec020|eco50|ecomesh}/d{5|10}/YYYYMMDD_testN/`
 (주의: `ec020`은 eco20 오타. mesh는 `ecomesh`/`eco20 + mesh` 혼용.)
@@ -58,7 +58,7 @@
 - `figure_set/generate_fig3_forcematched_d10.py` — force-matched d10 소재 비교 → panelD.
 - `figure_set/generate_supp_{ablation,localization,attention_tsne,regression,summary}.py` — supplementary S19/S20/S29/S30/summary → `supplementary/`.
 - `figure_set/viz_d5_*.py`, `compare_*.py`, `verify_d10_magnitude.py`, `analyze_data_quality.py` — 진단·검증 → `experiments_archive/`.
-- `figure_set/build_figure_set_html.py` — 통합 HTML figure set(base64 내장, pptx 흡수).
+- `figure_set/build_figure_set_html.py` — 통합 HTML figure set(base64 내장, pptx 흡수). **2026-07-12 §6 번호 재편**: Fig.2(C1)→Fig.3(밴딩 C2)→Fig.4(application placeholder)→Supp. Fig. B1(모델 벤치마크, 구 Fig.3).
 - `xy_1mm/generate_{2d_heatmap,panelC_metrics,panelA_schematic,centerpress_depth,betweentaxel,...}.py` — Fig.2 A~C → `fig2_material_ablation/Analysis_Results/`.
 - `CenterLine/*.py` — 1D 라인 스캔 처리·시각화.
 

@@ -51,14 +51,14 @@ FIGSETS: dict[str, dict] = {
             "eco50": "sizeA_eco50_xy1_fold1_e2e_g05",
             "ecomesh": "sizeA_ecomesh_xy1_fold3_e2e_g05",
         },
-        "prefix": "Fig3",
+        "prefix": "Fig2D_",  # 논문 §6 Fig.2D(소재별 SATS 비교). 구명명 Fig3* → 2026-07-12 변경
         "tag": "xy 1 mm",
     },
     # d5-only 최종 (β 물성보정, 크기입력 불필요). 순수 SATS 구조, xy0.5 d5, 0.5mm 출력.
     "d5_final": {
         "diag": REPO / "history/fig_data/experiments_archive/d5_multires_diag",
         "run_root": REPO / "sats/training/runs/d5_only_multires",
-        "out": REPO / "history/fig_data/fig3_sats_bending/flat_sr/d5_final",
+        "out": REPO / "history/fig_data/supplementary/d5_final",
         "order": ["ecomesh"],
         "colors": {"ecomesh": "#2ca25f"},
         "labels": {"ecomesh": "Eco-mesh d5"},

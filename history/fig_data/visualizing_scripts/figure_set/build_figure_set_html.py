@@ -320,7 +320,7 @@ def build():
     # (i) 는 이미지 셀로 (위 라인 단순화)
     fig2[-1] = img_cell("i", P["i_sigma"], "Receptive-field σ at saturated d10 — monotonic spread eco20<eco50<ecomesh (d5 σ omitted: eco20 inflated at low SNR).")
 
-    fig3 = [
+    supp_bench = [
         node_cell("a", sats_pipeline_svg(), "SATS SR pipeline: sparse 16-taxel graph → per-taxel LSTM → self-attention (4×4 GAT) → local-map → CNN refine → localization & pressure heads.", hero=True),
         img_cell("b", PX["error_maps"], "Spatial error maps across the array — X / Y / Z / Fz MAE (lighter = lower error)."),
         img_cell("c", PX["model_maps"], "Localization quality across 9 learning structures (MLP, CNN, CNN-LSTM, Isoline-GNN, Unified, Multi-Head, Transformer, GNN-GAT, SATS)."),
@@ -332,7 +332,7 @@ def build():
         node_cell("i", sr_takeaway_svg(), "Takeaway: SATS attention over the mesh-shaped receptive-field graph turns sparse 16-taxel input into sub-mm localization."),
     ]
 
-    fig4 = [
+    fig3_bending = [
         node_cell("a", module_abcd_svg(),
                   "Bending-aware multi-module network (pptx Module A–D). <b>Module A</b> regresses curvature θ̂ from the no-load baseline shift and conditions the input; <b>B</b> CNN tactile encoder yields a corrected map; <b>C</b> the flat-trained SATS localization encoder is reused; <b>D</b> a shared contact-mechanics MLP outputs z / Fz / effective area. Curvature self-estimation lets the flat SR model run under bending without curvature-specific retraining.", hero=True),
         node_cell("b", placeholder_svg("taxel axial distance zᵢ (mm)", "|Δbaseline| (a.u.)", "baseline"),
@@ -385,7 +385,7 @@ def build():
 
 <header class="doc">
   <h1>Development of a Flexible Tactile Sensor with Super-Resolution Capability</h1>
-  <p><span class="badge">FIGURE SET</span> Working draft — Fig.2 (material ablation, C1), Fig.3 (SR learning structure &amp; model benchmark), Fig.4 (bending-aware SR, C2). Each figure is a 3×3 panel set.</p>
+  <p><span class="badge">FIGURE SET</span> Working draft — numbering follows paper §6: Fig.2 (material ablation, C1; panel D = material-wise SATS, <code>Fig2D_*</code> set), Fig.3 (bending-aware SR, C2), Fig.4 (application, pending). The SR learning-structure benchmark is kept as a supplementary set.</p>
   <p>Integrates xy_1mm receptive-field analysis with the quantitative results and module architecture from <code>20260629.pptx</code>. SATS = Self-Attention-assisted Tactile Super-Resolution.</p>
 </header>
 
@@ -397,17 +397,22 @@ def build():
 </section>
 
 <section class="fig">
-  <p class="fig-head"><span class="fno">Fig. 3</span> &nbsp;<span class="ftitle">| SR learning structure and model benchmark.</span></p>
-  <p class="fig-sub">Self-attention over the sparse taxel graph maps 16 channels to a super-resolved field; benchmarked against 8 alternative structures and 3 alternative materials (data from 20260629.pptx, indenter D5).</p>
-  <div class="grid">{''.join(fig3)}</div>
-  <p class="cap"><b>Fig. 3.</b> (a) The SATS pipeline. (b) Per-axis spatial error maps; (c) localization quality across nine learning structures; (d) 3D receptive-field surfaces over material × indenter. (e–f) SATS attains the lowest mean xy error (<b>0.58 mm</b> at D5, R²ₓ 0.991 / R²_y 0.998), with CNN-LSTM / Multi-Head / SATS leading depth-z. (g–h) On the learned SR task, <b>Ours (ECO20+MESH)</b> gives the best R² for both location and depth — confirming the mesh choice end-to-end, not just by receptive field. (i) Net message of C1+the learner.</p>
+  <p class="fig-head"><span class="fno">Fig. 3</span> &nbsp;<span class="ftitle">| Bending-aware super-resolution without curvature-specific retraining (C2).</span></p>
+  <p class="fig-sub">Bending appears as a baseline shift; curvature is self-estimated from the no-load baseline and used to condition the flat-trained SATS model. Flat-SR reference panels: <code>fig3_sats_bending/flat_sr/final_xy0p5/</code>.</p>
+  <div class="grid">{''.join(fig3_bending)}</div>
+  <p class="cap"><b>Fig. 3.</b> (a) The Module A–D network (from 20260629.pptx): Module A self-estimates curvature θ̂ from the no-load baseline shift (Δpᵢ ≈ kᵢ·κ·zᵢ, §5.3) and conditions the input; Module B encodes a corrected tactile map; Module C reuses the flat-trained SATS localization encoder; Module D, a shared contact-mechanics MLP, outputs depth, normal force and effective area. (b–e) Validation panels pending the jig acquisition (per-angle no-load baselines + bent contacts): baseline–zᵢ law, θ̂ regression MAE/R², flat-vs-bent SR with correction on/off, and prediction-vs-GT maps. (f) The residual-decomposition principle underlying Module A.</p>
 </section>
 
 <section class="fig">
-  <p class="fig-head"><span class="fno">Fig. 4</span> &nbsp;<span class="ftitle">| Bending-aware super-resolution without curvature-specific retraining (C2).</span></p>
-  <p class="fig-sub">Bending appears as a baseline shift; curvature is self-estimated from the no-load baseline and used to condition the flat-trained SATS model.</p>
-  <div class="grid">{''.join(fig4)}</div>
-  <p class="cap"><b>Fig. 4.</b> (a) The Module A–D network (from 20260629.pptx): Module A self-estimates curvature θ̂ from the no-load baseline shift (Δpᵢ ≈ kᵢ·κ·zᵢ, §5.3) and conditions the input; Module B encodes a corrected tactile map; Module C reuses the flat-trained SATS localization encoder; Module D, a shared contact-mechanics MLP, outputs depth, normal force and effective area. (b–e) Validation panels pending the jig acquisition (per-angle no-load baselines + bent contacts): baseline–zᵢ law, θ̂ regression MAE/R², flat-vs-bent SR with correction on/off, and prediction-vs-GT maps. (f) The residual-decomposition principle underlying Module A.</p>
+  <p class="fig-head"><span class="fno">Fig. 4</span> &nbsp;<span class="ftitle">| Application — robot hand &amp; human hand (pending).</span></p>
+  <p class="fig-sub">Real-time contact sensing/control on a robot hand and demonstration on the curved human hand (paper §6 Fig.4). Panels pending hardware demos; plan in <code>fig4_application/README.md</code>.</p>
+</section>
+
+<section class="fig">
+  <p class="fig-head"><span class="fno">Supp. Fig. B1</span> &nbsp;<span class="ftitle">| SR learning structure and model benchmark.</span></p>
+  <p class="fig-sub">Self-attention over the sparse taxel graph maps 16 channels to a super-resolved field; benchmarked against 8 alternative structures and 3 alternative materials (data from 20260629.pptx, indenter D5). Supports Fig.2(d) material selection and the Fig.3 SATS core; not a main-text figure in paper §6.</p>
+  <div class="grid">{''.join(supp_bench)}</div>
+  <p class="cap"><b>Supp. Fig. B1.</b> (a) The SATS pipeline. (b) Per-axis spatial error maps; (c) localization quality across nine learning structures; (d) 3D receptive-field surfaces over material × indenter. (e–f) SATS attains the lowest mean xy error (<b>0.58 mm</b> at D5, R²ₓ 0.991 / R²_y 0.998), with CNN-LSTM / Multi-Head / SATS leading depth-z. (g–h) On the learned SR task, <b>Ours (ECO20+MESH)</b> gives the best R² for both location and depth — confirming the mesh choice end-to-end, not just by receptive field. (i) Net message of C1+the learner.</p>
 </section>
 
 <p class="foot">References informing the design: SATS (sparse taxel graph + per-taxel LSTM + self-attention + local-map + CNN refine); Taxel-Value-Isoline / Barodome (sparse-unit SR; shear degrades localization — §8); barometric tactile sensing (low-cost, direct pressure). Built from <code>visualizing_scripts/figure_set/panels/</code>; pptx figures rendered via PowerPoint and cropped; self-contained (images embedded).</p>
