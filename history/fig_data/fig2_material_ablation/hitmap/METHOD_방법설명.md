@@ -1,7 +1,7 @@
 # 센서 receptive field 시각화 (방법 설명)
 
 > 생성: `python visualizing_scripts/xy_1mm/generate_receptive_field.py --diameter all`
-> 출력: `fig2_heatmap/hitmap/` — 센서별 `<dia>_<material>_sensors.png`(6), 겹침 `overlap_<dia>_{2d,3d}.png`(4),
+> 출력: `fig2_material_ablation/hitmap/` — 센서별 `<dia>_<material>_sensors.png`(6), 겹침 `overlap_<dia>_{2d,3d}.png`(4),
 > 2번째센서 `second_sensor_<dia>.png`(2), 다중센서 coverage `coverage_<dia>.png`(2),
 > 인덴터 크기별 `spreading_gain.png`(1), 수치 `STATS_수치.md`.
 

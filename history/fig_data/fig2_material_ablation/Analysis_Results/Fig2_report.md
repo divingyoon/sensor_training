@@ -2,7 +2,7 @@
 
 > 논문 *"Development of a Flexible Tactile Sensor with Super-Resolution Capability"* §6 Fig.2.
 > 주장(C1): **mesh 압력전달층이 인접 taxel 간 수용장(receptive field) 중첩을 공학적으로 키워, 민감도를 잃지 않으면서 SR에 유리한 입력 분포를 형성한다.** 최종 선택 = **mesh20(ecomesh)**.
-> 데이터: `fig2_heatmap/xy_1mm/` — ±10mm 영역을 1mm 격자로 압입(인덴터 원형 d5·d10), 소재 eco20 / eco50 / ecomesh 각 1세트.
+> 데이터: `fig2_material_ablation/xy_1mm/` — ±10mm 영역을 1mm 격자로 압입(인덴터 원형 d5·d10), 소재 eco20 / eco50 / ecomesh 각 1세트.
 > 모든 그림은 동일 폴더(`Analysis_Results/`)에 생성됨. 재현: `python visualizing_scripts/xy_1mm/generate_panelA_schematic.py`, `generate_2d_heatmap.py --diameter all`, `generate_panelC_metrics.py --diameter all`.
 
 ---

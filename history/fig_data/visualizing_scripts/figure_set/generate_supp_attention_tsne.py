@@ -26,7 +26,7 @@ REPO = Path(__file__).resolve().parents[4]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-OUT_DIR = REPO / "history/fig_data/sats_supplementary/S29_attention_tsne"
+OUT_DIR = REPO / "history/fig_data/supplementary/S29_attention_tsne"
 N_TSNE = 2500      # t-SNE 입력 표본 수(과밀·속도 균형)
 CONTACT_HALF_MM = 9.75
 

@@ -7,7 +7,7 @@ import os
 # Configuration
 # ======================================================
 
-BASE_DIR = r"C:\Users\yky56\OneDrive\Desktop\fig2_heatmap"
+BASE_DIR = r"C:\Users\yky56\OneDrive\Desktop\fig2_material_ablation"
 
 CENTERLINE_DATA = {
     "ECO20": os.path.join(BASE_DIR, "CenterLine", "eco20", "d10", "20260529_test2"),

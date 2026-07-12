@@ -1,6 +1,6 @@
 # 센서 receptive field 결과 비교분석
 
-> 대상: `fig2_heatmap/hitmap/` — 센서별 `<dia>_<mat>_sensors.png`(6), 겹침 `overlap_<dia>_{2d,3d}.png`(4).
+> 대상: `fig2_material_ablation/hitmap/` — 센서별 `<dia>_<mat>_sensors.png`(6), 겹침 `overlap_<dia>_{2d,3d}.png`(4).
 > 신호 = per-press local baseline ΔS, 셀별 z_max(최대압입) |ΔS|. eco50 d5 = test3 + s1(test1 보충) → 16채널 생존.
 > **수치 전체(센서별 수용장 넓이·overlap 분포 통계)는 [`STATS_수치.md`](STATS_수치.md) 참조.**
 > d5(약신호)는 디노이즈(가우시안 σ + 자기 peak 상대 노이즈플로어) 후 그림/통계 산출.

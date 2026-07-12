@@ -13,7 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[4]
-DIAG = REPO / "history/fig_data/sats_experiments/d5_multires_diag"
+DIAG = REPO / "history/fig_data/experiments_archive/d5_multires_diag"
 OUT = DIAG / "d5_resolution_compare.png"
 # (tag, grid mm, grid N, SR)
 RES = [("g1p0", 1.0, 21, 27), ("g0p5", 0.5, 41, 105),

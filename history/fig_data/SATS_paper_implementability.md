@@ -1,7 +1,7 @@
 # SATS 논문 전 figure/분석 — 우리 데이터 기준 구현 가능성 판정
 
 기준 논문: *Super-resolution tactile sensor arrays with sparse units enabled by deep learning*
-우리 자산: 단일점 grid press (xy1 eco20/eco50/ecomesh, xy0p5 ecomesh · d5/d10 인덴터 · 23ch 센서+좌표+힘) · 학습된 e2e SATS · EHS형 GT 생성기(gpu_on_the_fly) · fig2_heatmap 소재특성 분석.
+우리 자산: 단일점 grid press (xy1 eco20/eco50/ecomesh, xy0p5 ecomesh · d5/d10 인덴터 · 23ch 센서+좌표+힘) · 학습된 e2e SATS · EHS형 GT 생성기(gpu_on_the_fly) · fig2_material_ablation 소재특성 분석.
 
 핵심 제약: **단일점 접촉 데이터만 보유**. 다점·형상·2점식별·키보드·로봇손 데이터 없음. 소재는 xy1 3종 + xy0p5 ecomesh.
 
@@ -16,7 +16,7 @@
 | Fig4C | 오차 히스토그램+KDE | `Fig3E_error_hist_*` |
 | Fig4D | force별 오차 | `Fig3F_force_error_*` |
 | FigS17 | 학습 후 추론 예시(GT/Pred) | `Fig3C_pressure3d_*` |
-| Fig3 B·E·G·H | 상대저항·수용영역·커버리지·중첩 | `fig2_heatmap/`(hitmap·coverage·overlap·centerline) |
+| Fig3 B·E·G·H | 상대저항·수용영역·커버리지·중첩 | `fig2_material_ablation/`(hitmap·coverage·overlap·centerline) |
 
 ## B. 기존 데이터로 즉시 구현 가능 (추가 취득·학습 불필요) ⭐
 

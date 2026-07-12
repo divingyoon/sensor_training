@@ -5,9 +5,9 @@
 지표 교란(sats-metric-dataset-confound)을 피하기 위해 **d5/d10 분리 + 상대오차**를 주지표로 쓴다.
 
 입력:
-  - per-sample npz : history/fig_data/sats_experiments/fig3_diag/samples_<run>.npz
-  - 요약 CSV       : history/fig_data/sats_experiments/fig3_diag/diag_summary.csv
-  - run 요약(best_epoch) : history/fig_data/sats_experiments/xy1_material_d5d10/summary_by_run.csv
+  - per-sample npz : history/fig_data/experiments_archive/fig3_diag/samples_<run>.npz
+  - 요약 CSV       : history/fig_data/experiments_archive/fig3_diag/diag_summary.csv
+  - run 요약(best_epoch) : history/fig_data/experiments_archive/xy1_material_d5d10/summary_by_run.csv
   - 체크포인트     : sats/training/runs/xy1_material_d5d10/<run>/best_model.pt (Fig3C 전용)
 
 사용::
@@ -40,9 +40,9 @@ CONTACT_HALF_MM = 9.75  # 감지면 반경(맵 extent)
 FIGSETS: dict[str, dict] = {
     # xy 1 mm 소재 비교 (eco20/eco50/ecomesh 대표 healthy fold)
     "xy1_material": {
-        "diag": REPO / "history/fig_data/sats_experiments/sizeA_diag",
+        "diag": REPO / "history/fig_data/experiments_archive/sizeA_diag",
         "run_root": REPO / "sats/training/runs/size_input_material",
-        "out": REPO / "history/fig_data/fig3_sats and bending",
+        "out": REPO / "history/fig_data/fig2_material_ablation/panelD_sats/xy1_material",
         "order": ["eco20", "eco50", "ecomesh"],
         "colors": {"eco20": "#e07b39", "eco50": "#5b8def", "ecomesh": "#2ca25f"},
         "labels": {"eco20": "Eco20", "eco50": "Eco50", "ecomesh": "Eco-mesh"},
@@ -56,9 +56,9 @@ FIGSETS: dict[str, dict] = {
     },
     # d5-only 최종 (β 물성보정, 크기입력 불필요). 순수 SATS 구조, xy0.5 d5, 0.5mm 출력.
     "d5_final": {
-        "diag": REPO / "history/fig_data/sats_experiments/d5_multires_diag",
+        "diag": REPO / "history/fig_data/experiments_archive/d5_multires_diag",
         "run_root": REPO / "sats/training/runs/d5_only_multires",
-        "out": REPO / "history/fig_data/fig3_sats and bending/d5_final",
+        "out": REPO / "history/fig_data/fig3_sats_bending/flat_sr/d5_final",
         "order": ["ecomesh"],
         "colors": {"ecomesh": "#2ca25f"},
         "labels": {"ecomesh": "Eco-mesh d5"},
@@ -68,9 +68,9 @@ FIGSETS: dict[str, dict] = {
     },
     # xy 0.5 mm 최종(flat) 데이터 — ecomesh 단일, indenter-size input(A). 최종 성능.
     "xy0p5_final": {
-        "diag": REPO / "history/fig_data/sats_experiments/sizeA_final_xy0p5_diag",
+        "diag": REPO / "history/fig_data/experiments_archive/sizeA_final_xy0p5_diag",
         "run_root": REPO / "sats/training/runs/size_input",
-        "out": REPO / "history/fig_data/fig3_sats and bending/final_xy0p5",
+        "out": REPO / "history/fig_data/fig3_sats_bending/flat_sr/final_xy0p5",
         "order": ["ecomesh"],
         "colors": {"ecomesh": "#2ca25f"},
         "labels": {"ecomesh": "Eco-mesh"},

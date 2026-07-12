@@ -35,12 +35,12 @@ $PY -m sats.training.train_e2e \
 mark "STEP3a xy1 material diag 재덤프 (fig3_diag)"
 $PY -m sats.tools.eval_diagnostics --no-fig \
   --run-dirs sats/training/runs/xy1_material_d5d10/xy1_d5d10_*_e2e_g05 \
-  --out-dir history/fig_data/sats_experiments/fig3_diag --dump-samples || echo "STEP3a WARN"
+  --out-dir history/fig_data/experiments_archive/fig3_diag --dump-samples || echo "STEP3a WARN"
 
 mark "STEP3b pooled diag 덤프 (pool_diag)"
 $PY -m sats.tools.eval_diagnostics --no-fig \
   --run-dirs sats/training/runs/pool_d10/ecomesh_pool_d10_val_d5t10_d10t3 \
-  --out-dir history/fig_data/sats_experiments/pool_diag --dump-samples || echo "STEP3b WARN"
+  --out-dir history/fig_data/experiments_archive/pool_diag --dump-samples || echo "STEP3b WARN"
 
 # ── 4) figure set 재생성 ───────────────────────────────────────────────────
 mark "STEP4a Fig3 xy1_material (A-F)"

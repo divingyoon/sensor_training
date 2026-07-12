@@ -79,7 +79,7 @@ baseline_i = 무접촉('unloaded') 구간에서 센서 i 의 raw 평균
 
 ## 6. 재현
 ```bash
-cd fig2_heatmap/CenterLine
+cd fig2_material_ablation/CenterLine
 python generate_centerline_unified.py
 # → _unified_3d/ 에 6장 생성, 콘솔에 공통 축 값 출력
 ```

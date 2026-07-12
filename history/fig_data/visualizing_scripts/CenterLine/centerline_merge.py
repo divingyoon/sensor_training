@@ -293,7 +293,7 @@ def process_test(test_dir: Path, root: Path) -> pd.DataFrame:
 # ── 메인 ────────────────────────────────────────────────────────────────
 def main() -> None:
     here = Path(__file__).resolve().parent
-    default_root = here.parent / "fig2_heatmap" / "CenterLine"
+    default_root = here.parent / "fig2_material_ablation" / "CenterLine"
     ap = argparse.ArgumentParser(description="CenterLine CSV 통합 전처리")
     ap.add_argument("--root", type=Path, default=default_root,
                     help="CenterLine 루트 폴더")

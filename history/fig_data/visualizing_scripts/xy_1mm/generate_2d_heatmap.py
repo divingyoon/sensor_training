@@ -22,8 +22,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 REPO = r"C:/Users/yky56/OneDrive/Desktop/fig_data"
-BASE = os.path.join(REPO, "fig2_heatmap/xy_1mm")
-OUT_ROOT = os.path.join(REPO, "fig2_heatmap/Analysis_Results")  # 출력 일원화(2026-06-25): 데이터 폴더 곁
+BASE = os.path.join(REPO, "fig2_material_ablation/xy_1mm")
+OUT_ROOT = os.path.join(REPO, "fig2_material_ablation/Analysis_Results")  # 출력 일원화(2026-06-25): 데이터 폴더 곁
 
 # 인덴터 지름별 소재 라벨 -> test 폴더 (폴더명 ec020 오타 흡수). 비교 공정성 위해
 # 한 지름 안에서는 모든 소재가 동일 인덴터 1세트씩.

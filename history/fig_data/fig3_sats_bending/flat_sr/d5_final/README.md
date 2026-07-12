@@ -30,9 +30,9 @@
 ## 재현
 ```bash
 .venv/bin/python history/fig_data/visualizing_scripts/figure_set/generate_fig3_sats.py \
-  --figset d5_final --ref-limits "history/fig_data/fig3_sats and bending/shared_axes/axis_limits.json"
+  --figset d5_final --ref-limits "history/fig_data/fig2_material_ablation/panelD_sats/xy1_material/shared_axes/axis_limits.json"
 ```
 (B 패널=소재 비교는 d5_final이 단일 소재라 자동 skip)
 
 ## 관련
-- 다해상도(1.0/0.25/0.1mm) 및 GT vs Pred 갤러리·해상도 비교 = `sats_experiments/d5_multires_diag/README.md` 참조.
+- 다해상도(1.0/0.25/0.1mm) 및 GT vs Pred 갤러리·해상도 비교 = `experiments_archive/d5_multires_diag/README.md` 참조.

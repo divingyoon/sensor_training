@@ -5,8 +5,8 @@
 force 구간별로 나눠 '같은 force 에서' 소재를 비교하면 교란 없이 소재 우열을 볼 수 있다.
 → 결과: eco-mesh 가 전 force 구간에서 d10 최상(최저 오차). 물리 직관(mesh 우수) 확증.
 
-입력: history/fig_data/sats_experiments/fig3_diag/samples_<run>.npz (대표 fold).
-산출: history/fig_data/fig3_sats and bending/Fig3G_forcematched_d10.png (2패널: 상대/절대).
+입력: history/fig_data/experiments_archive/fig3_diag/samples_<run>.npz (대표 fold).
+산출: history/fig_data/fig2_material_ablation/panelD_sats/xy1_material/Fig3G_forcematched_d10.png (2패널: 상대/절대).
 
 사용::
 
@@ -23,8 +23,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[4]
-DIAG = REPO / "history/fig_data/sats_experiments/fig3_diag"
-OUT = REPO / "history/fig_data/fig3_sats and bending"
+DIAG = REPO / "history/fig_data/experiments_archive/fig3_diag"
+OUT = REPO / "history/fig_data/fig2_material_ablation/panelD_sats/xy1_material"
 
 REP_RUN = {
     "eco20": "xy1_d5d10_eco20_xy1_fold2_e2e_g05",

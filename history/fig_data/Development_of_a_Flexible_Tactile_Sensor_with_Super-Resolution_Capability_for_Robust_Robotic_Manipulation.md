@@ -160,10 +160,11 @@ $$ \mathbf{p}_{\text{raw}}(\text{contact},\kappa) \approx \underbrace{\mathbf{p}
 
 ---
 
-## 7. Experiment / Data Checklist
-- **Fig.2:** [x] 인덴터/지그 제작(원형 d5/10/15, 사각 5/10/15 fillet2) · [x] 소재별 중앙점·baseline % 시각화 · [x] 인덴터별(d5·d10)·소재별 CSV 변환+패널 A/B/C 생성(→ `visualizing_scripts/xy_1mm/Analysis_Results/Fig2_report.md`) · [ ] molding 변경·아랫면 소재 통일 · [ ] 소재별 3 set 반복 · [ ] 소재별 SATS 학습 비교(패널 D)
-- **Fig.3:** [ ] ecomesh flat SR 10 set(gap0.5, z1.5, d5, raw) · [ ] 각도별 bending baseline 10 set(jig, 무하중) · [ ] 곡률 회귀 MAE/R² · [ ] flat vs bent SR 보정 전/후 비교
+## 7. Experiment / Data Checklist (2026-07-12 갱신 — 폴더 = §6 매핑, `PROJECT_STRUCTURE.md` 참조)
+- **Fig.2:** [x] 인덴터/지그 제작(원형 d5/10/15, 사각 5/10/15 fillet2) · [x] 소재별 중앙점·baseline % 시각화 · [x] 인덴터별(d5·d10)·소재별 CSV 변환+패널 A/B/C 생성(→ `fig2_material_ablation/Analysis_Results/Fig2_report.md`) · [x] **소재별 SATS 학습 비교(패널 D)** — 크기입력(A) 모델, d10_rel ecomesh 0.182 < eco20 0.259 < eco50 0.336(→ `fig2_material_ablation/panelD_sats/`) · [ ] molding 변경·아랫면 소재 통일 · [ ] 소재별 3 set 반복(통계 강건성)
+- **Fig.3:** [x] ecomesh flat SR(xy0.5 13 trial 취득·A 모델 학습·패널 완료 → `fig3_sats_bending/flat_sr/`) · [ ] **각도별 bending baseline 10 set(jig, 무하중, signed deg)** — 취득 스펙 `fig3_sats_bending/bending/README.md`, 코드 `sats/bending/`(Phase 0 완료) · [ ] 밴딩+접촉 세트(대표 각도, xy0.5 프로토콜) · [ ] 곡률 회귀 MAE/R²(P1) · [ ] flat vs bent SR 보정 전/후 비교(P3)
 - **Fig.4:** [ ] 로봇핸드+센서 실시간 데모 · [ ] 사람 손 곡면 부착 데모
+- **보강 취득(성능):** [ ] 저force d10 반복취득(xy0.5 계단식 동일 프로토콜 — d10 magnitude 개선 유일 해법) · [ ] 다점 2·3점 zero-shot 테스트 세트(SATS 논문 Fig4E 재현, 재학습 불필요)
 - 로깅 코드: `...\acquisition_code\final_logger_integrated_v3_gui\final_logger_integrated_v3_gui.py` / CSV: `...\due_data_v2_csv`
 
 ---

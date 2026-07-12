@@ -31,7 +31,7 @@ import torch  # noqa: E402
 import torch.nn as nn  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
-OUT_DIR = REPO / "history/fig_data/sats_supplementary/S30_regression"
+OUT_DIR = REPO / "history/fig_data/supplementary/S30_regression"
 CKPT = OUT_DIR / "regression_ecomesh.pt"
 BASE_CFG = REPO / "sats/training/runs/xy1_material_d5d10/xy1_d5d10_ecomesh_xy1_fold3_e2e_g05/config.json"
 XY_SCALE = 10.0    # x,y ∈ [-10,10] → [-1,1]

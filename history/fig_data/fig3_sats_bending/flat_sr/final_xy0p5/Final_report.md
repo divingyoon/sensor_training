@@ -1,6 +1,6 @@
 # Final (xy 0.5 mm) — Eco-mesh 최종 flat 데이터 성능
 
-> **2026-07-08 A 갱신**: **크기 입력(A) 모델**(`runs/size_input/ecomesh_xy0p5_sizeinput_val_d5t10_d10t3`)로 재생성. 크기 입력이 d10 blend 해소(pedestal 전구간↓). 순수 d5 성능 개선 트랙(다해상도)은 `../d5_final/README.md` 및 `sats_experiments/d5_multires_diag/README.md` 참조.
+> **2026-07-08 A 갱신**: **크기 입력(A) 모델**(`runs/size_input/ecomesh_xy0p5_sizeinput_val_d5t10_d10t3`)로 재생성. 크기 입력이 d10 blend 해소(pedestal 전구간↓). 순수 d5 성능 개선 트랙(다해상도)은 `../d5_final/README.md` 및 `experiments_archive/d5_multires_diag/README.md` 참조.
 
 **최종 flat 데이터(xy 0.5 mm) data-rich 모델의 최종 성능** figure 세트. Fig3(xy 1mm 소재비교)와 별도.
 
@@ -41,7 +41,7 @@
 # 1) 진단 재평가 + per-sample npz 덤프
 .venv/bin/python -m sats.tools.eval_diagnostics \
     --run-dirs sats/training/runs/datarich_probe/ecomesh_xy0p5_datarich_val_d5test10_d10test3 \
-    --out-dir history/fig_data/sats_experiments/final_xy0p5_diag --dump-samples
+    --out-dir history/fig_data/experiments_archive/final_xy0p5_diag --dump-samples
 
 # 2) figure 생성 (figset=xy0p5_final)
 .venv/bin/python history/fig_data/visualizing_scripts/figure_set/generate_fig3_sats.py \

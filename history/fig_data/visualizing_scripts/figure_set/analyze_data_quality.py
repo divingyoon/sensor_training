@@ -14,7 +14,7 @@ import torch
 
 REPO = Path(__file__).resolve().parents[4]
 CACHE = REPO / "learning_data/gt_meta_cache_xy_d5d10_g05"
-OUT = REPO / "history/fig_data/sats_experiments/data_quality"
+OUT = REPO / "history/fig_data/experiments_archive/data_quality"
 
 TARE_TOL_N = 0.3       # 무접촉 force 가 이보다 크게 벗어나면 tare_error
 NOCONTACT_SENS = 0.5   # 이 미만이면 무접촉으로 간주

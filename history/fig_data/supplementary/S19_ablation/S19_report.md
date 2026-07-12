@@ -33,7 +33,7 @@
 .venv/bin/python -m sats.tools.eval_diagnostics --no-fig \
     --run-dirs sats/training/runs/xy1_material_d5d10/xy1_d5d10_ecomesh_xy1_fold3_e2e_g05 \
                sats/training/runs/ablation_ecomesh/{noLSTM,noAttention,noCNN} \
-    --out-dir history/fig_data/sats_supplementary/S19_ablation
+    --out-dir history/fig_data/supplementary/S19_ablation
 # 3) 비교 그림
 .venv/bin/python history/fig_data/visualizing_scripts/figure_set/generate_supp_ablation.py
 ```
