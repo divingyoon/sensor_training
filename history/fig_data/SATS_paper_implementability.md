@@ -34,7 +34,7 @@
 |---|---|---|
 | **FigS30** | 좌표/힘 회귀 + localization scale factor(≈19547) | local-map 모듈 → 3층 MLP 회귀로 교체 후 재학습 (좌표·힘 GT 보유) |
 | FigS19(ablation) | noLSTM / noAttention / noCNN 비교 | 모듈 제거 변형 각각 재학습 |
-| Note S8/시뮬 | 순수 시뮬레이션 학습 | EHS GT로 sim-only 데이터 생성 후 학습 (생성기 이미 있음) |
+| ~~Note S8/시뮬~~ ✅ | 순수 시뮬레이션 학습 — **완료(2026-07-13)**: sim@sim 0.074 vs sim@real 1.109(전이 실패, 실측 필수 근거) | `supplementary/S8_sim_only/` |
 
 ## D. 추가 데이터 취득 필요 📥
 
