@@ -16,8 +16,9 @@ pytorch/
 
 # Local env and artifacts
 skin/
-training/runs/
-sats/training/runs/
+training/runs/*
+sats/training/runs/*
+!sats/training/runs/README.md
 **/__pycache__/
 *.pyc
 
