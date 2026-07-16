@@ -55,8 +55,14 @@ class SATSInferenceEngine:
     device  : str          'cuda' | 'cpu' | 'auto'
     """
 
-    def __init__(self, run_dir: str | Path, device: str = "auto") -> None:
+    def __init__(
+        self,
+        run_dir: str | Path,
+        device: str = "auto",
+        indenter_diameter_mm: float = 5.0,
+    ) -> None:
         self.run_dir = Path(run_dir)
+        self.indenter_diameter_mm = float(indenter_diameter_mm)
 
         # ── config 로드 ────────────────────────────────────────────────────
         cfg_path = self.run_dir / "config.json"
@@ -82,12 +88,23 @@ class SATSInferenceEngine:
         self.model, self.ckpt_info = self._load_model(ckpt_path)
         self.window_size = self.cfg.window_size
 
+        # 크기입력(A) 모델이면 고정 지름을 조건으로 전달. 실시간에서는 접촉 크기를
+        # 모르므로 디폴트 d5(학습 데이터 다수 클래스) — size 는 추론 대상이 아니라
+        # GT magnitude 컨디셔닝이며, 위치 추정은 size 오지정에도 강건(peak corr 0.96).
+        self.use_size_input = bool(getattr(self.cfg, "use_indenter_size_input", False))
+        self._size_t = (
+            torch.tensor([self.indenter_diameter_mm], dtype=torch.float32).to(self.device)
+            if self.use_size_input else None
+        )
+
         print(f"[InferenceEngine] 모델 로드 완료")
         print(f"  run_dir    : {self.run_dir}")
         print(f"  device     : {self.device}")
         print(f"  window_size: {self.window_size}")
         print(f"  checkpoint : {self.ckpt_info['path']}")
         print(f"  ckpt_epoch : {self.ckpt_info['epoch']}")
+        if self.use_size_input:
+            print(f"  size_input : ON — indenter d={self.indenter_diameter_mm:g} mm 고정 조건")
         print(f"  strict_load: {self.ckpt_info['strict_load']}")
         print(f"  state_keys : {self.ckpt_info['n_state_tensors']}")
         print(f"  n_params   : {self.ckpt_info['n_model_params']}")
@@ -109,7 +126,10 @@ class SATSInferenceEngine:
         # [1, window_size, 16]
         lengths = torch.tensor([self.window_size], dtype=torch.int64).to(self.device)
 
-        out = self.model(sensor, lengths)
+        if self.use_size_input:
+            out = self.model(sensor, lengths, self._size_t)
+        else:
+            out = self.model(sensor, lengths)
         pred = out[0] if isinstance(out, tuple) else out
         return pred[0].cpu().numpy()   # [grid, grid]
 

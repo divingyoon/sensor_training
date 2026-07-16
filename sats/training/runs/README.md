@@ -16,6 +16,14 @@
 **주의**: A 모델은 추론 시 `model(sensor, lengths, size)`로 **인덴터 지름(size)을 반드시 전달**
 (`eval_diagnostics.diagnose` 참조). 오프라인 진단 = `python -m sats.tools.eval_diagnostics --run-dir <run>`.
 
+**실시간 추론** (`inference_engine`이 A 모델 자동 감지, d5 디폴트 조건 — size는 추론 대상이 아니라 magnitude 컨디셔닝):
+
+```bash
+.venv/bin/python -m sats.inference.run_realtime \
+  --run-dir sats/training/runs/size_input/ecomesh_xy0p5_sizeinput_val_d5t10_d10t3 \
+  --port /dev/ttyACM0 --viz 2d   # (옵션) --indenter-diameter-mm 5.0
+```
+
 ## 실험별 run 그룹 (시간순)
 
 | 그룹 | 무엇을 학습/검증 | 결과 요약 |

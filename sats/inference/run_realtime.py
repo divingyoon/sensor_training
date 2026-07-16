@@ -97,6 +97,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="시리얼 입력 프로토콜. 최신 vensor.ino 는 binary 사용(권장).",
     )
     p.add_argument(
+        "--indenter-diameter-mm",
+        type=float,
+        default=5.0,
+        help="크기입력(A) 모델용 고정 인덴터 지름 조건(mm). 실시간에선 접촉 크기를 "
+             "모르므로 d5 디폴트 — 위치는 크기 오지정에도 강건, magnitude 만 영향.",
+    )
+    p.add_argument(
         "--vmax",
         type=float,
         default=None,
@@ -192,7 +199,11 @@ def main() -> None:
     )
 
     print("\n[1/3] 추론 엔진 초기화...")
-    engine = SATSInferenceEngine(run_dir=run_dir, device=args.device)
+    engine = SATSInferenceEngine(
+        run_dir=run_dir,
+        device=args.device,
+        indenter_diameter_mm=args.indenter_diameter_mm,
+    )
     print(f"  config path: {run_dir / 'config.json'}")
     print(f"  model path : {run_dir / 'best_model.pt'}")
 
