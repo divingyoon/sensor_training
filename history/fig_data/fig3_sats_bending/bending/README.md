@@ -19,15 +19,22 @@
 | (D) | flat vs bent SR 보정 전/후 RMSE/R² | 밴딩+접촉 | `sats/bending/pipeline.py` 평가 |
 | (E) | 추론 vs GT SR 맵 | 밴딩+접촉 | 진단 덤프 + 맵 시각화 |
 
-## 취득 스펙
+## 취득 스펙 (2026-07-18 NatComm G0/G1/G2 게이트 정합판 — 마스터: Notion "Bending-Aware Tactile Skin — Nature Communications")
 
-**공통**: 시간별 sensor 16ch + 밴딩 deg(양/음 부호 구분). 온도 안정화 후, 무접촉 tare 구간 포함.
+**G0 취득 유효성 (전 세트 공통, 미충족 시 학습 중단·프로토콜 수정)**:
+- signed 곡률 GT **독립 측정**(jig 각도 눈금 검증 + 가능하면 IMU 교차확인)
+- 무접촉/접촉 구간과 16ch 스트림 **동기화** 확인
+- 메타 기록: 센서 ID·온도·retare 시각·mounting session·각도·인덴터·위치·힘
+- raw→source data까지 trial registry 추적 (`learning_data/trial_registry.json` 규약 재사용)
 
-1. **밴딩-only baseline** (Phase 1·패널 B/C): jig 각도별(예: −40°~+40°, 10° 간격) 무하중 10 set.
-   각 set = 해당 각도 유지 상태 시계열(수 초). flat(0°) 기준 포함.
-2. **밴딩+접촉** (Phase 2·3·패널 D/E): 대표 각도(예: 0°, ±20°, ±40°)에서 d5 인덴터
-   grid press(가능하면 flat 최종 취득과 동일 프로토콜 = xy0.5 계단식). 좌표·fz GT 동시 로깅.
-3. **flat 기준**: 동일 세션 flat 데이터 1 set (성능 저하폭 비교 기준).
+1. **밴딩-only baseline** (Phase 1·패널 B/C — **G1 조건**):
+   - −40°~+40°, 10° 간격, 각도별 무하중 10 set. flat(0°) 포함.
+   - **독립 remounting ≥3 session** (센서 탈부착 후 재취득 — G1 held-out 축)
+   - 평가 홀드아웃: **intermediate angle**(학습 각도 사이) + **remounting session** 단위
+   - 온도/장기 drift 로깅 — drift가 각도 예측을 설명하지 않음을 보여야 함
+2. **밴딩+접촉** (Phase 2·3·패널 D/E — **G2 조건**): 0°, ±20°, ±40° × d5 인덴터,
+   xy0.5 계단식 동일 프로토콜(도메인 일치). 좌표·fz GT 동시 로깅. **same-session flat reference 필수**.
+3. **flat 기준**: 동일 세션 flat 1 set (G2의 "corrected bent ≤ 1.5× same-session flat" 판정 기준).
 
 ## npz 컨트랙트 (`sats/bending/dataset.py`)
 
@@ -37,12 +44,15 @@ trial별 `.npz`:
 - `contact` float[N,3] — 선택, (x, y, fz). 밴딩-only는 생략
 - 저장 위치: `learning_data/sensor_raw_bin/<mat>_bend/`
 
-## 취득 후 실행 순서 (P1→P4)
+## 취득 후 실행 순서 (P1→P4, G2 비교군 포함)
 
-1. P1 estimator: `train_bending.train_estimator()` → deg MAE 확인
-2. P2 restorer: 오프셋 지도(A안, bending-only=순수 오프셋) 또는 end-to-end(B안)
-3. P3 pipeline: 밴딩 하 동결 SATS 정확도 vs flat (재학습 0 확인)
-4. P4 figure: 이 폴더에 패널 B–E 산출 + 생성 스크립트 매핑 기록
+1. P1 estimator: `train_bending.train_estimator()` → deg MAE (intermediate-angle·remount 홀드아웃)
+2. P2 restorer: 오프셋 지도(A안) 또는 end-to-end(B안, cudnn off 필요)
+3. P3 pipeline — **G2 5-비교군**: ①uncorrected ②flat-baseline subtraction(naive)
+   ③proposed correction ④curvature-conditioned 모델 ⑤per-curvature retraining(상한선).
+   판정: 전 비-zero 곡률 집계에서 ③>① 개선, paired 개선 95% CI>0, 홀드아웃 trial ≥80% 개선,
+   corrected rel RMSE ≤ 1.5× same-session flat, 독립 remount session에서 재현.
+4. P4 figure: 패널 B–E + calibration burden 비교(⑤ 대비 취득량) — NatComm Fig.3 구성과 일치
 
 ## 사전 검증 (리스크 방어)
 
