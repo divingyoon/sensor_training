@@ -59,18 +59,18 @@ def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     rows: list[tuple[str, str, float]] = []   # (라벨, 종류, 값)
 
-    rows.append(("zero-shot: xy0.5 최종 A(같은 센서·다른 프로토콜)", "zero-shot rel",
+    rows.append(("zero-shot: xy0.5 model (protocol shift)", "zero-shot rel",
                  zero_shot(RUNS / "size_input/ecomesh_xy0p5_sizeinput_val_d5t10_d10t3")))
-    rows.append(("zero-shot: eco20 A(다른 소재=유닛편차 프록시)", "zero-shot rel",
+    rows.append(("zero-shot: eco20 model (unit-variation proxy)", "zero-shot rel",
                  zero_shot(RUNS / "size_input_material/sizeA_eco20_xy1_fold2_e2e_g05")))
 
     for name, run in [
-        ("scratch 1pair(2 trial)", "transfer_efficiency/scratch_1pair"),
-        ("warm(xy0.5) 1pair", "transfer_efficiency/warm_1pair"),
-        ("scratch 2pair(4 trial)=기존 fold3", "size_input_material/sizeA_ecomesh_xy1_fold3_e2e_g05"),
-        ("warm(xy0.5) 2pair", "transfer_efficiency/warm_2pair"),
-        ("cross-warm(eco20→) 2pair", "transfer_efficiency/crosswarm_2pair"),
-        ("xy1 2pair + 0.25mm 출력(81², 해상도 자유 검증)", "transfer_efficiency/xy1_2pair_g025"),
+        ("scratch 1-pair (2 trials)", "transfer_efficiency/scratch_1pair"),
+        ("warm(xy0.5) 1-pair", "transfer_efficiency/warm_1pair"),
+        ("scratch 2-pair (4 trials, ref fold3)", "size_input_material/sizeA_ecomesh_xy1_fold3_e2e_g05"),
+        ("warm(xy0.5) 2-pair", "transfer_efficiency/warm_2pair"),
+        ("cross-warm(eco20) 2-pair", "transfer_efficiency/crosswarm_2pair"),
+        ("xy1 2-pair + 0.25mm output (81x81)", "transfer_efficiency/xy1_2pair_g025"),
     ]:
         rows.append((name, "best val rmse", best_val(RUNS / run)))
 
@@ -91,7 +91,7 @@ def main() -> None:
     ax.barh(labels[::-1], vals[::-1], color=colors[::-1])
     for i, v in enumerate(vals[::-1]):
         ax.text(v, i, f" {v:.3f}", va="center", fontsize=9)
-    ax.set_xlabel("rel RMSE (zero-shot) / best val RMSE (학습)")
+    ax.set_xlabel("rel RMSE (zero-shot) / best val RMSE (trained)")
     ax.set_title("Transfer / data-efficiency rehearsal — holdout = ecomesh_xy1 d5t3+d10t3")
     fig.tight_layout()
     fig.savefig(OUT / "transfer_efficiency.png", dpi=160)

@@ -86,8 +86,8 @@
 - [ ] 재학습(A 모델, 동일 하이퍼) → 진단 재덤프 → flat figure 재생성
 
 ### 3.A 센서 전이/일반화 실험 (2026-07-17 신설 — **논문 소재 확정**, 센서 파손 → 새 센서 대응)
-- [ ] **데이터 효율/전이 리허설** (기존 데이터, GPU): zero-shot 2종(xy0.5→xy1 프로토콜 전이 / eco20→ecomesh 유닛편차 프록시) + scratch·warm-start 1/2-pair 곡선 — 러너 준비 완료(`scripts/rehearse_transfer_efficiency.sh`), RL 학습 종료 대기
-- [ ] **xy1 취득 + fine 출력 검증**: ecomesh_xy1 데이터로 0.25mm(81²) 출력 학습 1회 — "coarse 스캔 + 연속 GT → 임의 해상도" 직접 증거 (다해상도 실증을 xy0.5→xy1로 확장)
+- [x] **데이터 효율/전이 리허설 완료(2026-07-19)**: zero-shot 불가(0.66/0.89) · 1-pair 부족(0.38~0.47) · **2-pair warm 0.132·cross-warm 0.107(전 조건 최고)** → **최소 취득량 N=2 pair(4 trial) 확정**, warm-start 이득(성능+시간 1/10) 확정 (`experiments_archive/transfer_efficiency/transfer_report.md`)
+- [x] **xy1 취득 + 0.25mm 출력 검증 완료**: 4 trial로 0.121 — coarse 스캔+fine 출력 성립 직접 증거
 - [ ] 새 센서 제작 후: zero-shot → per-taxel 게인 보정 → xy1 소량(d5×N+d10×N, N은 리허설로 확정) warm-start fine-tune 3단 평가 → **C4(공용 플랫폼)·취득 효율 주장 보강**
 - 개념 정리(본문 반영용): 취득 스캔 간격(xy1/xy0.5)과 출력 가상 taxel 해상도(0.5/0.25/0.1mm)는 **독립** — 출력 해상도는 연속 GT 덕분에 자유, 위치 정확도 제약은 센서 sparsity+GT 충실도(xy1 학습 loc 0.79mm < 스캔 간격 1mm)
 
