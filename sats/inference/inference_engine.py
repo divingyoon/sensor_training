@@ -31,6 +31,8 @@ from sats.training.config import SATSConfig
 # 상수
 # ─────────────────────────────────────────────────────────────────────────────
 
+# 기본 grid 상수 (하위호환·기본값 표시용). 실제 좌표/면적은 로드한 config 기반
+# 인스턴스 속성(self.grid_*)을 사용하므로, 0.1/0.25mm 등 임의 출력 해상도 모델도 지원.
 GRID_SIZE    = 41
 GRID_MIN_MM  = -10.0
 GRID_MAX_MM  = 10.0
@@ -88,6 +90,15 @@ class SATSInferenceEngine:
         self.model, self.ckpt_info = self._load_model(ckpt_path)
         self.window_size = self.cfg.window_size
 
+        # 출력 grid 를 config 에서 읽는다 (0.5mm=41² 기본, 0.25mm=81², 0.1mm=201² 등).
+        # 좌표·fz 적분·taxel 조회가 모두 이 값을 따르므로 fine 출력 모델도 정확.
+        self.grid_size = int(self.cfg.grid_size)
+        self.grid_min_mm = float(self.cfg.grid_min_mm)
+        self.grid_max_mm = float(self.cfg.grid_max_mm)
+        self.grid_step_mm = float(self.cfg.grid_step_mm)
+        self.taxel_area = self.grid_step_mm ** 2
+        self.grid_coords_mm = np.linspace(self.grid_min_mm, self.grid_max_mm, self.grid_size)
+
         # 크기입력(A) 모델이면 고정 지름을 조건으로 전달. 실시간에서는 접촉 크기를
         # 모르므로 디폴트 d5(학습 데이터 다수 클래스) — size 는 추론 대상이 아니라
         # GT magnitude 컨디셔닝이며, 위치 추정은 size 오지정에도 강건(peak corr 0.96).
@@ -101,6 +112,7 @@ class SATSInferenceEngine:
         print(f"  run_dir    : {self.run_dir}")
         print(f"  device     : {self.device}")
         print(f"  window_size: {self.window_size}")
+        print(f"  output_grid: {self.grid_size}x{self.grid_size} @ {self.grid_step_mm:g}mm")
         print(f"  checkpoint : {self.ckpt_info['path']}")
         print(f"  ckpt_epoch : {self.ckpt_info['epoch']}")
         if self.use_size_input:
@@ -133,10 +145,9 @@ class SATSInferenceEngine:
         pred = out[0] if isinstance(out, tuple) else out
         return pred[0].cpu().numpy()   # [grid, grid]
 
-    @staticmethod
-    def get_peak(pred_map: np.ndarray) -> Tuple[float, float, float]:
+    def get_peak(self, pred_map: np.ndarray) -> Tuple[float, float, float]:
         """
-        예측 맵에서 peak 위치와 값을 반환한다.
+        예측 맵에서 peak 위치와 값을 반환한다 (config grid 좌표 기준).
 
         Returns
         -------
@@ -144,26 +155,25 @@ class SATSInferenceEngine:
         """
         idx = np.unravel_index(np.argmax(pred_map), pred_map.shape)
         row, col = idx
-        x_mm = float(_GRID_COORDS_MM[col])
-        y_mm = float(_GRID_COORDS_MM[row])
+        x_mm = float(self.grid_coords_mm[col])
+        y_mm = float(self.grid_coords_mm[row])
         return x_mm, y_mm, float(pred_map[row, col])
 
-    @staticmethod
-    def get_fz(pred_map: np.ndarray) -> float:
+    def get_fz(self, pred_map: np.ndarray) -> float:
         """
         Fz 추정 = sum(pred_map) × taxel_area [N]
 
+        taxel_area 는 config grid_step² (해상도별 셀 면적) → 적분값은 해상도 불변.
         pred_map 단위는 학습 스케일(×100)이므로 /100 적용.
         """
-        return float(pred_map.clip(0).sum()) * TAXEL_AREA / 100.0
+        return float(pred_map.clip(0).sum()) * self.taxel_area / 100.0
 
-    @staticmethod
-    def get_taxel_value(pred_map: np.ndarray, x_mm: float, y_mm: float) -> float:
-        """특정 (x_mm, y_mm) 위치의 taxel 값을 반환한다."""
-        col = int(round((x_mm - GRID_MIN_MM) / GRID_STEP_MM))
-        row = int(round((y_mm - GRID_MIN_MM) / GRID_STEP_MM))
-        col = max(0, min(GRID_SIZE - 1, col))
-        row = max(0, min(GRID_SIZE - 1, row))
+    def get_taxel_value(self, pred_map: np.ndarray, x_mm: float, y_mm: float) -> float:
+        """특정 (x_mm, y_mm) 위치의 taxel 값을 반환한다 (config grid 기준)."""
+        col = int(round((x_mm - self.grid_min_mm) / self.grid_step_mm))
+        row = int(round((y_mm - self.grid_min_mm) / self.grid_step_mm))
+        col = max(0, min(self.grid_size - 1, col))
+        row = max(0, min(self.grid_size - 1, row))
         return float(pred_map[row, col])
 
     # ── 내부 구현 ─────────────────────────────────────────────────────────────
