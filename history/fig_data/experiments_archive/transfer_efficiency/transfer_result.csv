@@ -1,0 +1,9 @@
+setting,metric,value
+zero-shot: xy0.5 model (protocol shift),zero-shot rel,0.6593015193939209
+zero-shot: eco20 model (unit-variation proxy),zero-shot rel,0.8943796157836914
+scratch 1-pair (2 trials),best val rmse,0.4698301830284153
+warm(xy0.5) 1-pair,best val rmse,0.3843551246887291
+"scratch 2-pair (4 trials, ref fold3)",best val rmse,0.154065415385054
+warm(xy0.5) 2-pair,best val rmse,0.13191370936683447
+cross-warm(eco20) 2-pair,best val rmse,0.1071558095801886
+xy1 2-pair + 0.25mm output (81x81),best val rmse,0.12103684260997553

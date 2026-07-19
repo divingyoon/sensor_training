@@ -1,7 +1,12 @@
 # 논문 투고 로드맵 & 마스터 체크리스트
 
+> **최상위 전략 = Notion "Bending-Aware Tactile Skin — Nature Communications"** (2026-07-18 확정):
+> 타깃 NatComm(fallback AIS), **G0~G3 go/no-go 게이트**, 4-figure 스토리, claim boundaries.
+> 이 문서는 그 아래의 **운영 체크리스트** — 아래 P0의 밴딩 취득은 G0/G1/G2 정합 스펙
+> (`fig3_sats_bending/bending/README.md` 2026-07-18판) 기준. 첫 valid 취득 후 4주 내 G1~G2로 저널 분기.
+>
 > 기준 = 논문 md(`Development_...md`)의 기여 **C1~C4**, §6 Figure Plan, §7 데이터 체크리스트, §9 정량 수치.
-> 갱신: **2026-07-12 v2** — 결정사항 D1~D4 반영(모두 확정). 세부 데이터 위치는 `PROJECT_STRUCTURE.md`.
+> 갱신: **2026-07-18 v3** — NatComm 게이트 정합. 세부 데이터 위치는 `PROJECT_STRUCTURE.md`.
 > 표기: ✅ 완료 · 🔄 진행/부분 · ⬜ 미착수
 
 ---
@@ -32,18 +37,17 @@
 
 ## 2. P0 — Critical Path (이것 없이는 투고 불가)
 
-### 2.1 밴딩 데이터 취득 (C2·Fig.3) — 최우선
-- [ ] jig 준비·각도 눈금 검증 (곡률 GT 신뢰도 — 리스크 항목)
-- [ ] **밴딩-only baseline**: 각도별(예: −40°~+40°, 10° 간격) 무하중 10 set, signed deg, flat(0°) 포함
-- [ ] **밴딩+접촉**: 대표 각도(0°, ±20°, ±40°) × d5 인덴터, **xy0.5 계단식 동일 프로토콜**(도메인 불일치 방지 — pool null result 교훈)
-- [ ] 같은 세션 flat 기준 1 set (성능 저하폭 비교 기준)
+### 2.1 밴딩 데이터 취득 (C2·Fig.3) — 최우선 (⚠️ 새 센서 제작 완료 후, **G0/G1 정합 스펙**)
+- [ ] **G0**: jig 각도 눈금 독립 검증·스트림 동기화·메타(센서ID/온도/retare/session) 기록·registry 추적
+- [ ] **밴딩-only baseline (G1)**: −40°~+40° 10° 간격 × 무하중 10 set + **독립 remounting ≥3 session** + intermediate-angle·remount 홀드아웃 + 온도/drift 로깅
+- [ ] **밴딩+접촉 (G2)**: 0°, ±20°, ±40° × d5, xy0.5 계단식 동일 프로토콜 + **same-session flat reference**
 - [ ] 취득 직후 **사전 검증**: 밴딩·접촉 신호 시간스케일 분리 가능성 + 중첩 선형성 (ill-posed 리스크 게이트)
-- 스펙: `fig3_sats_bending/bending/README.md` / npz: `sensor[N,16] + bend_deg[N] (+contact[N,3])`
+- 스펙 상세: `fig3_sats_bending/bending/README.md` (2026-07-18 G-게이트 정합판)
 
 ### 2.2 밴딩 모델 P1→P4 (`sats/bending`, Phase 0 완료)
 - [ ] P1 estimator 학습 → **곡률 MAE/R²** (§9 수치, Fig.3C)
 - [ ] P2 restorer (A안 오프셋 지도 / B안 end-to-end 중 데이터 보고 결정)
-- [ ] P3 pipeline 검증 → **flat vs bent 보정 전/후 RMSE/R²** (§9 수치, Fig.3D) — *"점진적 저하" 논거의 정량 근거*
+- [ ] P3 pipeline 검증 — **G2 5-비교군**(uncorrected/naive subtraction/proposed/curvature-conditioned/per-curvature retraining 상한) + paired 95% CI·remount 재현 판정 (§9 수치, Fig.3D)
 - [ ] P4 figure: Fig.3 패널 B/C/D/E 생성 스크립트 + report (피규어 재현 코드 원칙)
 
 ### 2.3 Fig.3 완성
@@ -80,6 +84,12 @@
 ### 3.4 성능 보강 취득
 - [ ] **저force d10 반복취득**(xy0.5 계단식) — d10 magnitude 과대예측(현 d10_rel 0.749)의 유일한 남은 해법. Fig.3E 맵 품질에 직결
 - [ ] 재학습(A 모델, 동일 하이퍼) → 진단 재덤프 → flat figure 재생성
+
+### 3.A 센서 전이/일반화 실험 (2026-07-17 신설 — **논문 소재 확정**, 센서 파손 → 새 센서 대응)
+- [x] **데이터 효율/전이 리허설 완료(2026-07-19)**: zero-shot 불가(0.66/0.89) · 1-pair 부족(0.38~0.47) · **2-pair warm 0.132·cross-warm 0.107(전 조건 최고)** → **최소 취득량 N=2 pair(4 trial) 확정**, warm-start 이득(성능+시간 1/10) 확정 (`experiments_archive/transfer_efficiency/transfer_report.md`)
+- [x] **xy1 취득 + 0.25mm 출력 검증 완료**: 4 trial로 0.121 — coarse 스캔+fine 출력 성립 직접 증거
+- [ ] 새 센서 제작 후: zero-shot → per-taxel 게인 보정 → xy1 소량(d5×N+d10×N, N은 리허설로 확정) warm-start fine-tune 3단 평가 → **C4(공용 플랫폼)·취득 효율 주장 보강**
+- 개념 정리(본문 반영용): 취득 스캔 간격(xy1/xy0.5)과 출력 가상 taxel 해상도(0.5/0.25/0.1mm)는 **독립** — 출력 해상도는 연속 GT 덕분에 자유, 위치 정확도 제약은 센서 sparsity+GT 충실도(xy1 학습 loc 0.79mm < 스캔 간격 1mm)
 
 ### 3.5 하드웨어 (진행 중)
 - [x] ~~D3 결정~~ → molding 변경·아랫면 소재 통일 **진행 중**
