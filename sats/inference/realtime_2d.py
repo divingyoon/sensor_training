@@ -73,7 +73,7 @@ class RealtimeViz2D:
         self.ax_info = self.fig.add_subplot(gs[1])
 
         # imshow 초기화
-        empty = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.float32)
+        empty = np.zeros((self.engine.grid_size, self.engine.grid_size), dtype=np.float32)
         self.im = self.ax_map.imshow(
             empty, origin="lower", extent=_EXTENT,
             cmap="hot", vmin=0, vmax=(vmax if vmax else 1.0),
@@ -151,7 +151,7 @@ class RealtimeViz2D:
             self.peak_marker.set_data([x_mm], [y_mm])
 
         if fz is None:
-            fz = float(pred_map.clip(0).sum()) * TAXEL_AREA
+            fz = float(pred_map.clip(0).sum()) * self.engine.taxel_area
 
         # query
         query_val = query_val_nmm2
@@ -200,8 +200,8 @@ class RealtimeViz2D:
         x_mm = float(event.xdata)
         y_mm = float(event.ydata)
         # 그리드에 스냅
-        x_mm = round(round((x_mm - GRID_MIN_MM) / GRID_STEP_MM) * GRID_STEP_MM + GRID_MIN_MM, 4)
-        y_mm = round(round((y_mm - GRID_MIN_MM) / GRID_STEP_MM) * GRID_STEP_MM + GRID_MIN_MM, 4)
+        x_mm = round(round((x_mm - self.engine.grid_min_mm) / self.engine.grid_step_mm) * self.engine.grid_step_mm + self.engine.grid_min_mm, 4)
+        y_mm = round(round((y_mm - self.engine.grid_min_mm) / self.engine.grid_step_mm) * self.engine.grid_step_mm + self.engine.grid_min_mm, 4)
         x_mm = max(GRID_MIN_MM, min(GRID_MAX_MM, x_mm))
         y_mm = max(GRID_MIN_MM, min(GRID_MAX_MM, y_mm))
         self.query_xy_mm = (x_mm, y_mm)

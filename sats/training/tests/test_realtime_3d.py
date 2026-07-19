@@ -8,6 +8,13 @@ from sats.inference.realtime_3d import RealtimeViz3D
 
 
 class _DummyEngine:
+    # 실 엔진 계약: 출력 grid 속성 노출 (뷰어가 메시·좌표 구성에 사용)
+    grid_size = 40
+    grid_min_mm = -10.0
+    grid_max_mm = 10.0
+    grid_step_mm = 20.0 / 39
+    taxel_area = grid_step_mm ** 2
+
     def get_taxel_value(self, pred_map: np.ndarray, x_mm: float, y_mm: float) -> float:
         return float(pred_map.max())
 

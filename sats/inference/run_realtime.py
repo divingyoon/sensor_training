@@ -357,7 +357,7 @@ def main() -> None:
 
                     has_contact = float(viz_map_nmm2.max()) > 0.0
                     viz_peak = engine.get_peak(viz_map_nmm2) if has_contact else None
-                    fz_viz = float(viz_map_nmm2.clip(0).sum()) * TAXEL_AREA
+                    fz_viz = float(viz_map_nmm2.clip(0).sum()) * engine.taxel_area
 
                     if (
                         not low_visibility_warned

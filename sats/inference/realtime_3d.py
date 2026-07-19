@@ -67,6 +67,10 @@ class RealtimeViz3D:
         self.query_xy_mm = query_xy_mm
         self.vmax        = vmax
 
+        # 표면 메시를 engine 출력 grid 에 맞춘다 (0.5mm=41², 0.1mm=201² 등 임의 해상도).
+        _c = np.linspace(engine.grid_min_mm, engine.grid_max_mm, engine.grid_size)
+        self._XX, self._YY = np.meshgrid(_c, _c)
+
         plt.ion()
         self.fig = plt.figure(figsize=(10, 7))
         self.fig.canvas.manager.set_window_title(title)
@@ -128,7 +132,7 @@ class RealtimeViz3D:
         facecolors = plt.cm.Blues(0.25 + 0.75 * norm_z)
 
         self._surf = ax.plot_surface(
-            _XX, _YY, Z,
+            self._XX, self._YY, Z,
             facecolors=facecolors,
             rstride=1,
             cstride=1,
@@ -151,7 +155,7 @@ class RealtimeViz3D:
         else:
             x_mm, y_mm, peak_val = peak
         if fz is None:
-            fz = float(pred_map.clip(0).sum()) * TAXEL_AREA
+            fz = float(pred_map.clip(0).sum()) * self.engine.taxel_area
 
         # 기존 마커 제거 후 재드로우
         for attr in ("_peak_line", "_query_line", "_peak_ann", "_query_ann"):
@@ -229,7 +233,7 @@ class RealtimeViz3D:
         x_mm = max(GRID_MIN_MM, min(GRID_MAX_MM, float(x_mm)))
         y_mm = max(GRID_MIN_MM, min(GRID_MAX_MM, float(y_mm)))
         # 그리드 스냅
-        x_mm = round(round((x_mm - GRID_MIN_MM) / GRID_STEP_MM) * GRID_STEP_MM + GRID_MIN_MM, 4)
-        y_mm = round(round((y_mm - GRID_MIN_MM) / GRID_STEP_MM) * GRID_STEP_MM + GRID_MIN_MM, 4)
+        x_mm = round(round((x_mm - self.engine.grid_min_mm) / self.engine.grid_step_mm) * self.engine.grid_step_mm + self.engine.grid_min_mm, 4)
+        y_mm = round(round((y_mm - self.engine.grid_min_mm) / self.engine.grid_step_mm) * self.engine.grid_step_mm + self.engine.grid_min_mm, 4)
         self.query_xy_mm = (x_mm, y_mm)
         print(f"[3D] query 위치 선택: ({x_mm:+.2f}, {y_mm:+.2f}) mm")
