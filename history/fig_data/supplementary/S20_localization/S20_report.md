@@ -43,3 +43,6 @@
 - 스크립트: `history/fig_data/visualizing_scripts/figure_set/generate_supp_localization.py`
 - 위치추정 = `_peak_xy`(맵 argmax→mm), 오차 = `collect_localization`, 그림 = `plot_localization`.
 - 별도 진단 npz 불필요(체크포인트에서 직접 추론).
+
+
+> **⚠️ 2026-07-20 재평가 정정**: 이 문서의 rel RMSE 수치(특히 d10)는 **저force 분모 왜곡**을 포함한다. rel = rmse/target_RMS 는 저force(target 압력≈0)에서 폭발하며, 계단식 xy0.5·저force 홀드아웃이 특히 영향받았다. **map 품질 재평가(`experiments_archive/reeval/map_quality.md`)로는 위치 loc 0.5mm·peak 상관 높음 = 재구성 정확**. d10 "약함"은 특정 저force 홀드아웃 아티팩트이며 학습 실패 아님. 표준 지표는 loc+peak 상관+rel(저force 제외)+절대 rmse. rel 단독 인용 금지.

@@ -167,7 +167,7 @@ $$ \mathbf{p}_{\text{raw}}(\text{contact},\kappa) \approx \underbrace{\mathbf{p}
 - **Fig.3:** [x] ecomesh flat SR(xy0.5 13 trial 취득·A 모델 학습·패널 완료 → `fig3_sats_bending/flat_sr/`) · [ ] **각도별 bending baseline 10 set(jig, 무하중, signed deg)** — 취득 스펙 `fig3_sats_bending/bending/README.md`, 코드 `sats/bending/`(Phase 0 완료) · [ ] 밴딩+접촉 세트(대표 각도, xy0.5 프로토콜) · [ ] 곡률 회귀 MAE/R²(P1) · [ ] flat vs bent SR 보정 전/후 비교(P3)
 - **Fig.4:** [ ] 로봇핸드+센서 실시간 데모 · [ ] 사람 손 곡면 부착 데모
 - **보강 취득(성능):** [ ] 저force d10 반복취득(xy0.5 계단식 동일 프로토콜 — d10 magnitude 개선 유일 해법) · [ ] 다점 2·3점 zero-shot 테스트 세트(SATS 논문 Fig4E 재현, 재학습 불필요)
-- 로깅 코드: `...\acquisition_code\final_logger_integrated_v3_gui\final_logger_integrated_v3_gui.py` / CSV: `...\due_data_v2_csv`
+- 로깅 코드(2026-07 재구성): `skin_ws/acquisition_code/final_logger.py`(통합 raw binary 로거) + `loadcell_bin_logger.py` / 변환 `convert_bins.py` / 보조 도구는 `tools/`(device_tests·gui·node_generation·analysis), 구버전 `legacy/`. 상세 `skin_ws/acquisition_code/README.md`.
 
 ---
 
