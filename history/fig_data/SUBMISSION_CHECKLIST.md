@@ -85,6 +85,11 @@
 - [ ] **저force d10 반복취득**(xy0.5 계단식) — d10 magnitude 과대예측(현 d10_rel 0.749)의 유일한 남은 해법. Fig.3E 맵 품질에 직결
 - [ ] 재학습(A 모델, 동일 하이퍼) → 진단 재덤프 → flat figure 재생성
 
+### 3.0 새 센서 취득 SOP (2026-07-20 확정 — `ACQUISITION_SOP.md`)
+- **계단식 통일 · 1mm 격자 · d5+d10 · 인덴터당 3 trial · 각 점 저~고force**. 기존 0.5mm×10 대비 스캔점 1/4·반복 1/2, force 범위·공정비교 확보.
+- 근거: 지표 재평가(rel 저force 왜곡·d5 무접촉·loc 0.5mm) + 전이 리허설(warm 2 trial) + 혼합 리허설(rate 통일).
+- 취득 후: warm-start fine-tune(A) + 표준 지표(loc+peak상관+rel저force제외+절대rmse). 밴딩 G0/G1·다점과 한 세션에.
+
 ### 3.A 센서 전이/일반화 실험 (2026-07-17 신설 — **논문 소재 확정**, 센서 파손 → 새 센서 대응)
 - [x] **데이터 효율/전이 리허설 완료(2026-07-19)**: zero-shot 불가(0.66/0.89) · 1-pair 부족(0.38~0.47) · **2-pair warm 0.132·cross-warm 0.107(전 조건 최고)** → **최소 취득량 N=2 pair(4 trial) 확정**, warm-start 이득(성능+시간 1/10) 확정 (`experiments_archive/transfer_efficiency/transfer_report.md`)
 - [x] **xy1 취득 + 0.25mm 출력 검증 완료**: 4 trial로 0.121 — coarse 스캔+fine 출력 성립 직접 증거
