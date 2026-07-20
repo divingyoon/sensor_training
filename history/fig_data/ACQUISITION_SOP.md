@@ -36,9 +36,27 @@
 
 ## 학습·평가 (취득 후)
 
-- **학습**: 기존 ecomesh 가중치에서 warm-start fine-tune (전이 리허설 검증, ~30분). 크기입력(A) 유지.
-- **평가**: 표준 지표 = **loc + peak 상관 + rel(저force 제외) + 절대 rmse** (rel 단독 금지, reeval 교훈). 출력 grid는 0.5mm 기본 + 데모용 0.25/0.1mm 선택(엔진 다해상도 지원됨).
-- **공정 비교**: 동일 SOP 데이터라 소재/인덴터를 같은 force 구간에서 직접 비교 (`reeval_map_quality.py` 재사용).
+**핵심 원칙: d5+d10을 반드시 섞어서 학습** (분리 금지 — d10-only는 loc 1.58mm·corr 0.32로 최악, d5가 부족한 d10을 보완). 크기입력(A)으로 크기 구분.
+
+**③ warm-start 학습** (기존 ecomesh 가중치에서, ~20ep/30분):
+```bash
+.venv/bin/python -m sats.training.train_e2e \
+  --gt-mode gpu_on_the_fly --raw-dir learning_data/sensor_raw_bin \
+  --gt-dir learning_data/trial_indices/<새센서인덱스> \
+  --val-ratio 0 --val-trials <홀드아웃 d5·d10 각1> \
+  --use-indenter-size-input \
+  --init-ckpt sats/training/runs/size_input/ecomesh_xy0p5_sizeinput_val_d5t10_d10t3/best_model.pt \
+  --epochs 20 --grid-step-mm 0.5 --run-name newsensor_warm
+```
+- 인덱스에 d5·d10 train trial 모두 포함(섞음), val-trials로 홀드아웃 분리.
+- `--init-ckpt` = warm-start(계단식이라 xy0.5 가중치가 좋은 출발, 전이 리허설 검증). from-scratch도 되나 warm이 성능+시간 우위.
+- 데모용 고해상도는 `--grid-step-mm 0.25`(또는 0.1)로 별도 학습(엔진 다해상도 지원).
+
+**④ 평가**: 표준 지표 = **loc + peak 상관 + rel(저force 제외) + 절대 rmse** (rel 단독 금지, reeval 교훈). `reeval_map_quality.py`에 새 run 추가해 재사용.
+
+**공정 비교**: 동일 SOP 데이터라 소재/인덴터를 같은 force 구간에서 직접 비교 가능.
+
+**주의(관찰)**: 크기입력(A)은 magnitude 개선/위치 미세손해 trade-off가 있었으나 저force 홀드아웃 한계 탓 → 새 데이터는 force 커버리지가 좋아 A 유지 권장. 취득 후 A vs no-size 를 map 품질로 재확인.
 
 ## 세션 묶음 (한 셋업에)
 

@@ -181,11 +181,18 @@ $$ \mathbf{p}_{\text{raw}}(\text{contact},\kappa) \approx \underbrace{\mathbf{p}
 ---
 
 ## 9. 채울 정량 수치(Results 표용)
-- Flat SR: RMSE(mm), R², SR scale factor
-- 소재별(eco20/eco50/ecomesh): ΔS 확산폭, 활성 taxel 수, SR RMSE/R²
-- 곡률 추정: MAE(°/κ), R²
-- Bent SR(보정 전/후): RMSE/R², 성능 저하폭
-- 다중 접점 분리 / 동적(슬립) 지표
+
+> **표준 지표(2026-07-20 확정)**: rel RMSE 단독 금지 — 저force(target 압력≈0)에서 분모 폭발 왜곡. **위치=loc(argmax 오차), 형태·강도=peak 상관, magnitude=peak 비율, + rel(저force 제외)·절대 rmse 병기.** 근거: `experiments_archive/reeval/`.
+
+- **Flat SR 위치(loc)**: ecomesh **0.5 mm**(map 품질 재평가, d10) / S20 argmax 0.79 mm(xy1). peak 상관 0.976.
+- **소재 서열(map 품질, d10)**: **Eco-mesh(loc 0.5·peak상관 0.976) > Eco20(0.71·0.944) > Eco50(1.0·0.901)** — rel 왜곡 배제, `Fig2D_B_mapquality.png`. (d5는 무접촉이라 소재 비교 불가 → 새 SOP로 해결 예정.)
+- **SR scale factor**: ≈105× (41²/16), 다해상도 27×~2525× 안정.
+- **d5/d10 섞음 효과**: 섞어 학습이 d10에 유리(d10-only loc 1.58 ≫ 섞음 0.71). 위치·해상도 추종 — 해상도별 loc median 0.5mm(0.5mm)→0.22mm(0.1mm), fz 적분 ~15% 해상도 불변.
+- 곡률 추정: MAE(°/κ), R² — 밴딩 취득 후
+- Bent SR(보정 전/후): loc·peak상관·rel(저force제외) 저하폭 — 밴딩 취득 후
+- 다중 접점 분리 / 동적(슬립) 지표 — 취득 후
+
+> ⚠️ 과거 초안의 "d10_rel 0.749 / 소재 d10_rel 0.182·0.259·0.336" 수치는 저force 왜곡 포함 → **재인용 금지**, 위 map 품질로 대체.
 
 ### 9.1 측정값 — 소재 ablation (Fig.2, xy_1mm, 2026-06-23 / 각 소재 d5·d10 1세트)
 > 출처: `visualizing_scripts/xy_1mm/Analysis_Results/Fig2_report.md` (패널 B 수용장, 패널 C 배열 메트릭). 미충족 항목(SR RMSE/R²)은 패널 D 학습 후 추가.

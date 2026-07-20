@@ -25,3 +25,5 @@
 .venv/bin/python history/fig_data/visualizing_scripts/figure_set/generate_supp_summary.py
 ```
 입력: `fig3_diag/diag_summary.csv`, `final_xy0p5_diag/diag_summary.csv`, `S20_localization/loc_summary.csv`.
+
+> **⚠️ 2026-07-20 재평가 정정**: 표의 **d10 rel 수치는 저force 분모 왜곡** 포함(rel=rmse/target_RMS, 저force에서 폭발). map 품질(`../../experiments_archive/reeval/map_quality.md`)로는 위치 loc 0.5mm·peak 상관 높음 = 재구성 정확. **d10 rel 단독 인용 금지**, loc+peak상관+rel(저force제외) 사용. d5 rel도 무접촉 구간 포함 주의.
