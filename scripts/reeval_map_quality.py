@@ -34,8 +34,11 @@ MODELS = {
     "ecomesh xy1": "sats/training/runs/size_input_material/sizeA_ecomesh_xy1_fold3_e2e_g05",
     "eco20 xy1":   "sats/training/runs/size_input_material/sizeA_eco20_xy1_fold2_e2e_g05",
     "eco50 xy1":   "sats/training/runs/size_input_material/sizeA_eco50_xy1_fold1_e2e_g05",
-    "ecomesh xy0.5 (A)": "sats/training/runs/size_input/ecomesh_xy0p5_sizeinput_val_d5t10_d10t3",
-    "d5-only 0.5mm":     "sats/training/runs/d5_only_multires/d5only_beta_g0p5",
+    # ── 섞음 vs 분리 비교 (동일 xy0.5 홀드아웃 d5t10·d10t3) ──
+    "mixed+A (섞음, size)":  "sats/training/runs/size_input/ecomesh_xy0p5_sizeinput_val_d5t10_d10t3",
+    "mixed (섞음, no-size)": "sats/training/runs/datarich_probe/ecomesh_xy0p5_datarich_val_d5test10_d10test3",
+    "d10-only (분리)":       "sats/training/runs/d10_only/ecomesh_xy0p5_d10only_val_test3",
+    "d5-only (분리, β)":     "sats/training/runs/d5_only_multires/d5only_beta_g0p5",
 }
 
 
