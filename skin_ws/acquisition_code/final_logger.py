@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import re
 import struct
@@ -33,7 +34,7 @@ try:
     )
 except ImportError:
     LOADCELL_BAUD = 115200
-    LOADCELL_PORT = "COM9"
+    LOADCELL_PORT = "COM10"
     LOADCELL_READ_SIZE = 8192
     LOADCELL_RX_BUFFER_SIZE = 1024 * 1024
     LOADCELL_TIMEOUT = 0.01
@@ -68,6 +69,7 @@ ETHERMOTION_IDLE_TIMEOUT = 10.0
 DUE_PRESTART_PROBE_TIMEOUT = 2.0
 AFD50_PRESTART_PROBE_TIMEOUT = 2.0
 LOADCELL_PRESTART_PROBE_TIMEOUT = 2.0
+LOADCELL_VALUE_PATTERN = re.compile(r"[-+]?\d+(?:\.\d+)?")
 
 NUM_SENSORS = 16
 FIFO_FRAMES = 10
@@ -84,8 +86,7 @@ ETHERMOTION_RECORD_STRUCT = struct.Struct("<Qddddiiii")
 BUFFER_RECORDS = 8192
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-base_dir = os.path.dirname(current_dir)
-raw_data_dir = os.path.join(base_dir, "raw_data")
+raw_data_dir = os.path.join(current_dir, "log")
 
 due_queue = Queue()
 afd_queue = Queue()
@@ -98,8 +99,12 @@ logging_started = threading.Event()
 due_ready = threading.Event()
 afd_ready = threading.Event()
 loadcell_ready = threading.Event()
+loadcell_baseline_done = threading.Event()
 ethermotion_done = threading.Event()   # EtherMotion 스레드가 동작 종료 감지 시 set
 reader_errors = Queue()
+
+loadcell_baseline_lock = threading.Lock()
+loadcell_baseline_stats = {}
 
 _stage_count = 0
 _stage_errors = 0
@@ -108,6 +113,68 @@ _stage_lock = threading.Lock()
 
 def elapsed_ns():
     return time.perf_counter_ns() - log_start_ns
+
+
+def reset_loadcell_baseline():
+    with loadcell_baseline_lock:
+        loadcell_baseline_stats.clear()
+        loadcell_baseline_stats.update(
+            {
+                "samples": 0,
+                "sum": 0.0,
+                "sumsq": 0.0,
+                "min": None,
+                "max": None,
+                "duration_sec": LOADCELL_PRESTART_PROBE_TIMEOUT,
+            }
+        )
+
+
+def parse_loadcell_kg(raw_line):
+    match = LOADCELL_VALUE_PATTERN.search(raw_line)
+    if match is None:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def add_loadcell_baseline_sample(kg):
+    with loadcell_baseline_lock:
+        stats = loadcell_baseline_stats
+        stats["samples"] += 1
+        stats["sum"] += kg
+        stats["sumsq"] += kg * kg
+        stats["min"] = kg if stats["min"] is None else min(stats["min"], kg)
+        stats["max"] = kg if stats["max"] is None else max(stats["max"], kg)
+
+
+def loadcell_baseline_summary():
+    with loadcell_baseline_lock:
+        stats = dict(loadcell_baseline_stats)
+    samples = stats.get("samples", 0)
+    if samples <= 0:
+        return {
+            "enabled": True,
+            "samples": 0,
+            "duration_sec": LOADCELL_PRESTART_PROBE_TIMEOUT,
+            "mean_kg": None,
+            "std_kg": None,
+            "peak_to_peak_kg": None,
+        }
+    mean = stats["sum"] / samples
+    variance = max((stats["sumsq"] / samples) - (mean * mean), 0.0)
+    return {
+        "enabled": True,
+        "samples": samples,
+        "duration_sec": stats.get("duration_sec", LOADCELL_PRESTART_PROBE_TIMEOUT),
+        "mean_kg": mean,
+        "std_kg": math.sqrt(variance),
+        "min_kg": stats["min"],
+        "max_kg": stats["max"],
+        "peak_to_peak_kg": stats["max"] - stats["min"],
+    }
 
 
 def payload_to_rows(payload):
@@ -274,6 +341,7 @@ def loadcell_reader():
         read_view = memoryview(read_buffer)
         probe_deadline = time.perf_counter() + LOADCELL_PRESTART_PROBE_TIMEOUT
         received_prestart = False
+        baseline_buffer = b""
 
         while is_running and not logging_started.is_set() and time.perf_counter() < probe_deadline:
             payload_size = ser.readinto(read_buffer)
@@ -284,6 +352,20 @@ def loadcell_reader():
                         file=sys.stderr,
                     )
                     received_prestart = True
+                baseline_buffer += bytes(read_view[:payload_size])
+                while b"\n" in baseline_buffer:
+                    line, _, baseline_buffer = baseline_buffer.partition(b"\n")
+                    line_str = line.decode("ascii", errors="replace").strip()
+                    kg = parse_loadcell_kg(line_str)
+                    if kg is not None:
+                        add_loadcell_baseline_sample(kg)
+
+        if baseline_buffer:
+            line_str = baseline_buffer.decode("ascii", errors="replace").strip()
+            kg = parse_loadcell_kg(line_str)
+            if kg is not None:
+                add_loadcell_baseline_sample(kg)
+        loadcell_baseline_done.set()
 
         if is_running and not logging_started.is_set() and not received_prestart:
             print(
@@ -308,6 +390,7 @@ def loadcell_reader():
         if loadcell_ready.is_set():
             print(f"Loadcell disconnected during logging; continuing without loadcell. ({exc})", file=sys.stderr)
         reader_errors.put(("LOADCELL", str(exc)))
+        loadcell_baseline_done.set()
     finally:
         if ser is not None and ser.is_open:
             ser.close()
@@ -559,6 +642,7 @@ def write_loadcell_header(binfile):
             "rx_buffer_size": LOADCELL_RX_BUFFER_SIZE,
             "timebase": "nanoseconds since integrated logging start",
             "payload": "raw RS232 bytes from indicator",
+            "baseline": loadcell_baseline_summary(),
             "created_at": datetime.now().isoformat(timespec="seconds"),
         },
     )
@@ -782,6 +866,8 @@ def main(argv=None):
     due_ready.clear()
     afd_ready.clear()
     loadcell_ready.clear()
+    loadcell_baseline_done.clear()
+    reset_loadcell_baseline()
     logging_started.clear()
     ethermotion_done.clear()
     return_code = 0
@@ -836,6 +922,21 @@ def main(argv=None):
         f"Loadcell {'connected/waiting' if loadcell_ready.is_set() else 'disconnected'}.",
         file=sys.stderr,
     )
+
+    if loadcell_ready.is_set():
+        loadcell_baseline_done.wait(timeout=LOADCELL_PRESTART_PROBE_TIMEOUT + 0.5)
+        baseline = loadcell_baseline_summary()
+        if baseline["samples"]:
+            print(
+                "Loadcell baseline: "
+                f"mean={baseline['mean_kg']:.6f} kg, "
+                f"std={baseline['std_kg']:.6f} kg, "
+                f"p2p={baseline['peak_to_peak_kg']:.6f} kg, "
+                f"samples={baseline['samples']}.",
+                file=sys.stderr,
+            )
+        else:
+            print("Loadcell baseline: no samples captured.", file=sys.stderr)
 
     due_count = 0
     afd_count = 0

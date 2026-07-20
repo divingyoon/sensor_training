@@ -12,7 +12,7 @@ except ImportError:
     serial = None
 
 
-DEFAULT_PORT = "COM9"
+DEFAULT_PORT = "COM10"
 DEFAULT_BAUD = 115200
 DEFAULT_TIMEOUT = 1.0
 DEFAULT_ENCODING = "ascii"

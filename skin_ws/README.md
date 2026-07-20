@@ -10,7 +10,8 @@
 skin_ws/
 ├── raw_data/          # 원본 raw BIN 아카이브 (읽기 전용)
 ├── node/              # mk555 stage 스캔 프로그램 (.node)
-├── acquisition_code/  # 취득/디버그 스크립트
+├── acquisition_code/  # 취득 코드 (final_logger.py 통합 로거 + loadcell_bin_logger·convert_bins,
+│                      #   tools/{device_tests,gui,node_generation,analysis}, legacy/ — 자체 README)
 ├── md/                # 센서 사양·실험 노트
 └── backup/            # 펌웨어/구버전 백업
 ```

@@ -276,6 +276,14 @@ def iter_loadcell_records(path):
             record_i += 1
 
 
+def read_loadcell_header(path):
+    with open(path, "rb") as binfile:
+        magic, header = read_bin_header(binfile)
+        if magic != LOADCELL_MAGIC:
+            raise ValueError(f"{path}: expected {LOADCELL_MAGIC}, got {magic}")
+        return header
+
+
 def convert_loadcell_bin(input_path, output_path):
     import re as _re
     VALUE_PATTERN = _re.compile(r"[-+]?\d+(?:\.\d+)?")
@@ -288,6 +296,10 @@ def convert_loadcell_bin(input_path, output_path):
             return float(match.group(0))
         except ValueError:
             return None
+
+    header = read_loadcell_header(input_path)
+    baseline = header.get("baseline") or {}
+    baseline_mean = baseline.get("mean_kg")
 
     rows = []
     buffer = b""
@@ -302,22 +314,30 @@ def convert_loadcell_bin(input_path, output_path):
             kg = parse_kg(line_str)
             if kg is None:
                 continue
-            rows.append((elapsed_ns, kg))
+            kg_zeroed = kg - baseline_mean if baseline_mean is not None else None
+            rows.append((elapsed_ns, kg, kg_zeroed))
 
     if buffer:
         line_str = buffer.decode("ascii", errors="replace").strip()
         if line_str:
             kg = parse_kg(line_str)
             if kg is not None:
-                rows.append((elapsed_ns, kg))
+                kg_zeroed = kg - baseline_mean if baseline_mean is not None else None
+                rows.append((elapsed_ns, kg, kg_zeroed))
 
     with open(output_path, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(["elapsed_ns", "time_s", "kg"])
-        for elapsed_ns, kg in rows:
-            writer.writerow([elapsed_ns, elapsed_ns / 1_000_000_000, kg])
+        writer.writerow(["elapsed_ns", "time_s", "kg_raw", "kg_zeroed", "baseline_mean_kg"])
+        for elapsed_ns, kg, kg_zeroed in rows:
+            writer.writerow([
+                elapsed_ns,
+                elapsed_ns / 1_000_000_000,
+                kg,
+                "" if kg_zeroed is None else kg_zeroed,
+                "" if baseline_mean is None else baseline_mean,
+            ])
 
-    return {"rows": len(rows)}
+    return {"rows": len(rows), "baseline_mean_kg": baseline_mean}
 
 
 def find_bin_set(test_dir):
@@ -378,9 +398,9 @@ def convert_set(inputs, output_dir, args):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Convert binary logs in the latest raw_data test folder into CSV files."
+        description="Convert binary logs in the latest log test folder into CSV files."
     )
-    default_base = Path(__file__).resolve().parents[1]
+    default_base = Path(__file__).resolve().parent
     parser.add_argument("--base-dir", type=Path, default=default_base)
     parser.add_argument(
         "--bias-samples",
@@ -399,15 +419,15 @@ def parse_args():
 def main():
     args = parse_args()
     base_dir = args.base_dir.resolve()
-    raw_data_dir = base_dir / "raw_data"
+    raw_data_dir = base_dir / "log"
 
     if not raw_data_dir.exists():
-        print(f"raw_data directory not found: {raw_data_dir}", file=sys.stderr)
+        print(f"log directory not found: {raw_data_dir}", file=sys.stderr)
         return 1
 
     test_dir = find_target_test_dir(raw_data_dir)
     if test_dir is None:
-        print("No test folder without CSV files found in raw_data/.", file=sys.stderr)
+        print("No test folder without CSV files found in log/.", file=sys.stderr)
         return 1
 
     inputs = find_bin_set(test_dir)
