@@ -55,6 +55,9 @@ figure_set.html
 
 # Large acquisition node data (skin_ws/node/*.node, 31MB total)
 *.node
+# 예외: 새 센서 취득용 xy1 계단식 node (재생성 가능하나 추적)
+!skin_ws/node/SATS_d5_mk20_StairStep_xy1_05_Ufix_velfix.node
+!skin_ws/node/SATS_d10_mk20_StairStep_xy1_05_Ufix_velfix.node
 
 # 재생성 가능한 진단 per-sample 덤프(대용량) — pngs/csv/README만 추적
 samples_*.npz
