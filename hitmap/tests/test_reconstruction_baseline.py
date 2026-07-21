@@ -11,7 +11,7 @@ from training.utils.reconstruction_baseline import (
 
 class ReconstructionBaselineTest(unittest.TestCase):
     def test_collect_baseline_rows_reads_current_and_legacy_sources(self) -> None:
-        repo_root = Path("/home/user/sensor_training")
+        repo_root = Path(__file__).resolve().parents[2]
 
         rows = collect_baseline_rows(repo_root)
 
@@ -24,7 +24,7 @@ class ReconstructionBaselineTest(unittest.TestCase):
         self.assertIn("legacy_sr_ff_report_reference", run_names)
 
     def test_markdown_table_separates_upper_bound_rows(self) -> None:
-        repo_root = Path("/home/user/sensor_training")
+        repo_root = Path(__file__).resolve().parents[2]
 
         rows = collect_baseline_rows(repo_root)
         markdown = render_markdown_table(rows)

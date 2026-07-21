@@ -9,11 +9,14 @@ from pathlib import Path
 from typing import List, Optional
 
 
+_REPO = Path(__file__).resolve().parents[3]  # hitmap/ 상위(저장소 루트)
+
+
 @dataclass
 class TrainConfig:
     # 경로
-    data_dir: Path = Path("/home/user/sensor_training/preprocessing/preprocessing_data")
-    out_dir: Path = Path("/home/user/sensor_training/training/runs")
+    data_dir: Path = _REPO / "preprocessing/preprocessing_data"
+    out_dir: Path = _REPO / "training/runs"
 
     # 모델 phase
     phase: int = 1  # 1: MLP+CNN baseline, 2: 1D CNN + FiLM

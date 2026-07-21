@@ -2,7 +2,7 @@
 # Experiment A: xy_1mm 소재별 SATS 성능평가 (3 materials x 3 folds = 9 runs)
 set -uo pipefail
 
-cd /home/user/sensor_training
+cd "$(dirname "$0")/.." || exit 1   # 저장소 루트(scripts/ 상위)로 이동, 환경 무관
 PY=.venv/bin/python
 OUT_DIR="sats/training/runs/xy1_material_d5d10"
 CACHE_DIR="learning_data/gt_meta_cache_xy_d5d10_g05"

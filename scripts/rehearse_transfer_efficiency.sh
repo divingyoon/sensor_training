@@ -3,7 +3,7 @@
 # 질문: 소량(xy1 1~2 pair)으로 충분한가? warm-start 가 이득인가? 교차-출발(유닛 편차 프록시)은?
 # 홀드아웃 고정 = ecomesh_xy1 fold3 (d5 test3 + d10 test3) → 기존 sizeA_ecomesh_xy1_fold3(=scratch_2pair)와 직접 비교.
 set -uo pipefail
-cd /home/user/sensor_training
+cd "$(dirname "$0")/.." || exit 1   # 저장소 루트(scripts/ 상위)로 이동, 환경 무관
 PY=.venv/bin/python
 OUT_DIR="sats/training/runs/transfer_efficiency"
 CACHE_DIR="learning_data/gt_meta_cache_xy_d5d10_g05"

@@ -10,7 +10,7 @@ Raw sensor stream merger for tactile super-resolution experiments.
 5) 무부하(baseline) 구간 통계(due/loadcell) JSON 저장
 
 예시:
-  python3 sats/preprocessing/raw_merge.py --raw-root /home/user/sensor_training/raw_data
+  python3 sats/preprocessing/raw_merge.py --raw-root <repo>/raw_data
 """
 
 from __future__ import annotations

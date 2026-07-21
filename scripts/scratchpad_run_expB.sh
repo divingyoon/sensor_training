@@ -2,7 +2,7 @@
 # Experiment B: ecomesh xy_1mm vs xy_0.5mm controlled comparison (2 materials x 3 folds = 6 runs)
 set -uo pipefail
 
-cd /home/user/sensor_training
+cd "$(dirname "$0")/.." || exit 1   # 저장소 루트(scripts/ 상위)로 이동, 환경 무관
 PY=.venv/bin/python
 OUT_DIR="sats/training/runs/ecomesh_resolution_controlled_d5d10"
 CACHE_DIR="learning_data/gt_meta_cache_xy_d5d10_g05"

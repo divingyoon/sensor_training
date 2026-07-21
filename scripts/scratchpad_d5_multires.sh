@@ -3,7 +3,7 @@
 # d5 단일이라 크기입력 불필요(애매성 없음). holdout = d5 test10.
 # β 계수 = FE-Ogden 압축 유도(c1=0.00244, c2=1.7e-4, clamp≤2.0).
 set -uo pipefail
-cd /home/user/sensor_training
+cd "$(dirname "$0")/.." || exit 1   # 저장소 루트(scripts/ 상위)로 이동, 환경 무관
 PY=.venv/bin/python
 OUT_DIR="sats/training/runs/d5_only_multires"
 CACHE_DIR="learning_data/gt_meta_cache_xy_d5d10_g05"   # 0.5는 캐시, 1.0/0.25는 on-the-fly fallback

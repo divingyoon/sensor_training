@@ -4,7 +4,8 @@ import sys
 import os
 
 def main():
-    file_path = r'C:\Users\SORO7\Desktop\Tactile\skin_ws\raw_data\20260604_test1\ethermotion_encoder_20260604_161138.bin'
+    # 검사할 .bin 경로 (저장소 상대 예시; 실제 파일로 교체)
+    file_path = 'skin_ws/raw_data/<test_folder>/ethermotion_encoder_*.bin'
 
     if not os.path.exists(file_path):
         print(f"Error: File not found: {file_path}")

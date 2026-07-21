@@ -2,7 +2,7 @@
 # 목표: 실험 재진행(eco50 교정 재학습 + ecomesh pooled) 후 figure set 전체 재생성.
 # 백그라운드 실행. 각 단계 로그 마커로 진행 추적.
 set -uo pipefail
-cd /home/user/sensor_training
+cd "$(dirname "$0")/.." || exit 1   # 저장소 루트(scripts/ 상위)로 이동, 환경 무관
 PY=.venv/bin/python
 CACHE=learning_data/gt_meta_cache_xy_d5d10_g05
 mark(){ echo ""; echo "########## $(date +%H:%M:%S) $* ##########"; echo ""; }

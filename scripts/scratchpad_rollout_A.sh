@@ -2,7 +2,7 @@
 # 최종 롤아웃: 소재 대표 fold를 크기입력(A)로 재학습. β 없음.
 # 대표 fold = fig3/summary 가 쓰는 것: eco20 fold2, eco50 fold1, ecomesh fold3.
 set -uo pipefail
-cd /home/user/sensor_training
+cd "$(dirname "$0")/.." || exit 1   # 저장소 루트(scripts/ 상위)로 이동, 환경 무관
 PY=.venv/bin/python
 OUT_DIR="sats/training/runs/size_input_material"
 CACHE_DIR="learning_data/gt_meta_cache_xy_d5d10_g05"

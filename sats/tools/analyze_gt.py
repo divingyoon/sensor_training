@@ -8,7 +8,7 @@ val_rmse=0.00579 이 좋은 성능인지 판단하기 위해
 GT의 실제 값 분포(단위: N/mm²)를 분석한다.
 
 실행:
-    cd /home/user/sensor_training
+    cd <repo>
     python3 -m sats.tools.analyze_gt
     python3 -m sats.tools.analyze_gt --trial ecomesh_d5_z1.5_test1
 """

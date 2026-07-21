@@ -4,7 +4,7 @@
 #       그 대가로 xy1 위치 성능이 저하되는가? (프로토콜 점탄성 도메인 혼합 리스크)
 # 새 센서 없이 기존 ecomesh 데이터로 취득 전 검증. scratch(출발점 편향 없음), 크기입력 A.
 set -uo pipefail
-cd /home/user/sensor_training
+cd "$(dirname "$0")/.." || exit 1   # 저장소 루트(scripts/ 상위)로 이동, 환경 무관
 PY=.venv/bin/python
 OUT_DIR="sats/training/runs/mix_protocol"
 CACHE_DIR="learning_data/gt_meta_cache_xy_d5d10_g05"

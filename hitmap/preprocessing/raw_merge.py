@@ -11,7 +11,7 @@ Raw sensor stream merger for tactile super-resolution experiments.
 
 예시:
   python3 preprocessing/raw_merge.py \
-    --raw-root /home/user/sensor_training/preprocessing/raw_data
+    --raw-root <repo>/preprocessing/raw_data
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--raw-root",
         type=Path,
-        default=Path("/home/user/sensor_training/preprocessing/raw_data"),
+        default=Path(__file__).resolve().parents[1] / "preprocessing/raw_data",
         help="Root directory that contains trial folders.",
     )
     parser.add_argument(

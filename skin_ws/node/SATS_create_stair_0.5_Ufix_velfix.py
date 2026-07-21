@@ -1,7 +1,7 @@
 import os
 
 def generate_raster_node():
-    save_dir = r"C:\Users\SORO7\Desktop\node_create"
+    save_dir = os.path.dirname(os.path.abspath(__file__))  # skin_ws/node 고정(환경 무관)
     os.makedirs(save_dir, exist_ok=True)
     full_path = os.path.join(save_dir, "SATS_d5_mk20_StairStep_05_Ufix_velfix.node")
 
