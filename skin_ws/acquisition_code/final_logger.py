@@ -21,6 +21,8 @@ try:
 except ImportError:
     can = None
 
+from serial_autodetect import resolve_port
+
 try:
     from loadcell_bin_logger import (
         DEFAULT_BAUD as LOADCELL_BAUD,
@@ -44,8 +46,17 @@ except ImportError:
 
 
 DLL_PATH = r"C:\Program Files (x86)\PAIX\NMC\DLL\x64\NMC2.dll"
-DUE_PORT = "COM11"
+DUE_PORT = "COM11"  # fallback only; auto-detected in main() when possible
 DUE_BAUD_RATE = 250000
+
+# Arduino Due shows up under VID 0x2341 (Programming Port PID 0x003D, Native
+# USB Port PID 0x003E); "arduino"/"due" also covers boards with other PIDs.
+DUE_PORT_VID_PID = {(0x2341, 0x003D), (0x2341, 0x003E)}
+DUE_PORT_KEYWORDS = ("arduino", "due")
+
+# CI-400AL indicator is connected through a Prolific USB-RS232 adapter.
+LOADCELL_PORT_VID_PID = {(0x067B, 0x2303)}
+LOADCELL_PORT_KEYWORDS = ("prolific", "usb-to-serial", "usb serial")
 
 CAN_INTERFACE = "ixxat"
 CAN_CHANNEL = 0
@@ -835,6 +846,18 @@ def parse_args(argv=None):
     parser.add_argument("--dev-no", type=int, default=DEV_NO)
     parser.add_argument("--group-no", type=int, default=GROUP_NO)
     parser.add_argument(
+        "--due-port",
+        default=None,
+        help="Force the DUE serial port (e.g. COM11). Default: auto-detect, "
+        "falling back to the DUE_PORT env var, then the hardcoded default.",
+    )
+    parser.add_argument(
+        "--loadcell-port",
+        default=None,
+        help="Force the loadcell serial port (e.g. COM10). Default: auto-detect, "
+        "falling back to the LOADCELL_PORT env var, then the hardcoded default.",
+    )
+    parser.add_argument(
         "--start-trigger",
         choices=("ethermotion", "manual", "immediate"),
         default="ethermotion",
@@ -853,12 +876,21 @@ def parse_args(argv=None):
 
 def main(argv=None):
     global is_running, log_start_ns, ETHERMOTION_HZ, ETHERMOTION_INTERVAL
-    global _stage_count, _stage_errors
+    global _stage_count, _stage_errors, DUE_PORT, LOADCELL_PORT
 
     args = parse_args(argv)
 
     ETHERMOTION_HZ = args.ethermotion_hz
     ETHERMOTION_INTERVAL = 1.0 / ETHERMOTION_HZ if ETHERMOTION_HZ > 0 else 0.0
+
+    DUE_PORT = resolve_port(
+        "DUE", args.due_port, os.environ.get("DUE_PORT"), DUE_PORT,
+        DUE_PORT_VID_PID, DUE_PORT_KEYWORDS,
+    )
+    LOADCELL_PORT = resolve_port(
+        "Loadcell", args.loadcell_port, os.environ.get("LOADCELL_PORT"), LOADCELL_PORT,
+        LOADCELL_PORT_VID_PID, LOADCELL_PORT_KEYWORDS,
+    )
 
     is_running = True
     _stage_count = 0

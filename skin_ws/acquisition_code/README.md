@@ -9,23 +9,45 @@
 ```text
 final_logger.py                 최종 통합 raw binary logger
 loadcell_bin_logger.py          final_logger.py가 사용하는 로드셀 raw helper
+serial_autodetect.py            DUE/로드셀 COM 포트 자동 인식 helper
 convert_bins.py                 raw binary -> CSV 변환
 README.md                       이 문서
 README_LOADCELL_INDICATOR.md    CI-400AL 로드셀 인디케이터 설정
 ```
 
-`final_logger.py`는 `loadcell_bin_logger.py`를 import하므로 두 파일은 같은 폴더에 둔다.
+`final_logger.py`는 `loadcell_bin_logger.py`와 `serial_autodetect.py`를 import하므로 세 파일은 같은 폴더에 둔다.
 
 ## 현재 장비 설정
 
 ```text
-DUE serial:       COM11, 250000 bps
-Loadcell serial:  COM10, 115200 bps, 8N1
+DUE serial:       COM11, 250000 bps (자동 인식, 아래 참고)
+Loadcell serial:  COM10, 115200 bps, 8N1 (자동 인식, 아래 참고)
 AFD50 CAN:        ixxat, channel 0, 1 Mbps, force id 0x01A
 EtherMotion DLL:  C:\Program Files (x86)\PAIX\NMC\DLL\x64\NMC2.dll
 EtherMotion dev:  11
 EtherMotion group: 0
 ```
+
+### DUE / 로드셀 포트 자동 인식
+
+USB 포트가 바뀌어도 코드를 수정할 필요가 없도록 `final_logger.py`와 `loadcell_bin_logger.py`는 실행 시 연결된 장치를 스캔해서 포트를 자동으로 찾는다.
+
+- DUE: VID:PID `2341:003D`/`2341:003E` 또는 설명에 `arduino`/`due`가 포함된 포트
+- Loadcell: VID:PID `067B:2303`(Prolific USB-RS232 어댑터) 또는 설명에 `prolific`/`usb-to-serial`/`usb serial`이 포함된 포트
+
+우선순위는 `--due-port`/`--loadcell-port` CLI 인자 > `DUE_PORT`/`LOADCELL_PORT` 환경변수 > 자동 인식 결과(정확히 1개 매칭될 때) > 코드 상단의 하드코딩된 기본값(`COM11`/`COM10`) 순이다. 후보가 2개 이상이거나 하나도 없으면 콘솔에 상황을 출력하고 하드코딩된 기본값으로 폴백한다.
+
+```powershell
+# 포트를 강제로 지정하고 싶을 때
+python final_logger.py --due-port COM7 --loadcell-port COM9
+
+# 또는 환경변수로
+$env:DUE_PORT = "COM7"; python final_logger.py
+```
+
+`tools\device_tests\due_reader.py`, `due_writer.py`, `loadcell_logger.py` (단독 장치 테스트용)도 동일한 자동 인식을 사용한다. `due_reader.py`/`due_writer.py`는 연결이 끊겼다 재시도할 때마다 다시 스캔하므로 케이블을 다른 USB 포트에 꽂아도 재연결된다. `loadcell_logger.py`는 `loadcell_bin_logger.py`와 동일하게 `--port`/`LOADCELL_PORT` 환경변수로 override 가능하다.
+
+AFD50(CAN 채널)과 EtherMotion(NMC DLL dev_no)은 COM 포트를 쓰지 않아 이 자동 인식 대상이 아니다 — 각각 `CAN_CHANNEL`/`--dev-no`로 직접 지정한다.
 
 로드셀 인디케이터 설정은 [README_LOADCELL_INDICATOR.md](README_LOADCELL_INDICATOR.md)를 참고한다.
 

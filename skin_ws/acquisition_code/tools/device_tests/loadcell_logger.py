@@ -11,8 +11,13 @@ try:
 except ImportError:
     serial = None
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+from serial_autodetect import resolve_port
 
-DEFAULT_PORT = "COM10"
+
+DEFAULT_PORT = "COM10"  # fallback only; auto-detected in main() when possible
+LOADCELL_PORT_VID_PID = {(0x067B, 0x2303)}  # Prolific USB-RS232 adapter
+LOADCELL_PORT_KEYWORDS = ("prolific", "usb-to-serial", "usb serial")
 DEFAULT_BAUD = 115200
 DEFAULT_TIMEOUT = 1.0
 DEFAULT_ENCODING = "ascii"
@@ -133,7 +138,12 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description="Log loadcell indicator values from an RS232/USB serial port."
     )
-    parser.add_argument("--port", default=DEFAULT_PORT, help=f"Serial port, default {DEFAULT_PORT}.")
+    parser.add_argument(
+        "--port",
+        default=None,
+        help=f"Serial port. Default: auto-detect, falling back to the LOADCELL_PORT "
+        f"env var, then {DEFAULT_PORT}.",
+    )
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD, help=f"Baud rate, default {DEFAULT_BAUD}.")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="Serial read timeout in seconds.")
     parser.add_argument("--duration-sec", type=float, default=None, help="Optional automatic stop time in seconds.")
@@ -150,6 +160,11 @@ def main():
     if args.self_test:
         run_self_test()
         return 0
+
+    args.port = resolve_port(
+        "Loadcell", args.port, os.environ.get("LOADCELL_PORT"), DEFAULT_PORT,
+        LOADCELL_PORT_VID_PID, LOADCELL_PORT_KEYWORDS,
+    )
 
     try:
         log_loadcell(args)

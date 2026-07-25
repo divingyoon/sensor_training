@@ -1,11 +1,17 @@
+import os
 import struct
 import sys
 import time
 
 import serial
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+from serial_autodetect import resolve_port
 
-DUE_COM_PORT = 'COM11'
+
+DUE_COM_PORT = 'COM11'  # fallback only; auto-detected in main() when possible
+DUE_PORT_VID_PID = {(0x2341, 0x003D), (0x2341, 0x003E)}
+DUE_PORT_KEYWORDS = ("arduino", "due")
 BAUD_RATE = 250000
 
 NUM_SENSORS = 16
@@ -53,11 +59,16 @@ def read_burst_rows(ser):
 
 def main():
     ser = None
+    port = DUE_COM_PORT
     while True:
         try:
             if ser is None:
+                port = resolve_port(
+                    "DUE", None, os.environ.get("DUE_PORT"), DUE_COM_PORT,
+                    DUE_PORT_VID_PID, DUE_PORT_KEYWORDS,
+                )
                 print("DUE Reader: connecting to port...", file=sys.stderr)
-                ser = serial.Serial(DUE_COM_PORT, BAUD_RATE, timeout=1)
+                ser = serial.Serial(port, BAUD_RATE, timeout=1)
                 print("DUE Reader: port connected.", file=sys.stderr)
 
             rows = read_burst_rows(ser)
@@ -69,7 +80,7 @@ def main():
             sys.stdout.flush()
 
         except serial.SerialException:
-            print(f"DUE Reader: port({DUE_COM_PORT}) connection failed. Retrying in 5 seconds...", file=sys.stderr)
+            print(f"DUE Reader: port({port}) connection failed. Retrying in 5 seconds...", file=sys.stderr)
             if ser:
                 ser.close()
             ser = None

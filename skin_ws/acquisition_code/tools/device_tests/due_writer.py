@@ -7,8 +7,13 @@ from datetime import datetime
 
 import serial
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+from serial_autodetect import resolve_port
 
-DUE_COM_PORT = 'COM11'
+
+DUE_COM_PORT = 'COM11'  # fallback only; auto-detected in main() when possible
+DUE_PORT_VID_PID = {(0x2341, 0x003D), (0x2341, 0x003E)}
+DUE_PORT_KEYWORDS = ("arduino", "due")
 BAUD_RATE = 250000
 
 NUM_SENSORS = 16
@@ -82,8 +87,12 @@ def main():
         while True:
             try:
                 if ser is None:
+                    port = resolve_port(
+                        "DUE", None, os.environ.get("DUE_PORT"), DUE_COM_PORT,
+                        DUE_PORT_VID_PID, DUE_PORT_KEYWORDS,
+                    )
                     print("DUE Writer: connecting to port...", file=sys.stderr)
-                    ser = serial.Serial(DUE_COM_PORT, BAUD_RATE, timeout=1)
+                    ser = serial.Serial(port, BAUD_RATE, timeout=1)
                     print("DUE Writer: port connected.", file=sys.stderr)
 
                 rows = read_burst_rows(ser)
