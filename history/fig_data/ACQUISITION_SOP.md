@@ -20,6 +20,10 @@
 | **센서당 반복** | **d5×1 + d10×1 = 2 trial** (전이 warm-start 전제) | 첫 센서만 검증차 +2 여유. 소재 비교 아님 → 반복 최소 |
 | **깊이(z)** | 각 격자점에서 계단식 하강, **충분한 최대깊이까지** | d5 무접촉(얕은 press) 회피가 핵심. 저~고force 전 구간 커버 |
 
+## ⚠️ 새 센서 z_start 보정 (필수 체크)
+
+인덴터별 z_start(접촉 시작 stage z)는 `raw_merge.Z_START_BY_DIAMETER_MM`에 하드코딩(구 rig: d5=13.0, **d10=12.0**). **새 센서/rig는 이 값이 틀릴 수 있음** — v1(ecomesh)에서 d10=12.0을 쓰니 무접촉 프레임 z_depth가 1.3mm로 부풀려짐(실측). d5·d10 팁 높이가 같으면 z_start도 같아야 함. **검증법**: 병합 후 `Fz<0.05N`(무접촉) 프레임의 z_depth 중앙값이 ~0.3mm 이내여야 정상. 어긋나면 `prepare_learning_data.py --z-start dN=Z` 로 오버라이드 후 재병합. v1은 `--z-start d5=13.0 --z-start d10=13.0`으로 확정(z_stage≈13.5에서 force 시작 실측).
+
 ## z 계단 세부 (권장 기본값 — 실측 조정)
 
 - d5: z 0 → 최대 **2.5mm+** (무른 재료라 충분히 깊게 눌러야 force 실림). 0.5mm 단위 정지 권장.
@@ -45,7 +49,9 @@
 
 **핵심 원칙: d5+d10을 반드시 섞어서 학습** (분리 금지 — d10-only는 loc 1.58mm·corr 0.32로 최악, d5가 부족한 d10을 보완). 크기입력(A)으로 크기 구분.
 
-**③ warm-start 학습** (기존 ecomesh 가중치에서, ~20ep/30분):
+> **방법 명칭(확정):** 이 학습 방식 = **cross-sensor calibration transfer** (센서 간 교정 전이). 소스 센서로 학습한 모델을 새 센서의 few-shot(d5×1+d10×1) 데이터로 **warm-start fine-tuning** → 유닛별 게인·응답 편차만 적응, 전량 재취득 불필요. 상위 우산은 transfer learning / domain adaptation, 코드상 구현은 `--init-ckpt` warm-start.
+
+**③ warm-start 학습** (= calibration transfer, 기존 ecomesh 가중치에서, ~20ep/30분):
 ```bash
 .venv/bin/python -m sats.training.train_e2e \
   --gt-mode gpu_on_the_fly --raw-dir learning_data/sensor_raw_bin \
