@@ -22,8 +22,9 @@ from sats.preprocessing.prepare_learning_data import (
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SOURCE_ROOT = REPO_ROOT / "skin_ws" / "raw_data"
 SATS_SOURCE = SOURCE_ROOT / "sats"
-D5_SMOKE_TRIAL = SATS_SOURCE / "ecomesh" / "xy_0.5mm" / "d5" / "test1"
-D10_SMOKE_TRIAL = SATS_SOURCE / "ecomesh" / "xy_1mm" / "d10" / "20260622_test4"
+# ecomesh 원본은 센서 유닛별 버전 폴더(v0=원본, v1=신규)로 재편됨 → v0 명시 경로.
+D5_SMOKE_TRIAL = SATS_SOURCE / "ecomesh" / "v0" / "xy_0.5mm" / "d5" / "test1"
+D10_SMOKE_TRIAL = SATS_SOURCE / "ecomesh" / "v0" / "xy_1mm" / "d10" / "20260622_test4"
 
 
 class TestSkinWsRawBinArchive:
@@ -34,7 +35,7 @@ class TestSkinWsRawBinArchive:
         "trial_dir",
         [
             D5_SMOKE_TRIAL,
-            SATS_SOURCE / "ecomesh" / "xy_1mm" / "d5" / "20260622_test1",
+            SATS_SOURCE / "ecomesh" / "v0" / "xy_1mm" / "d5" / "20260622_test1",
             SATS_SOURCE / "eco20" / "xy_1mm" / "d5" / "20260619_test5",
         ],
     )
@@ -83,6 +84,8 @@ class TestRawBinHeaders:
 
 class TestLearningDataPlan:
     def test_current_archive_plans_all_force_trials(self, tmp_path):
+        # ecomesh가 버전 폴더(v0/v1)로 재편된 뒤: 'all' 은 flat 소재(eco20/eco50)만
+        # 자동 계획하고, 버전 폴더는 재귀하지 않는다(명시-버전 설계). skipped 도 없음.
         planned, skipped = discover_planned_trials(
             SOURCE_ROOT,
             tmp_path / "learning_data",
@@ -90,16 +93,23 @@ class TestLearningDataPlan:
             material="auto",
             depth_map={"d5": 2.5, "d10": 3.5},
         )
-
         trial_ids = {p.trial_id for p in planned}
-        assert len(planned) == 31
+        assert len(planned) == 12
         assert skipped == []
-        assert {
-            "eco20_xy1_d5_z2.5_test1",
-            "eco50_xy1_d10_z3.5_test1",
-            "ecomesh_xy0p5_d5_z2.5_test1",
-            "ecomesh_xy1_d10_z3.5_test1",
-        } <= trial_ids
+        assert {"eco20_xy1_d5_z2.5_test1", "eco50_xy1_d10_z3.5_test1"} <= trial_ids
+        assert all(p.source_dir.is_dir() for p in planned)
+
+    def test_ecomesh_planned_via_explicit_version(self, tmp_path):
+        # ecomesh 는 버전 명시(source_material="ecomesh/v0")로 취득한다(재편 후 설계).
+        planned, _ = discover_planned_trials(
+            SOURCE_ROOT,
+            tmp_path / "learning_data",
+            source_material="ecomesh/v0",
+            material="ecomesh",
+            depth_map={"d5": 2.5, "d10": 3.5},
+        )
+        trial_ids = {p.trial_id for p in planned}
+        assert {"ecomesh_xy0p5_d5_z2.5_test1", "ecomesh_xy1_d10_z3.5_test1"} <= trial_ids
         assert all(p.source_dir.is_dir() for p in planned)
 
 
