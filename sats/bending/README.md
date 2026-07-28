@@ -25,6 +25,7 @@ raw(~7e6)를 넣으면 포화되므로 밴딩도 반드시 이 %표현으로 변
 | `train_bending.py` | **Phase1 estimator + Phase2 restorer 학습** + CLI, save/load |
 | `eval_pipeline.py` | **Phase3** 검증 — 환각 억제·곡률별 오차(e2e) + 그림 |
 | `eval_g1.py` | **G1 관측성 하네스** — leave-one-session-out MAE·Spearman·drift |
+| `eval_contact_preservation.py` | **준-합성 접촉 보존 검증**(기존 데이터만) — restorer 모드 비교 |
 | `tests/` | Phase 0 TDD (합성) |
 
 전처리(raw→npz)는 `sats/preprocessing/prepare_bending_data.py`. 취득 기구·곡률 정의·유효범위는
@@ -39,11 +40,16 @@ trial별 `.npz`(`learning_data/bending/<ver>/`): `sensor`[N,16] raw, `baseline`[
 - **Phase 0** ✅ 스캐폴드·모듈·테스트.
 - **Phase 1** ✅ estimator: valid+표준화+trial split. holdout θ **MAE 6.3°**(기준선 30°).
   `python -m sats.bending.train_bending --phase estimator --val-trials <holdout>`
-- **Phase 2** ✅ restorer(A 오프셋지도): holdout 오프셋 제거 67.9%. `... --phase restorer`
-- **Phase 3** ✅(예비) 밴딩→flat→동결SATS: **환각 88% 억제**, **e2e(예측곡률)=oracle 동등**.
-  유효 |δ|≤5–6mm에서 가짜접촉 flat 수준 복원, 고곡률 잔여.
+- **Phase 2** ✅ restorer(A 오프셋지도). **restorer_mode=deg_only 기본**(§5.3, 접촉 보존):
+  무접촉 오프셋 제거 43%(deg_only) / 67.9%(seq_deg). `... --phase restorer`
+- **Phase 3** ✅(예비) 밴딩→flat→동결SATS: 무접촉 환각 억제 **60%**(deg_only) / 88%(seq_deg),
+  e2e(예측곡률)=oracle 동등.
   `python -m sats.bending.eval_pipeline --analyze --estimator <ckpt> --figure out.png`
-  ⚠ 무접촉이라 **접촉 보존**(진짜 접촉 살리기)은 미검증 = bending+contact(G2) 데이터 필요.
+- **접촉 보존(준-합성)** ✅ 기존 데이터만으로 검증: 실측 접촉+v0 밴딩 오프셋 합성 →
+  **★ seq_deg restorer는 접촉 파괴(위치 2.7→4.6mm, 회복 −127%), deg_only는 보존+개선
+  (2.7→2.3mm, +16%)**. 이 결함 발견으로 restorer 기본을 deg_only로 교정.
+  `python -m sats.bending.eval_contact_preservation --figure out.png`
+  ⚠ 가법성 가정·다른 유닛 합성 → 상대 비교가 핵심, 절대 회복률은 지시적. 독립 증명 = G2.
 - **G1(관측성)**: 하네스 완비. **정식 판정 = remounting ≥3세션 무접촉 취득 필요**(v0는 스모크).
 - **Phase 4**: figure/README 최종.
 

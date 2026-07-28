@@ -28,4 +28,10 @@ class BendingConfig:
     # 곡률은 부호 있음(양/음 방향). 정규화 스케일(deg) — 회귀 안정화용.
     deg_scale: float = 90.0
 
+    # restorer 오프셋 예측 방식:
+    #  deg_only = 오프셋을 곡률(deg)만의 함수로(§5.3 Δp_bend≈κ·k_i z_i). 입력 비의존 →
+    #            접촉을 건드릴 수 없음(접촉 보존). ★기본.
+    #  seq_deg  = 입력+deg MLP(표현력↑, 무접촉 학습 시 접촉 파괴 위험 — 준-합성 검증서 실증). 레거시.
+    restorer_mode: str = "deg_only"
+
     device: str = "cuda"
