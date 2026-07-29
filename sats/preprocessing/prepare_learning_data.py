@@ -160,6 +160,27 @@ def parse_depth_map(items: list[str] | None) -> dict[str, float]:
     return out
 
 
+def parse_z_start_map(items: list[str] | None) -> dict[float, float] | None:
+    """--z-start d10=13.0 → {10.0: 13.0}. 지정 시 레거시 z_start를 오버라이드한다.
+
+    새 센서는 rig 기하가 달라 인덴터 접촉 시작 z가 바뀔 수 있다. 미지정(None)이면
+    레거시 Z_START_BY_DIAMETER_MM을 그대로 쓴다(기존 데이터 동작 불변).
+    """
+    if not items:
+        return None
+    out: dict[float, float] = {}
+    for item in items:
+        if "=" not in item:
+            raise ValueError(f"z-start item must be dN=Z, got {item!r}")
+        key, raw_value = item.split("=", 1)
+        key = key.strip().lower()
+        match = D_DIR_RE.match(key)
+        if not match:
+            raise ValueError(f"z-start key must look like d5/d10, got {key!r}")
+        out[float(match.group("diameter"))] = float(raw_value)
+    return out
+
+
 def resolve_source_material_dir(source_root: Path, source_material: str) -> Path:
     candidates = [
         source_root / source_material,
@@ -341,6 +362,7 @@ def run_merge_stage(
     preview_csv_rows: int,
     full_csv: bool,
     dry_run: bool,
+    z_start_map: dict[float, float] | None = None,
 ) -> list[dict]:
     summaries: list[dict] = []
     for trial in planned:
@@ -360,6 +382,7 @@ def run_merge_stage(
             baseline_fallback_sec=baseline_fallback_sec,
             force_round_dp=force_round_dp,
             export_csv="all" if full_csv else "none",
+            z_start_map=z_start_map,
         )
         if preview_csv_rows > 0:
             preview_path = trial.output_dir / f"{trial.trial_id}_merged_preview.csv"
@@ -434,6 +457,13 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Diameter depth mapping, e.g. --depth-map d5=2.5 --depth-map d10=3.5",
     )
+    parser.add_argument(
+        "--z-start",
+        action="append",
+        default=None,
+        help="Override indenter z_start(mm), e.g. --z-start d10=13.0. "
+             "새 센서 rig에서 접촉 시작 z가 바뀔 때 사용. 미지정 시 레거시 맵 사용.",
+    )
     parser.add_argument("--stage", choices=["all", "merge", "gt"], default="all")
     parser.add_argument("--target-hz", type=float, default=200.0)
     parser.add_argument("--max-dt-ms", type=float, default=10.0)
@@ -455,6 +485,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     depth_map = parse_depth_map(args.depth_map)
+    z_start_map = parse_z_start_map(args.z_start)
 
     registry_path = args.learning_root / REGISTRY_FILENAME
     registry = load_trial_registry(registry_path)
@@ -493,6 +524,7 @@ def main() -> None:
             preview_csv_rows=args.preview_csv_rows,
             full_csv=args.full_csv,
             dry_run=args.dry_run,
+            z_start_map=z_start_map,
         )
     if args.stage in {"all", "gt"}:
         run_gt_stage(

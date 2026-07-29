@@ -25,3 +25,18 @@
 **새 센서 실행안**: xy1 프로토콜 d5×2+d10×2(+홀드아웃용 1 pair 권장 = 총 6 trial) 취득 → same-protocol 기존 가중치 warm-start(~30분) → 필요시 0.25mm 출력. 취득량 = 구 xy0.5 경로 대비 약 1/3, 프로토콜도 빠름.
 
 **캐빗(정직)**: cross-warm 프록시는 '다른 소재·같은 취득계'이지 실제 다른 유닛이 아님 — 실제 새 센서에서 3단 평가(zero-shot→게인 보정→fine-tune)로 확증 필요. 홀드아웃도 동일 센서 내 trial 단위임.
+
+## 2026-07-29 — 실측 새 센서(ecomesh v3)로 캐빗 해소
+
+위 리허설의 프록시 한계(같은 취득계·다른 소재, 홀드아웃도 동일 센서 내 trial)를 **실제 새 센서 v3**로 확증했다. v3는 인덴터당 test1+test2 = 4 trial 취득 → **train=test1, holdout=test2 전체**(학습에 한 번도 미포함)로 진짜 일반화를 측정. 지표는 신뢰 가능한 **map 품질**(스케일-무관; rel RMSE 아님 — 저force 왜곡 아티팩트). 재현: `v3_realsensor/generate_v3_transfer.py`(→ `v3_realsensor_transfer.png`), 수치는 `scripts/reeval_map_quality.eval_model`.
+
+| 인덴터 | 지표 | 전이 전(소스 모델) | 전이 후(v3 warm, 2 trial) |
+|---|---|---|---|
+| d5 | loc(mm) | 2.06 | **0.71** |
+| d5 | peak_corr | 0.701 | **0.802** |
+| d10 | loc(mm) | 2.06 | **1.41** |
+| d10 | peak_corr | 0.735 | **0.789** |
+
+- **결론**: 센서당 **2 trial warm-start만으로** 미관측 홀드아웃에서 위치·형태 재구성이 소스보다 확실히 개선(d5 loc −66%, d10 −32%). 리허설의 "N=2 pair 충분" 결론이 실측에서 성립 → SOP 확정.
+- **⚠ 지표 주의**: 홀드아웃 val_rmse=0.78·epoch0(첫 에폭) best 이후 단조 상승은 map 저하가 아니라 저force RMSE 왜곡 + 소량 과적합이 rmse에만 나타난 것(map은 양호). 따라서 다음 센서는 epochs 20→~5로 축소해도 best_model이 동일 epoch을 선택 → 동일 성능·1/4 시간.
+- run: `sats/training/runs/ecomesh_v3_calibtransfer_warm`(홀드아웃), 배포용 전량학습 = `ecomesh_v3_deploy_all4`. 인덱스 `learning_data/trial_indices/ecomesh_v3_warm`.

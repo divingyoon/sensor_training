@@ -689,6 +689,7 @@ def process_trial_dir(
     bin_set_index: int = 0,
     export_csv: str = "none",
     csv_limit: int | None = None,
+    z_start_map: dict | None = None,
 ) -> dict:
     info = trial_info_override if trial_info_override is not None else parse_trial_dir_info(trial_dir, raw_root)
     bin_set = find_bin_set(trial_dir, bin_set_index=bin_set_index)
@@ -696,6 +697,14 @@ def process_trial_dir(
     due = load_due_bin(bin_set["due"])
     ether = load_ethermotion_bin(bin_set["ethermotion"])
     loadcell = load_loadcell_bin(bin_set["loadcell"])
+    # 새 센서(rig 변경)는 z_start_map으로 인덴터별 z_start를 명시 오버라이드한다.
+    # 미지정 시 레거시 Z_START_BY_DIAMETER_MM(z_start_for_indenter)로 폴백.
+    diameter_mm = info.get("indenter_diameter_mm")
+    z_start_resolved = None
+    if z_start_map and diameter_mm is not None:
+        z_start_resolved = z_start_map.get(float(diameter_mm))
+    if z_start_resolved is None:
+        z_start_resolved = z_start_for_indenter(diameter_mm)
     rows, baseline, summary = build_merged_rows(
         due,
         ether,
@@ -707,7 +716,7 @@ def process_trial_dir(
         stable_xy_only=stable_xy_only,
         baseline_fallback_sec=baseline_fallback_sec,
         force_round_dp=force_round_dp,
-        z_start_mm=z_start_for_indenter(info.get("indenter_diameter_mm")),
+        z_start_mm=z_start_resolved,
     )
 
     target_dir = out_dir if out_dir is not None else trial_dir
