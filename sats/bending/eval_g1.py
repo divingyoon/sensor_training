@@ -63,15 +63,22 @@ def observability_metrics(model, stats, data_dir: Path, val_trials: list[str],
             "signal_std_deg": float(yva.std())}
 
 
-def run_g1(cfg: BendingConfig, data_dir: str | Path, *, epochs: int = 80, device: str | None = None) -> dict:
+def run_g1(cfg: BendingConfig, data_dir: str | Path, *, epochs: int = 80,
+           device: str | None = None, session_per_trial: bool = False) -> dict:
+    """G1 관측성. session_per_trial=True 면 각 trial 폴더 = 독립 세션(remounting)으로 간주.
+
+    기본은 이름 앞 8자리(날짜)로 세션 그룹핑(같은 날=같은 mounting 가정, v0). v5처럼
+    같은 날 여러 번 탈착→재장착하면 날짜가 겹치므로 session_per_trial 로 폴더=세션 처리.
+    """
     data_dir = Path(data_dir)
     device = device or (cfg.device if torch.cuda.is_available() else "cpu")
     trials = discover_trials(data_dir)
-    sessions = sorted(set(session_of(t) for t in trials))
+    key = (lambda t: t) if session_per_trial else session_of
+    sessions = sorted(set(key(t) for t in trials))
     results = []
     if len(sessions) >= 2:
         mode = "leave-one-session-out"
-        folds = [[t for t in trials if session_of(t) == s] for s in sessions]
+        folds = [[t for t in trials if key(t) == s] for s in sessions]
     else:
         mode = "trial-holdout (⚠ 단일 세션 — G1 remounting 미충족, 스모크만)"
         folds = [[t] for t in trials]
@@ -95,9 +102,12 @@ def main() -> None:
     p.add_argument("--data-dir", type=Path, default=repo / "learning_data/bending/v0")
     p.add_argument("--epochs", type=int, default=80)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--session-per-trial", action="store_true",
+                   help="각 trial 폴더=독립 세션(remounting). 같은 날 여러 remounting(v5 2mm)일 때 사용.")
     args = p.parse_args()
     print(f"G1 관측성 평가 — {args.data_dir}")
-    agg = run_g1(BendingConfig(), args.data_dir, epochs=args.epochs, device=args.device)
+    agg = run_g1(BendingConfig(), args.data_dir, epochs=args.epochs, device=args.device,
+                 session_per_trial=args.session_per_trial)
     print(f"\n모드: {agg['mode']}  세션: {agg['sessions']}")
     print(f"평균 MAE={agg['mean_mae_deg']:.2f}°  평균 Spearman ρ={agg['mean_spearman']:.3f}")
     print(f"G1 판정: {'예비 통과 지표(단 세션≥3 필요)' if agg['mean_spearman'] > 0.9 else '순서상관 부족'}"
