@@ -64,6 +64,23 @@
   현재 (+)push만 → **±push 세그먼트로 확장** = TODO).
 - 학습·평가: `sats.bending.train_bending --val-trials <holdout 세션>` (valid-only 기본).
 
+## ★ v5 실측 — G1 통과 (2026-08-02)
+
+첫 다세션 remounting 취득(ecomesh v5)으로 **G1 정식 통과**. 취득 rig가 v0와 달라짐:
+
+### v5 취득 구조 (앞으로의 표준)
+- raw: `skin_ws/raw_data/bending/v5/{0.1mm,2mm}/<session>` — **0.1mm(11세션)·2mm(10세션)** = δ 스텝 granularity. loadcell·afd50 추가 수집(전처리는 due+ether만 사용).
+- **δ 정의 (핵심, v0와 다름)**: Z를 먼저 12mm까지 내린 뒤, **Y=18mm가 flat(δ=0), Y=33mm가 최대 밴딩** → **δ = Y − 18mm** (범위 0~15mm). Y는 절대 스테이지 위치(0.1mm세션 0→33, 2mm세션 18→33).
+- **각 세션 = 독립 remounting**(탈착→재장착) — 사용자 확인.
+- 전처리: `prepare_bending_data.py --raw-root .../v5/0.1mm --out-dir learning_data/bending/v5 --y-origin-mm 18 --z-active-min-mm 11.5 --delta-max-valid 15 --bend-length 35`. (신규 인자 `--y-origin-mm`·`--z-active-min-mm`, 세션 탐색은 due+ether CSV 존재로 판별 = 명명 무관.)
+- **δ≤15mm 포화 없음**(v0는 10mm): κ̂↔κ_geo R²=0.877 (전 구간).
+
+### G1 판정 결과 (leave-one-session-out, 11 세션)
+- **평균 θ MAE = 2.97°** (기준선 24.8°), **Spearman ρ = 1.000**, 세션별 선형 R² ≈ 0.98.
+- ⇒ (a) remounting-holdout 회귀 개선 ✅ (b) signed 순서 보존 ✅ (c) 이진 붕괴 없음(연속 R²) ✅ (d) ≥3 세션 ✅. **G1 Curvature Observability 통과.**
+- 코드: `sats.bending.eval_g1 --data-dir learning_data/bending/v5 --epochs 60`. 배포 estimator: `sats/bending/runs/estimator_v5`.
+- 잔여: drift 지표 nan(홀드아웃 세션의 |θ|<10° 프레임 희소) — 온도/drift 통제는 별도 로그로 보완 권장. 또 11세션 모두 동일 δ 스윕이라 "unseen intermediate 곡률"은 자명 커버 = **remounting 강건성**이 실증의 핵심(더 어려운 조건 통과).
+
 ## 현 코드 대비 TODO (G1 취득 전 보완)
 1. ~~**양방향(±) 세그먼트**~~ ✅ **완료(2026-07-28)**: `select_segment(direction=positive/negative/both)` +
    signed κ·θ·κ̂. 단 **v0 both 실측: 음 브랜치 품질 낮음**(test3 음 R²=0.03, signed estimator val 불안정
