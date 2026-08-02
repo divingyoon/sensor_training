@@ -59,43 +59,60 @@ def merge_trial(trial_dir: Path) -> pd.DataFrame:
 
 
 def compute_baseline(burst: pd.DataFrame) -> np.ndarray:
-    """flat(|Y|<tol) 프레임 평균 = 채널별 baseline [16]. 없으면 |Y| 최소 10프레임."""
-    flat = burst[burst["y_mm"].abs() < Y_FLAT_TOL_MM]
+    """flat(|δ|<tol) 프레임 평균 = 채널별 baseline [16]. 없으면 |δ| 최소 10프레임.
+
+    δ = burst["delta"] (= y_mm − y_origin). v0는 y_origin=0 이라 δ==y_mm.
+    """
+    flat = burst[burst["delta"].abs() < Y_FLAT_TOL_MM]
     if len(flat) < 3:
-        order = np.argsort(burst["y_mm"].abs().to_numpy())[:10]
+        order = np.argsort(burst["delta"].abs().to_numpy())[:10]
         flat = burst.iloc[order]
     return np.asarray(flat[SKIN_COLS].mean(), dtype=float)
 
 
 def select_segment(burst: pd.DataFrame, direction: str) -> np.ndarray:
-    """밴딩 세그먼트 인덱스. direction:
+    """밴딩 세그먼트 인덱스(δ = burst["delta"] 기준). direction:
 
-    - positive: 시작~Y양의최대(argmax) 중 Y≥0 (로딩 램프, 복귀 스트로크 배제) — 검증됨.
-    - negative: 시작~Y음의최소(argmin) 중 Y≤0 (음방향 로딩 램프).
-    - both: 전체 프레임(부호별 signed). ⚠ v0는 대칭 스윕 아님 → 음 브랜치 품질 낮음(G1 취득 필요).
+    - positive: 시작~δ양의최대(argmax) 중 δ≥0 (로딩 램프, 복귀 스트로크 배제) — 검증됨.
+    - negative: 시작~δ음의최소(argmin) 중 δ≤0 (음방향 로딩 램프).
+    - both: 전체 프레임(부호별 signed). ⚠ 대칭 스윕 아니면 음 브랜치 품질 낮음.
     """
-    yv = burst["y_mm"].to_numpy(dtype=float)
+    dv = burst["delta"].to_numpy(dtype=float)
     if direction == "positive":
-        idx = np.arange(0, int(np.argmax(yv)) + 1)
-        return idx[yv[idx] >= 0.0]
+        idx = np.arange(0, int(np.argmax(dv)) + 1)
+        return idx[dv[idx] >= 0.0]
     if direction == "negative":
-        idx = np.arange(0, int(np.argmin(yv)) + 1)
-        return idx[yv[idx] <= 0.0]
+        idx = np.arange(0, int(np.argmin(dv)) + 1)
+        return idx[dv[idx] <= 0.0]
     if direction == "both":
-        return np.arange(len(yv))
+        return np.arange(len(dv))
     raise ValueError(f"direction must be positive/negative/both, got {direction!r}")
 
 
 def process_trial(trial_dir: Path, length_mm: float, delta_max_valid: float,
-                  direction: str = "positive") -> dict:
+                  direction: str = "positive", y_origin_mm: float = 0.0,
+                  z_active_min_mm: float | None = None) -> dict:
+    """밴딩 raw → 곡률 라벨 npz dict.
+
+    y_origin_mm: flat(δ=0) 기준 Y 위치. δ = y_mm − y_origin_mm. v0=0(Y=0 flat),
+      v5=18.0(Z=12 도달 후 Y=18 부터 밴딩) — 취득 rig에 따라 지정.
+    z_active_min_mm: 지정 시 z_mm ≥ 이 값 프레임만 사용(밴딩 활성 구간). v5=~11.5(Z=12).
+    """
     burst = merge_trial(trial_dir)
+    if z_active_min_mm is not None:
+        burst = burst[burst["z_mm"] >= float(z_active_min_mm)].reset_index(drop=True)
+        if len(burst) < 5:
+            raise ValueError(f"{trial_dir}: z≥{z_active_min_mm}mm 프레임 부족 (n={len(burst)})")
+    burst = burst.copy()
+    burst["delta"] = burst["y_mm"] - float(y_origin_mm)           # signed δ (flat 기준)
     baseline = compute_baseline(burst)
     seg = select_segment(burst, direction)
     if seg.size < 5:
         raise ValueError(f"{trial_dir}: {direction} 세그먼트가 너무 짧음 (n={seg.size})")
 
     raw = burst.loc[seg, SKIN_COLS].to_numpy(dtype=float)          # [N,16] raw
-    y_mm = burst.loc[seg, "y_mm"].to_numpy(dtype=float)            # [N] signed 압축량
+    y_stage = burst.loc[seg, "y_mm"].to_numpy(dtype=float)         # [N] 절대 Y(위치 기록용)
+    y_mm = burst.loc[seg, "delta"].to_numpy(dtype=float)          # [N] signed δ(=Y−origin)
     sign = np.sign(y_mm)                                           # 밴딩 방향(±)
     delta_abs = np.abs(y_mm)                                       # 원호 계산용 |δ|
     delta_mm = y_mm                                                # signed δ 저장(=Y)
@@ -121,8 +138,8 @@ def process_trial(trial_dir: Path, length_mm: float, delta_max_valid: float,
             "kappa_geo": kappa_geo.astype(np.float32),         # signed κ
             "kappa_hat": k_hat.astype(np.float32),             # signed κ̂
             "radius_mm": geo["radius_mm"].astype(np.float32),  # |R| (부호 무관)
-            "delta_mm": delta_mm.astype(np.float32),           # signed δ (=Y)
-            "y_mm": y_mm.astype(np.float32),
+            "delta_mm": delta_mm.astype(np.float32),           # signed δ (= Y−origin, flat 기준)
+            "y_mm": y_stage.astype(np.float32),                # 절대 Y 위치(provenance)
             "valid": valid,  # |δ|≤delta_max_valid (센서 포화 이전, 곡률 라벨 신뢰 구간)
         },
         "y_max_mm": float(np.max(np.abs(y_mm))),
@@ -133,10 +150,17 @@ def process_trial(trial_dir: Path, length_mm: float, delta_max_valid: float,
 
 
 def discover_trials(raw_root: Path, exclude: set[str]) -> list[Path]:
+    """raw_root 하위에서 due+ether CSV가 있는 세션 폴더 전부(명명 무관).
+
+    v0는 ``\\d{8}_testN``, v5는 ``v5_bending_0.1mm_10mm_N`` 등 명명이 달라 정규식 대신
+    필수 CSV 존재로 판별한다. exclude 로 특정 폴더 배제.
+    """
     trials = [p for p in sorted(raw_root.iterdir())
-              if p.is_dir() and TRIAL_DIR_RE.match(p.name) and p.name not in exclude]
+              if p.is_dir() and p.name not in exclude
+              and (p / "due_data.csv").exists() and (p / "ethermotion_data.csv").exists()]
     if not trials:
-        raise FileNotFoundError(f"밴딩 trial 폴더 없음: {raw_root} (exclude={sorted(exclude)})")
+        raise FileNotFoundError(f"밴딩 세션 폴더 없음(due+ether CSV 기준): {raw_root} "
+                                f"(exclude={sorted(exclude)})")
     return trials
 
 
@@ -178,6 +202,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--direction", choices=["positive", "negative", "both"], default="positive",
                    help="밴딩 방향. positive=검증된 (+)로딩(기본). both=signed 양방향 "
                         "(⚠ v0는 대칭 스윕 아님 → 음 브랜치 품질 낮음, G1 취득 필요).")
+    p.add_argument("--y-origin-mm", type=float, default=0.0,
+                   help="flat(δ=0) 기준 Y 위치(mm). δ = Y − origin. v0=0, v5=18.0.")
+    p.add_argument("--z-active-min-mm", type=float, default=None,
+                   help="지정 시 z_mm≥이 값 프레임만 사용(밴딩 활성 구간). v5=11.5(Z=12 도달 후).")
     p.add_argument("--exclude", nargs="*", default=["20260725_test1"],
                    help="제외할 trial 폴더명 (기본 test1 = 밴딩 스윕 아님).")
     p.add_argument("--figure", action="store_true", help="교차검증 png 저장")
@@ -190,7 +218,9 @@ def main() -> None:
     trials = discover_trials(args.raw_root, set(args.exclude))
     print(f"대상 trial {len(trials)}개 (L={args.bend_length}mm): {[t.name for t in trials]}")
 
-    results = [process_trial(t, args.bend_length, args.delta_max_valid, args.direction) for t in trials]
+    results = [process_trial(t, args.bend_length, args.delta_max_valid, args.direction,
+                             y_origin_mm=args.y_origin_mm, z_active_min_mm=args.z_active_min_mm)
+               for t in trials]
     for r in results:
         print(f"  {r['trial']}: n={r['n']} (valid≤{args.delta_max_valid:g}mm: {r['n_valid']})  "
               f"Ymax={r['y_max_mm']:.1f}mm  θmax={r['theta_max_deg']:.0f}°  "
