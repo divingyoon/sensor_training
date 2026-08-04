@@ -54,6 +54,14 @@
     "sats/ecomesh/v5/xy_1mm/d5/test1": 1,
     "sats/ecomesh/v5/xy_1mm/d5/test2": 2
   },
+  "ecomesh_v6_xy1/d10": {
+    "sats/ecomesh/v6/xy_1mm/d10/test3": 1,
+    "sats/ecomesh/v6/xy_1mm/d10/test4": 2
+  },
+  "ecomesh_v6_xy1/d5": {
+    "sats/ecomesh/v6/xy_1mm/d5/test1": 1,
+    "sats/ecomesh/v6/xy_1mm/d5/test2": 2
+  },
   "ecomesh_xy0p5/d10": {
     "sats/ecomesh/xy_0.5mm/d10/20260610_test1": 1,
     "sats/ecomesh/xy_0.5mm/d10/20260611_test0": 2,
