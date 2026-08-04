@@ -19,6 +19,10 @@ import sys
 import time
 from pathlib import Path
 
+import collections
+
+import numpy as np
+
 from sats.inference.demo_contacts import FrameLatch, extract_contacts, format_contacts
 from sats.inference.inference_engine import SATSInferenceEngine
 from sats.inference.z_calibration import ZCalibration
@@ -114,6 +118,85 @@ def run_contacts(args, engine, z_calib, reader) -> None:
             print(format_contacts(latch.frame_idx, latch.contacts))
 
 
+def run_theta(args, engine, bi, reader) -> None:
+    """산출물 3: 밴딩각 theta 실시간 터미널 (estimator). raw=base×(1+pct/100) 복원."""
+    from sats.inference.bending_infer import pct_to_raw
+    base = reader.baseline
+    if base is None:
+        print("[theta] flat baseline 없음(mock 등) → theta 추정 불가. 실센서 필요."); return
+    base = np.asarray(base, float)
+    print("[theta] 밴딩각 실시간 출력 (Ctrl+C 종료)\n")
+    hist: collections.deque = collections.deque(maxlen=15)
+    last_seq, last_infer = 0, 0.0
+    interval = 0.0 if args.infer_max_fps <= 0 else 1.0 / args.infer_max_fps
+    try:
+        while True:
+            now = time.time()
+            if now - last_infer < interval:
+                time.sleep(0.001); continue
+            win, seq = _get_window(reader, last_seq)
+            if win is None or seq == last_seq:
+                time.sleep(0.002); continue
+            last_seq, last_infer = seq, now
+            theta = bi.theta_from_raw(pct_to_raw(win, base))
+            hist.append(theta)
+            print(f"\r  theta = {theta:+7.1f} deg   (smoothed {np.median(hist):+7.1f})     ", end="", flush=True)
+    except KeyboardInterrupt:
+        print(f"\n\n=== 종료 ===  최종 smoothed theta = {np.median(hist):+.1f} deg" if hist else "\n종료")
+
+
+def run_bending(args, engine, z_calib, bi, reader) -> None:
+    """산출물 4: SATS+밴딩 통합 상태머신. 플랫 baseline→(장착·밴딩)→theta→복원→SATS."""
+    from sats.inference.bending_infer import pct_to_raw
+    base = reader.baseline
+    if base is None:
+        print("[bending] flat baseline 없음(mock 등) → 통합 모드 불가. 실센서 필요."); return
+    base = np.asarray(base, float)
+    print("\n[bending] === SATS+밴딩 통합 모드 (버클 방식) ===")
+    print("  1) 지금 플랫 baseline 캡처됨.  2) 지그에 장착·밴딩 후 Enter를 누르세요.")
+    input("  >> 밴딩 완료했으면 Enter: ")
+    # REARM: 밴딩 무접촉 상태서 theta 고정 추정(최근 몇 프레임 중앙값)
+    thetas = []
+    for _ in range(15):
+        win, _ = _get_window(reader, -1)
+        if win is not None:
+            thetas.append(bi.theta_from_raw(pct_to_raw(win, base)))
+        time.sleep(0.03)
+    theta = float(np.median(thetas)) if thetas else 0.0
+    print(f"  ★ 밴딩 곡률 theta = {theta:+.1f} deg  (복원 조건 고정)\n")
+    print("  접촉 press 시작 (Ctrl+C 종료)\n")
+    latch = FrameLatch()
+    last_seq, frame, last_infer, last_report = 0, 0, 0.0, time.time()
+    interval = 0.0 if args.infer_max_fps <= 0 else 1.0 / args.infer_max_fps
+    try:
+        while True:
+            now = time.time()
+            if now - last_infer < interval:
+                time.sleep(0.001); continue
+            win, seq = _get_window(reader, last_seq)
+            if win is None or seq == last_seq:
+                time.sleep(0.002); continue
+            last_seq, last_infer = seq, now
+            frame += 1
+            restored = bi.restore(win, theta)            # 밴딩→flat 등가 복원
+            pmap = engine.predict(restored)               # 동결 SATS
+            contacts = extract_contacts(pmap, grid_min_mm=engine.grid_min_mm, grid_step_mm=engine.grid_step_mm,
+                                        taxel_area=engine.taxel_area, diameter_mm=args.diameter,
+                                        max_contacts=args.contacts, min_distance_mm=args.min_distance_mm,
+                                        rel_threshold=args.rel_threshold, z_calib=z_calib)
+            if contacts:
+                print(format_contacts(frame, contacts, theta_deg=theta))
+                latch.update(frame, pmap, contacts)
+            if now - last_report >= args.report_interval and latch.contacts:
+                print(f"  ★ 최적 프레임 {latch.frame_idx} (총 fz={latch.best_total:.2f}N, theta={theta:+.1f}):")
+                print(format_contacts(latch.frame_idx, latch.contacts, theta_deg=theta))
+                last_report = now
+    except KeyboardInterrupt:
+        print("\n\n=== 종료 ===")
+        if latch.contacts:
+            print(format_contacts(latch.frame_idx, latch.contacts, theta_deg=theta))
+
+
 def main() -> None:
     args = _build_parser().parse_args()
     print(f"[1/2] 엔진 로드: {args.run_dir}")
@@ -122,12 +205,28 @@ def main() -> None:
     z_calib = ZCalibration.load(z_path) if Path(z_path).exists() else None
     if z_calib is None:
         print(f"  [경고] z 보정 없음({z_path}) → z=n/a. z_calibration 생성 권장.")
+    # theta/bending 모드는 estimator(+restorer) 로드
+    bi = None
+    if args.mode in ("theta", "bending"):
+        from sats.bending.config import BendingConfig
+        from sats.inference.bending_infer import BendingInference, load_restorer
+        est_ckpt = _ROOT / "sats/bending/runs/estimator_v6"
+        cfg = BendingConfig()
+        restorer = None
+        if args.mode == "bending":
+            print("[bending] restorer 학습(v6 buckling, ~1분)...")
+            restorer = load_restorer(args.run_dir, _ROOT / "learning_data/bending/v6",
+                                     device=engine.device, cfg=cfg)
+        bi = BendingInference(est_ckpt, device=engine.device, restorer=restorer, cfg=cfg)
+
     reader = _start_reader(args, engine.window_size)
     try:
         if args.mode == "contacts":
             run_contacts(args, engine, z_calib, reader)
-        else:
-            print(f"[{args.mode}] 후속 Phase에서 구현(현재 contacts 모드만 활성).")
+        elif args.mode == "theta":
+            run_theta(args, engine, bi, reader)
+        elif args.mode == "bending":
+            run_bending(args, engine, z_calib, bi, reader)
     finally:
         reader.stop()
 

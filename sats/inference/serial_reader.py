@@ -111,6 +111,11 @@ class SensorSerialReader:
     def baseline_progress(self) -> float:
         return min(len(self._baseline_buf) / self._baseline_n_bursts, 1.0)
 
+    @property
+    def baseline(self):
+        """캡처된 flat 무접촉 baseline[16] (밴딩 raw 복원용). 없으면 None."""
+        return self._baseline
+
     # ── 내부 구현 ─────────────────────────────────────────────────────────────
 
     def _run(self) -> None:
