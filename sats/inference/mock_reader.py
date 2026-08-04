@@ -64,6 +64,11 @@ class MockSensorReader:
         if self._thread:
             self._thread.join(timeout=2.0)
 
+    @property
+    def baseline(self):
+        """mock 은 s_norm 직접 생성 → flat baseline 개념 없음(theta/bending 비의미)."""
+        return None
+
     def get_latest_window(self) -> Optional[np.ndarray]:
         with self._lock:
             return self._latest
