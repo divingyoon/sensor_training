@@ -40,6 +40,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-distance-mm", type=float, default=3.0)
     p.add_argument("--rel-threshold", type=float, default=0.3)
     p.add_argument("--report-interval", type=float, default=2.0, help="최적 프레임 요약 주기(초)")
+    p.add_argument("--viz", choices=["none", "2d", "3d", "both"], default="none", help="[산출물2] heatmap 시각화")
+    p.add_argument("--viz-fps", type=float, default=10.0)
     p.add_argument("--infer-max-fps", type=float, default=20.0)
     p.add_argument("--device", default="auto")
     # 리더
@@ -82,12 +84,27 @@ def _get_window(reader, last_seq: int):
     return reader.get_latest_window(), last_seq + 1
 
 
+def _make_viz(args, engine):
+    """--viz 에 따라 2D/3D 데모 뷰 생성(없으면 []). [산출물 2]"""
+    if args.viz == "none":
+        return []
+    from sats.inference.demo_viz import DemoViz2D, DemoViz3D
+    vs = []
+    if args.viz in ("2d", "both"):
+        vs.append(DemoViz2D(engine.grid_min_mm, engine.grid_max_mm))
+    if args.viz in ("3d", "both"):
+        vs.append(DemoViz3D(engine.grid_min_mm, engine.grid_max_mm, engine.grid_size))
+    return vs
+
+
 def run_contacts(args, engine, z_calib, reader) -> None:
     """산출물 1: x,y,z,fz 단일/다중 실시간 터미널 + 최적(최대 fz) 프레임 latch."""
     kind = "단일" if args.contacts == 1 else f"다중(최대 {args.contacts})"
     print(f"[contacts] {kind}  d={args.diameter:g}mm  (Ctrl+C 종료)\n")
     latch = FrameLatch()
-    last_seq, frame, last_infer, last_report = 0, 0, 0.0, time.time()
+    viz = _make_viz(args, engine)
+    viz_interval = 0.0 if args.viz_fps <= 0 else 1.0 / args.viz_fps
+    last_seq, frame, last_infer, last_report, last_viz = 0, 0, 0.0, time.time(), 0.0
     infer_interval = 0.0 if args.infer_max_fps <= 0 else 1.0 / args.infer_max_fps
     try:
         while True:
@@ -107,6 +124,10 @@ def run_contacts(args, engine, z_calib, reader) -> None:
             if contacts:
                 print(format_contacts(frame, contacts))
                 latch.update(frame, pmap, contacts)
+            if viz and now - last_viz >= viz_interval:
+                for v in viz:
+                    v.update(pmap, contacts, best_map=latch.pred_map, best_contacts=latch.contacts)
+                last_viz = now
             if now - last_report >= args.report_interval and latch.contacts:
                 print(f"  ★ 최적 프레임 {latch.frame_idx} (총 fz={latch.best_total:.2f}N):")
                 print(format_contacts(latch.frame_idx, latch.contacts))
@@ -166,7 +187,9 @@ def run_bending(args, engine, z_calib, bi, reader) -> None:
     print(f"  ★ 밴딩 곡률 theta = {theta:+.1f} deg  (복원 조건 고정)\n")
     print("  접촉 press 시작 (Ctrl+C 종료)\n")
     latch = FrameLatch()
-    last_seq, frame, last_infer, last_report = 0, 0, 0.0, time.time()
+    viz = _make_viz(args, engine)
+    viz_interval = 0.0 if args.viz_fps <= 0 else 1.0 / args.viz_fps
+    last_seq, frame, last_infer, last_report, last_viz = 0, 0, 0.0, time.time(), 0.0
     interval = 0.0 if args.infer_max_fps <= 0 else 1.0 / args.infer_max_fps
     try:
         while True:
@@ -187,6 +210,10 @@ def run_bending(args, engine, z_calib, bi, reader) -> None:
             if contacts:
                 print(format_contacts(frame, contacts, theta_deg=theta))
                 latch.update(frame, pmap, contacts)
+            if viz and now - last_viz >= viz_interval:
+                for v in viz:
+                    v.update(pmap, contacts, theta_deg=theta, best_map=latch.pred_map, best_contacts=latch.contacts)
+                last_viz = now
             if now - last_report >= args.report_interval and latch.contacts:
                 print(f"  ★ 최적 프레임 {latch.frame_idx} (총 fz={latch.best_total:.2f}N, theta={theta:+.1f}):")
                 print(format_contacts(latch.frame_idx, latch.contacts, theta_deg=theta))
