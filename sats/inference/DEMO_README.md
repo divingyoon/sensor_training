@@ -7,9 +7,33 @@ v6 학습 파일로 실시간 추론. **터미널 우선** + 2D/3D 시각화. �
 - 밴딩 estimator: `sats/bending/runs/estimator_v6`
 - z 보정 LUT: `sats/inference/z_calibration_v6.json` (맵 peak→z_depth, d5 R²0.87·d10 R²0.59, **근사값**)
 
+## 0. 기본 셋업 / 포트 찾기 (실기 시작 전)
+
+```bash
+# 환경 확인
+.venv/bin/python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+
+# ① 센서 USB 연결 후 — 시리얼 포트 목록(device/description/hwid)
+.venv/bin/python -m sats.inference.run_demo --list-ports
+#   커널 인식 확인(센서 꽂은 직후): dmesg | grep -i tty | tail ; ls -l /dev/ttyUSB* /dev/ttyACM*
+
+# ② 연결·데이터 흐름 확인(raw 바이트 수신 여부)
+.venv/bin/python -m sats.inference.run_demo --probe --port /dev/ttyUSB0 --baudrate 2000000
+
+# 권한 오류(Permission denied) 시
+sudo usermod -aG dialout $USER   # 재로그인 후 영구 적용
+sudo chmod 666 /dev/ttyUSB0      # 또는 임시
+
+# 하드웨어 없이 파이프라인만 점검
+.venv/bin/python -m sats.inference.run_demo --mode contacts --mock
+```
+
+포트를 찾으면 아래 명령들의 `--port` 에 지정한다.
+
 ## 산출물 ↔ 실행
 
-**환경**: RTX 5090 → `.venv/bin/python`. 시리얼 포트/보드레이트/protocol은 실센서에 맞게 조정.
+**환경**: `.venv/bin/python`. 시리얼 포트/보드레이트/protocol은 실센서에 맞게 조정.
+`--list-ports`로 포트를 먼저 확인할 것.
 
 ```bash
 # ① 단일접촉 x,y,z,fz (터미널)
