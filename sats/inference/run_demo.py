@@ -45,6 +45,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--infer-max-fps", type=float, default=20.0)
     p.add_argument("--device", default="auto")
     # 리더
+    p.add_argument("--list-ports", action="store_true", help="시리얼 포트 목록 출력 후 종료(기본 셋업)")
+    p.add_argument("--probe", action="store_true", help="포트에서 raw 바이트 몇 개 읽어 연결 확인 후 종료")
     p.add_argument("--mock", action="store_true")
     p.add_argument("--port", default="/dev/ttyUSB0")
     p.add_argument("--baudrate", type=int, default=2000000)
@@ -82,6 +84,38 @@ def _get_window(reader, last_seq: int):
     if hasattr(reader, "get_latest_window_with_seq"):
         return reader.get_latest_window_with_seq()
     return reader.get_latest_window(), last_seq + 1
+
+
+def list_serial_ports() -> None:
+    """연결된 시리얼 포트 목록 출력 (기본 셋업 — 센서 포트 찾기)."""
+    try:
+        from serial.tools import list_ports
+    except ImportError:
+        print("pyserial 미설치 (.venv 확인)"); return
+    ports = list(list_ports.comports())
+    if not ports:
+        print("시리얼 포트 없음. 센서 USB 연결·전원 확인, 권한(dialout) 확인."); return
+    print(f"발견된 시리얼 포트 {len(ports)}개:")
+    for p in ports:
+        print(f"  {p.device:16s}  {p.description}  [{p.hwid}]")
+    print("\n→ 센서 포트를 --port 로 지정 (예: --port " + ports[0].device + ")")
+
+
+def probe_port(port: str, baudrate: int, n: int = 64) -> None:
+    """포트에서 raw 바이트 읽어 연결·데이터 흐름 확인(기본 셋업)."""
+    try:
+        import serial
+    except ImportError:
+        print("pyserial 미설치"); return
+    try:
+        s = serial.Serial(port, baudrate, timeout=1.0)
+    except Exception as e:
+        print(f"[probe] {port} 열기 실패: {e}\n  권한? sudo usermod -aG dialout $USER (재로그인) 또는 sudo chmod 666 {port}")
+        return
+    data = s.read(n); s.close()
+    print(f"[probe] {port}@{baudrate}: {len(data)} bytes 수신" + ("  ✅ 데이터 흐름 OK" if data else "  ⚠ 0 bytes(전원/보드레이트/포트 확인)"))
+    if data:
+        print("  head:", data[:24].hex(" "))
 
 
 def _make_viz(args, engine):
@@ -226,6 +260,11 @@ def run_bending(args, engine, z_calib, bi, reader) -> None:
 
 def main() -> None:
     args = _build_parser().parse_args()
+    # 기본 셋업 유틸(모델 로드 불필요) — 먼저 처리 후 종료
+    if args.list_ports:
+        list_serial_ports(); return
+    if args.probe:
+        probe_port(args.port, args.baudrate); return
     print(f"[1/2] 엔진 로드: {args.run_dir}")
     engine = SATSInferenceEngine(args.run_dir, device=args.device, indenter_diameter_mm=args.diameter)
     z_path = args.z_calib or (Path(__file__).resolve().parent / "z_calibration_v6.json")
