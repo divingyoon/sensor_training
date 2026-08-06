@@ -18,7 +18,7 @@ v6 학습 파일로 실시간 추론. **터미널 우선** + 2D/3D 시각화. �
 #   커널 인식 확인(센서 꽂은 직후): dmesg | grep -i tty | tail ; ls -l /dev/ttyUSB* /dev/ttyACM*
 
 # ② 연결·데이터 흐름 확인(raw 바이트 수신 여부)
-.venv/bin/python -m sats.inference.run_demo --probe --port /dev/ttyUSB0 --baudrate 2000000
+.venv/bin/python -m sats.inference.run_demo --probe --port /dev/ttyUSB0 --baudrate 250000
 
 # 권한 오류(Permission denied) 시
 sudo usermod -aG dialout $USER   # 재로그인 후 영구 적용

@@ -49,7 +49,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--probe", action="store_true", help="포트에서 raw 바이트 몇 개 읽어 연결 확인 후 종료")
     p.add_argument("--mock", action="store_true")
     p.add_argument("--port", default="/dev/ttyUSB0")
-    p.add_argument("--baudrate", type=int, default=2000000)
+    p.add_argument("--baudrate", type=int, default=250000)   # vensor2.ino Serial.begin(250000)
     p.add_argument("--baseline-seconds", type=float, default=5.0)
     p.add_argument("--startup-delay", type=float, default=2.0)
     p.add_argument("--protocol", default="v2")
