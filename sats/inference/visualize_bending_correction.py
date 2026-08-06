@@ -53,7 +53,7 @@ def build_panels(sats_run: Path, bending_dir: Path, contact_trial: Path, device:
                  target_delta: float = 10.0) -> dict:
     """4패널 SATS 맵 + 메타 계산."""
     sats = load_frozen_sats(sats_run, device)
-    cfg = BendingConfig()
+    cfg = BendingConfig(restorer_mode="deg_cnn")   # 공간CNN 복원(억제율↑)
     W = cfg.window_size
     trials = sorted(p.stem for p in bending_dir.glob("*.npz"))
     if not trials:

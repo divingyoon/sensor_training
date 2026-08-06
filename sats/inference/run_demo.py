@@ -388,7 +388,7 @@ def main() -> None:
         if not bend_dir.exists():
             bend_dir = _ROOT / "learning_data/bending/v6"
         print(f"[bending] estimator={est_ckpt.parent.name if est_ckpt.name=='best.pt' else est_ckpt.name}  data={bend_dir.name}")
-        cfg = BendingConfig()
+        cfg = BendingConfig(restorer_mode="deg_cnn")   # 공간CNN 복원(억제율↑, 접촉보존)
         restorer = None
         if args.mode == "bending":
             print("[bending] restorer 학습(신규 v6 buckling, ~1분)...")
