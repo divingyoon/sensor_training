@@ -61,16 +61,20 @@ sudo chmod 666 /dev/ttyUSB0      # 또는 임시
 
 ## 산출물별 동작
 1. **contacts**: 매 프레임 접촉별 `x,y,z,fz` 출력 + 최대 Fz 프레임 latch. z=peak_val LUT 근사, fz=Voronoi 적분.
-2. **viz**: `live | optimized frame` 나란히, 접촉 마커(최대3)·라벨·theta.
-3. **theta**: raw=base×(1+pct/100) 복원 → estimator → 밴딩각(smoothed).
+2. **viz**: 단일 패널 live heatmap(단색 초록, 상대 정규화), 접촉 마커(최대3)·라벨·theta.
+3. **theta**: ★**재앵커** — 학습 참조 baseline(`estimator_v6_ref_baseline.npy`)에 pct를 얹어
+   기압/온도/유닛 무관하게 추정(데모 raw 절대값 직접 사용 금지 — 0.5% 어긋나면 포화). 시작 flat
+   구간을 theta0으로 잡아 **Δθ(상대 밴딩각)** 표시(estimator 저각도 offset~80°·절대각 세션간 불안정).
 4. **bending 상태머신**:
    1. 시작 → **플랫 무접촉 baseline** 캡처(센서에서 손 떼고 대기).
-   2. **지그 장착·밴딩** 후 **Enter** → 밴딩 무접촉서 theta 고정.
+   2. **지그 장착·밴딩** 후 **Enter** → 밴딩 무접촉서 theta 고정(재앵커).
    3. 접촉 press → `restorer(pct,theta)` 복원 → 동결 SATS → `theta: x,y,z,fz`.
 
 ## ★ 내일 실기 체크리스트
 - [ ] serial `--protocol`(기본 auto→binary, vensor2.ino=바이너리)·`--baudrate`(250000)·`--port` 실센서 확인.
 - [ ] baseline 캡처 시 **무접촉 유지**(플랫). d5/d10 `--diameter` 지정(z·size 조건).
+- [ ] theta: **재앵커**라 기압 무관하나, `estimator_v6_ref_baseline.npy`가 estimator 옆에 있어야 함
+      (없으면 데모 baseline 폴백=기압 민감). 시작 flat 영점(2초 무접촉·미밴딩 유지) → 이후 Δθ.
 - [ ] theta 스케일: estimator는 **buckling(Y구동 δ=Y−18)** 학습 → 데모 지그도 **버클 방식**이어야 theta 유효. 순수 굽힘이면 정합 데이터 재학습 필요([[v6-test-eval]]).
 - [ ] 다중접촉: 접촉을 **동등·firm하게** 눌러야 분리 선명(약접촉은 확산).
 - [ ] z는 **근사**(특히 d10 R²0.59)임을 데모 설명에 명시.
