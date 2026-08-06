@@ -39,6 +39,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--z-calib", default=None, help="z 보정 json (기본=z_calibration_v6.json)")
     p.add_argument("--min-distance-mm", type=float, default=3.0)
     p.add_argument("--rel-threshold", type=float, default=0.3)
+    p.add_argument("--min-fz", type=float, default=0.2, help="무접촉 게이트: 접촉별 fz(N) 하한(약한 스퓨리어스 제거)")
     p.add_argument("--report-interval", type=float, default=2.0, help="최적 프레임 요약 주기(초)")
     p.add_argument("--viz", choices=["none", "2d", "3d", "both"], default="none", help="[산출물2] heatmap 시각화")
     p.add_argument("--viz-fps", type=float, default=10.0)
@@ -155,7 +156,7 @@ def run_contacts(args, engine, z_calib, reader) -> None:
             contacts = extract_contacts(pmap, grid_min_mm=engine.grid_min_mm, grid_step_mm=engine.grid_step_mm,
                                         taxel_area=engine.taxel_area, diameter_mm=args.diameter,
                                         max_contacts=args.contacts, min_distance_mm=args.min_distance_mm,
-                                        rel_threshold=args.rel_threshold, z_calib=z_calib)
+                                        rel_threshold=args.rel_threshold, min_fz=args.min_fz, z_calib=z_calib)
             if contacts:
                 print(format_contacts(frame, contacts))
                 latch.update(frame, pmap, contacts)
@@ -241,7 +242,7 @@ def run_bending(args, engine, z_calib, bi, reader) -> None:
             contacts = extract_contacts(pmap, grid_min_mm=engine.grid_min_mm, grid_step_mm=engine.grid_step_mm,
                                         taxel_area=engine.taxel_area, diameter_mm=args.diameter,
                                         max_contacts=args.contacts, min_distance_mm=args.min_distance_mm,
-                                        rel_threshold=args.rel_threshold, z_calib=z_calib)
+                                        rel_threshold=args.rel_threshold, min_fz=args.min_fz, z_calib=z_calib)
             if contacts:
                 print(format_contacts(frame, contacts, theta_deg=theta))
                 latch.update(frame, pmap, contacts)

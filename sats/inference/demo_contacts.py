@@ -25,11 +25,16 @@ class Contact:
 def extract_contacts(pred_map: np.ndarray, *, grid_min_mm: float, grid_step_mm: float,
                      taxel_area: float, diameter_mm: float, max_contacts: int = 3,
                      min_distance_mm: float = 3.0, rel_threshold: float = 0.3,
+                     min_fz: float = 0.0, min_peak_val: float = 0.0,
                      z_calib=None) -> list[Contact]:
     """압력맵 → 접촉 리스트(총 fz 내림차순). z_calib 없으면 z=nan.
 
     fz: 양압 셀을 최근접 peak에 Voronoi 배정 후 셀합×area/100 (총합 보존, 다접촉 분할).
+    ★무접촉 게이트: peak_val<min_peak_val 프레임은 빈 리스트, 접촉별 fz<min_fz 는 제거.
+    (detect_peaks 는 상대임계라 무접촉 노이즈도 전역최대를 잡음 → 절대 하한 필요.)
     """
+    if float(np.clip(pred_map, 0, None).max()) < min_peak_val:
+        return []
     peaks = detect_peaks(pred_map, grid_min_mm=grid_min_mm, grid_step_mm=grid_step_mm,
                          min_distance_mm=min_distance_mm, rel_threshold=rel_threshold,
                          max_peaks=max_contacts)
@@ -45,6 +50,8 @@ def extract_contacts(pred_map: np.ndarray, *, grid_min_mm: float, grid_step_mm: 
     contacts: list[Contact] = []
     for k, (px, py, pv) in enumerate(peaks):
         fz = float(pos[assign == k].sum()) * taxel_area / 100.0
+        if fz < min_fz:                                  # 약한 스퓨리어스(무접촉) 제거
+            continue
         z = float(z_calib.z_from_peak(pv, diameter_mm)) if z_calib is not None else float("nan")
         contacts.append(Contact(x_mm=float(px), y_mm=float(py), z_mm=z, fz_n=fz, peak_val=float(pv)))
     return sorted(contacts, key=lambda c: -c.fz_n)
