@@ -42,8 +42,41 @@ Y_FLAT_TOL_MM = 0.3            # |Y|<tol → flat baseline 프레임
 TRIAL_DIR_RE = re.compile(r"^\d{8}_test\d+$")
 
 
+import glob
+
+
+def _has_csv(trial_dir: Path) -> bool:
+    return (trial_dir / "due_data.csv").exists() and (trial_dir / "ethermotion_data.csv").exists()
+
+
+def _has_bin(trial_dir: Path) -> bool:
+    return bool(glob.glob(str(trial_dir / "due_raw_burst_*.bin"))) and \
+        bool(glob.glob(str(trial_dir / "ethermotion_encoder_*.bin")))
+
+
+def merge_trial_bin(trial_dir: Path) -> pd.DataFrame:
+    """신규 취득(raw .bin만): due_raw_burst + ethermotion_encoder → burst df.
+
+    CSV 경로와 동일 스키마(burst_index 평균, y_mm/z_mm 시간보간) 산출. bin_merge 재사용.
+    """
+    from sats.preprocessing.bin_merge import FIFO_FRAMES, load_due_bin, load_ethermotion_bin
+    due = load_due_bin(glob.glob(str(trial_dir / "due_raw_burst_*.bin"))[0])
+    eth = load_ethermotion_bin(glob.glob(str(trial_dir / "ethermotion_encoder_*.bin"))[0])
+    n = len(due.sensors)
+    df = pd.DataFrame(np.asarray(due.sensors, np.float64), columns=SKIN_COLS)
+    df["burst_index"] = np.arange(n) // FIFO_FRAMES            # FIFO 10프레임 → 1 burst
+    df["time_s"] = np.asarray(due.time_s, np.float64)
+    burst = df.groupby("burst_index")[["time_s", *SKIN_COLS]].mean().reset_index()
+    et = np.asarray(eth.time_s, np.float64)
+    burst["y_mm"] = np.interp(burst["time_s"], et, np.asarray(eth.y_mm, np.float64))  # bin_merge=이미 mm
+    burst["z_mm"] = np.interp(burst["time_s"], et, np.asarray(eth.z_mm, np.float64))
+    return burst
+
+
 def merge_trial(trial_dir: Path) -> pd.DataFrame:
-    """due(16ch)+ether(Y,Z) 병합. burst 평균 due 타임라인에 Y,Z 시간보간."""
+    """due(16ch)+ether(Y,Z) 병합. CSV 있으면 CSV, 없으면 raw .bin(신규 취득)."""
+    if not _has_csv(trial_dir) and _has_bin(trial_dir):
+        return merge_trial_bin(trial_dir)
     due = pd.read_csv(trial_dir / "due_data.csv")
     ether = pd.read_csv(trial_dir / "ethermotion_data.csv")
     for col in ("burst_index", "time_s", *SKIN_COLS):
@@ -157,9 +190,9 @@ def discover_trials(raw_root: Path, exclude: set[str]) -> list[Path]:
     """
     trials = [p for p in sorted(raw_root.iterdir())
               if p.is_dir() and p.name not in exclude
-              and (p / "due_data.csv").exists() and (p / "ethermotion_data.csv").exists()]
+              and (_has_csv(p) or _has_bin(p))]      # CSV 또는 raw .bin(신규 취득)
     if not trials:
-        raise FileNotFoundError(f"밴딩 세션 폴더 없음(due+ether CSV 기준): {raw_root} "
+        raise FileNotFoundError(f"밴딩 세션 폴더 없음(due+ether CSV/bin 기준): {raw_root} "
                                 f"(exclude={sorted(exclude)})")
     return trials
 
