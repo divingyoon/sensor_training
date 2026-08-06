@@ -23,7 +23,8 @@ from sats.preprocessing.bin_merge import load_due_bin, load_ethermotion_bin
 FLAT_TOL_MM = 0.5
 
 
-def _session_stats(test_dir: Path) -> dict | None:
+def _session_stats(test_dir: Path, y_start: float, y_end: float, z_min: float | None) -> dict | None:
+    """밴딩 시작점(y_start=flat baseline)~y_end 유효창만 분석. δ' = y − y_start."""
     due_g = glob.glob(str(test_dir / "due_raw_burst_*.bin"))
     eth_g = glob.glob(str(test_dir / "ethermotion_encoder_*.bin"))
     if not due_g or not eth_g:
@@ -32,24 +33,31 @@ def _session_stats(test_dir: Path) -> dict | None:
     eth = load_ethermotion_bin(eth_g[0])
     s = np.asarray(due.sensors, np.float64)             # [N,16]
     ts = np.asarray(due.time_s, np.float64)
-    ey, et = np.asarray(eth.y_mm, np.float64), np.asarray(eth.time_s, np.float64)
-    # 시간 최근접으로 Y 정렬
-    idx = np.searchsorted(et, ts).clip(0, len(et) - 1)
-    y = ey[idx]
-    delta = y - y.min()                                # 변형량(δ, flat=min Y)
-    flat = delta < FLAT_TOL_MM
+    et = np.asarray(eth.time_s, np.float64)
+    idx = np.searchsorted(et, ts).clip(0, len(et) - 1)  # 시간 최근접 정렬
+    y = np.asarray(eth.y_mm, np.float64)[idx]
+    z = np.asarray(eth.z_mm, np.float64)[idx]
+    # 유효창: 밴딩 시작~끝 (+옵션 z 필터)
+    win = (y >= y_start) & (y <= y_end)
+    if z_min is not None:
+        win &= (z >= z_min)
+    if win.sum() < 20:
+        return None
+    s, y = s[win], y[win]
+    delta = y - y_start                                # δ' = y − 밴딩시작(0~유효폭)
+    flat = delta < FLAT_TOL_MM                         # 밴딩 시작점 = flat baseline
     if flat.sum() < 5:
-        flat = delta < np.percentile(delta, 5)
+        flat = delta < np.percentile(delta, 8)
     base = s[flat].mean(0)
     safe = np.where(np.abs(base) < 1e-9, 1e-9, base)
     dp = np.abs((s - base) / safe * 100.0).mean(1)     # 프레임별 16ch 평균 |Δp|%
-    # δ 구간별 신호
-    bins = [0, 2, 4, 6, 8, 10, 13, 16, 20, 25, 30, 35]
+    span = y_end - y_start
+    edges = np.round(np.linspace(0, span, min(11, int(span) + 1)), 1)
     curve = []
-    for lo, hi in zip(bins[:-1], bins[1:]):
+    for lo, hi in zip(edges[:-1], edges[1:]):
         m = (delta >= lo) & (delta < hi)
-        if m.sum() > 10:
-            curve.append({"delta_lo": lo, "n": int(m.sum()),
+        if m.sum() > 8:
+            curve.append({"delta_lo": float(lo), "n": int(m.sum()),
                           "signal_pct": round(float(dp[m].mean()), 3)})
     return {
         "session": test_dir.name,
@@ -66,12 +74,15 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--dir", required=True, help="밴딩 버전 폴더(하위에 test*/ due+ether bin)")
     p.add_argument("--label", default="")
+    p.add_argument("--y-start", type=float, default=23.0, help="밴딩 시작 y(mm)=flat baseline (신규 v6=23)")
+    p.add_argument("--y-end", type=float, default=33.0, help="밴딩 끝 y(mm) (신규 v6=33)")
+    p.add_argument("--z-min", type=float, default=None, help="z 하한 필터(옵션)")
     args = p.parse_args()
     root = Path(args.dir)
     tests = sorted([d for d in root.rglob("*") if d.is_dir() and glob.glob(str(d / "due_raw_burst_*.bin"))])
-    sessions = [st for d in tests if (st := _session_stats(d))]
+    sessions = [st for d in tests if (st := _session_stats(d, args.y_start, args.y_end, args.z_min))]
     # 집계: δ구간별 신호 평균(세션 평균)
-    agg: dict[int, list] = {}
+    agg: dict[float, list] = {}
     for s in sessions:
         for c in s["curve"]:
             agg.setdefault(c["delta_lo"], []).append(c["signal_pct"])
