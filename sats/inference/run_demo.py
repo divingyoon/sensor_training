@@ -48,6 +48,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--report-interval", type=float, default=2.0, help="최적 프레임 요약 주기(초)")
     p.add_argument("--viz", choices=["none", "2d", "3d", "both"], default="none", help="[산출물2] heatmap 시각화")
     p.add_argument("--show-units", action="store_true", help="실시간 16-taxel 센싱유닛 heatmap(SATS 입력 원본) 창 추가")
+    # theta 히스테리시스 필터(점탄성 잔차 자동 영점)
+    p.add_argument("--auto-rezero", action=argparse.BooleanOptionalAction, default=True,
+                   help="theta: flat·안정 시 잔차(히스테리시스)를 서서히 0으로 자동 영점")
+    p.add_argument("--rezero-band", type=float, default=25.0,
+                   help="자동 영점 적용 범위(|Δθ|<band일 때만). 실제 밴딩(>band)은 보존")
+    p.add_argument("--rezero-tau", type=float, default=2.5, help="자동 영점 시간상수(초). 클수록 느리게 복원")
     p.add_argument("--viz-fps", type=float, default=10.0)
     p.add_argument("--infer-max-fps", type=float, default=20.0)
     p.add_argument("--device", default="auto")
@@ -231,16 +237,18 @@ def run_theta(args, engine, bi, reader) -> None:
     print("[theta] flat 영점 캡처 중 — 센서 평평·무접촉 유지 (2초)...")
     theta0, last_seq = _capture_theta0(bi, reader, base, 2.0)
     print(f"[theta] flat 영점 theta0 = {theta0:+.1f} deg  → 이후 Δθ(상대) 표시")
-    print("  ★ 지그에 평평하게 장착한 직후(밴딩 직전) Enter 로 재영점 하세요. (Ctrl+C 종료)\n")
+    ar = "ON" if args.auto_rezero else "OFF"
+    print(f"  ★ Enter=수동 재영점.  자동 영점(히스테리시스 필터)={ar} "
+          f"(|Δθ|<{args.rezero_band:g}° 안정 시 τ={args.rezero_tau:g}s로 잔차→0). (Ctrl+C 종료)\n")
     hist: collections.deque = collections.deque(maxlen=15)
-    last_infer = 0.0
+    last_infer, last_adapt = 0.0, time.time()
     interval = 0.0 if args.infer_max_fps <= 0 else 1.0 / args.infer_max_fps
     try:
         while True:
             now = time.time()
-            if _enter_pressed():                      # 재영점(현재 flat 상태를 0으로)
+            if _enter_pressed():                      # 수동 재영점(현재 flat 상태를 0으로)
                 theta0, last_seq = _capture_theta0(bi, reader, base, 0.6)
-                hist.clear()
+                hist.clear(); last_adapt = time.time()
                 print(f"\n[theta] ★ 재영점 완료 theta0 = {theta0:+.1f} deg\n")
                 continue
             if now - last_infer < interval:
@@ -249,9 +257,18 @@ def run_theta(args, engine, bi, reader) -> None:
             if win is None or seq == last_seq:
                 time.sleep(0.002); continue
             last_seq, last_infer = seq, now
-            theta_rel = bi.theta_from_pct(win, demo_baseline=base) - theta0
+            theta_abs = bi.theta_from_pct(win, demo_baseline=base)
+            theta_rel = theta_abs - theta0
             hist.append(theta_rel)
-            print(f"\r  Δtheta = {theta_rel:+7.1f} deg   (smoothed {np.median(hist):+7.1f})   [Enter=재영점]  ",
+            # ★히스테리시스 필터: flat 근처(|Δθ|<band)서 안정(변동 작음)하면 잔차를 서서히 0으로.
+            #   활성 밴딩(변동 큼·|Δθ|≥band)은 미적용 → 실제 각 보존.
+            stable = len(hist) >= 5 and (max(hist) - min(hist)) < 4.0
+            if args.auto_rezero and stable and abs(theta_rel) < args.rezero_band:
+                alpha = min(1.0, (now - last_adapt) / max(args.rezero_tau, 1e-3))
+                theta0 += alpha * (theta_abs - theta0)    # baseline을 현재로 견인 → Δθ→0
+            last_adapt = now
+            flag = "~0(hold)" if (args.auto_rezero and stable and abs(theta_rel) < args.rezero_band) else "       "
+            print(f"\r  Δtheta = {theta_rel:+7.1f} deg  (smoothed {np.median(hist):+7.1f}) {flag} [Enter=재영점] ",
                   end="", flush=True)
     except KeyboardInterrupt:
         print(f"\n\n=== 종료 ===  최종 smoothed Δtheta = {np.median(hist):+.1f} deg" if hist else "\n종료")
