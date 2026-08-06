@@ -4,7 +4,8 @@ v6 학습 파일로 실시간 추론. **터미널 우선** + 2D/3D 시각화. �
 
 ## 모델·보정 자산
 - SATS 배포: `sats/training/runs/ecomesh_v6_deploy_all4`
-- 밴딩 estimator: `sats/bending/runs/estimator_v6`
+- 밴딩 estimator: **`sats/bending/runs/estimator_v6new/best.pt`** (신규 v6 y23-33 재취득, G1 MAE 1.78°·θ 0~157°; 없으면 구 `estimator_v6` 폴백) + `estimator_v6new/best.pt_ref_baseline.npy`
+- 밴딩 학습데이터(restorer 온더플라이): `learning_data/bending/v6_new`(δ=y−23, 유효 0~10mm; 없으면 v6 폴백)
 - z 보정 LUT: `sats/inference/z_calibration_v6.json` (맵 peak→z_depth, d5 R²0.87·d10 R²0.59, **근사값**)
 
 ## 0. 기본 셋업 / 포트 찾기 (실기 시작 전)

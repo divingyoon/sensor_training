@@ -323,13 +323,19 @@ def main() -> None:
     if args.mode in ("theta", "bending"):
         from sats.bending.config import BendingConfig
         from sats.inference.bending_infer import BendingInference, load_restorer
-        est_ckpt = _ROOT / "sats/bending/runs/estimator_v6"
+        # 신규 v6(y23-33·G1 MAE 1.78°) 우선, 없으면 구 v6 폴백
+        est_ckpt = _ROOT / "sats/bending/runs/estimator_v6new/best.pt"
+        if not est_ckpt.exists():
+            est_ckpt = _ROOT / "sats/bending/runs/estimator_v6"
+        bend_dir = _ROOT / "learning_data/bending/v6_new"
+        if not bend_dir.exists():
+            bend_dir = _ROOT / "learning_data/bending/v6"
+        print(f"[bending] estimator={est_ckpt.parent.name if est_ckpt.name=='best.pt' else est_ckpt.name}  data={bend_dir.name}")
         cfg = BendingConfig()
         restorer = None
         if args.mode == "bending":
-            print("[bending] restorer 학습(v6 buckling, ~1분)...")
-            restorer = load_restorer(args.run_dir, _ROOT / "learning_data/bending/v6",
-                                     device=engine.device, cfg=cfg)
+            print("[bending] restorer 학습(신규 v6 buckling, ~1분)...")
+            restorer = load_restorer(args.run_dir, bend_dir, device=engine.device, cfg=cfg)
         bi = BendingInference(est_ckpt, device=engine.device, restorer=restorer, cfg=cfg)
 
     reader = _start_reader(args, engine.window_size)
