@@ -24,7 +24,7 @@ import collections
 import numpy as np
 
 from sats.inference.demo_contacts import (
-    FrameLatch, extract_contacts, format_contacts, format_contacts_line,
+    FrameLatch, LiveDisplay, extract_contacts, format_contacts, format_contacts_block,
 )
 from sats.inference.inference_engine import SATSInferenceEngine
 from sats.inference.z_calibration import ZCalibration
@@ -141,8 +141,9 @@ def run_contacts(args, engine, z_calib, reader) -> None:
     print(f"[contacts] {kind}  d={args.diameter:g}mm  (Ctrl+C 종료)\n")
     latch = FrameLatch()
     viz = _make_viz(args, engine)
+    disp = LiveDisplay()
     viz_interval = 0.0 if args.viz_fps <= 0 else 1.0 / args.viz_fps
-    last_seq, frame, last_infer, last_report, last_viz = 0, 0, 0.0, time.time(), 0.0
+    last_seq, frame, last_infer, last_viz, t_fps, fps = 0, 0, 0.0, 0.0, time.time(), 0.0
     infer_interval = 0.0 if args.infer_max_fps <= 0 else 1.0 / args.infer_max_fps
     try:
         while True:
@@ -154,6 +155,8 @@ def run_contacts(args, engine, z_calib, reader) -> None:
                 time.sleep(0.002); continue
             last_seq, last_infer = seq, now
             frame += 1
+            if frame % 10 == 0:
+                fps = 10.0 / max(now - t_fps, 1e-6); t_fps = now
             pmap = engine.predict(win)
             contacts = extract_contacts(pmap, grid_min_mm=engine.grid_min_mm, grid_step_mm=engine.grid_step_mm,
                                         taxel_area=engine.taxel_area, diameter_mm=args.diameter,
@@ -161,7 +164,7 @@ def run_contacts(args, engine, z_calib, reader) -> None:
                                         rel_threshold=args.rel_threshold, min_fz=args.min_fz, z_calib=z_calib)
             if contacts:
                 latch.update(frame, pmap, contacts)
-            print("\r" + format_contacts_line(contacts), end="", flush=True)
+            disp.render(format_contacts_block(contacts, frame=frame, fps=fps, mode="contacts"))
             if viz and now - last_viz >= viz_interval:
                 for v in viz:
                     v.update(pmap, contacts, best_map=latch.pred_map, best_contacts=latch.contacts)
@@ -222,8 +225,9 @@ def run_bending(args, engine, z_calib, bi, reader) -> None:
     print("  접촉 press 시작 (Ctrl+C 종료)\n")
     latch = FrameLatch()
     viz = _make_viz(args, engine)
+    disp = LiveDisplay()
     viz_interval = 0.0 if args.viz_fps <= 0 else 1.0 / args.viz_fps
-    last_seq, frame, last_infer, last_report, last_viz = 0, 0, 0.0, time.time(), 0.0
+    last_seq, frame, last_infer, last_viz, t_fps, fps = 0, 0, 0.0, 0.0, time.time(), 0.0
     interval = 0.0 if args.infer_max_fps <= 0 else 1.0 / args.infer_max_fps
     try:
         while True:
@@ -235,6 +239,8 @@ def run_bending(args, engine, z_calib, bi, reader) -> None:
                 time.sleep(0.002); continue
             last_seq, last_infer = seq, now
             frame += 1
+            if frame % 10 == 0:
+                fps = 10.0 / max(now - t_fps, 1e-6); t_fps = now
             restored = bi.restore(win, theta)            # 밴딩→flat 등가 복원
             pmap = engine.predict(restored)               # 동결 SATS
             contacts = extract_contacts(pmap, grid_min_mm=engine.grid_min_mm, grid_step_mm=engine.grid_step_mm,
@@ -243,7 +249,7 @@ def run_bending(args, engine, z_calib, bi, reader) -> None:
                                         rel_threshold=args.rel_threshold, min_fz=args.min_fz, z_calib=z_calib)
             if contacts:
                 latch.update(frame, pmap, contacts)
-            print("\r" + format_contacts_line(contacts, theta_deg=theta), end="", flush=True)
+            disp.render(format_contacts_block(contacts, theta_deg=theta, frame=frame, fps=fps, mode="bending"))
             if viz and now - last_viz >= viz_interval:
                 for v in viz:
                     v.update(pmap, contacts, theta_deg=theta, best_map=latch.pred_map, best_contacts=latch.contacts)

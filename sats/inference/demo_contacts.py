@@ -84,6 +84,34 @@ def format_contacts_line(contacts: list[Contact], theta_deg: float | None = None
     return (head + f"[{len(contacts)}] " + body).ljust(width)[:width]
 
 
+def format_contacts_block(contacts: list[Contact], *, theta_deg: float | None = None,
+                          frame: int = 0, fps: float = 0.0, mode: str = "contacts") -> list[str]:
+    """nvidia-smi 식 제자리 갱신용 블록(라인 리스트). 최대 3접촉 + 헤더."""
+    lines = [f" v6 SATS realtime — {mode}    frame {frame:<7d} {fps:5.1f} fps"]
+    if theta_deg is not None:
+        lines.append(f" bending theta : {theta_deg:+6.1f} deg")
+    lines.append(" " + "-" * 52)
+    if not contacts:
+        lines.append("  (no contact)")
+    else:
+        for i, c in enumerate(contacts, 1):
+            z = " n/a " if np.isnan(c.z_mm) else f"{c.z_mm:4.2f}"
+            lines.append(f"  #{i}  x={c.x_mm:+6.1f}  y={c.y_mm:+6.1f}  z={z}mm  fz={c.fz_n:6.2f} N")
+    lines.append(f"  contacts: {len(contacts)}    (Ctrl+C 종료)")
+    return lines
+
+
+class LiveDisplay:
+    """ANSI 제자리 갱신 — 커서 홈 + 라인별 clear-to-EOL + 아래 잔여 clear."""
+
+    def __init__(self) -> None:
+        print("\033[2J", end="")   # 시작 시 1회 전체 클리어
+
+    def render(self, lines: list[str]) -> None:
+        body = "\n".join(ln + "\033[K" for ln in lines)
+        print("\033[H" + body + "\033[J", end="", flush=True)
+
+
 class FrameLatch:
     """총 fz 최대 프레임을 유지(최적/최대 프레임 = B1)."""
 
