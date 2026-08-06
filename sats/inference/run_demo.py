@@ -48,11 +48,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--report-interval", type=float, default=2.0, help="최적 프레임 요약 주기(초)")
     p.add_argument("--viz", choices=["none", "2d", "3d", "both"], default="none", help="[산출물2] heatmap 시각화")
     p.add_argument("--show-units", action="store_true", help="실시간 16-taxel 센싱유닛 heatmap(SATS 입력 원본) 창 추가")
-    # theta 히스테리시스 필터(점탄성 잔차 자동 영점)
+    # theta 히스테리시스 필터(점탄성 잔차 자동 영점) — release 감지 기반(유효범위 20~150° 보존)
     p.add_argument("--auto-rezero", action=argparse.BooleanOptionalAction, default=True,
-                   help="theta: flat·안정 시 잔차(히스테리시스)를 서서히 0으로 자동 영점")
-    p.add_argument("--rezero-band", type=float, default=25.0,
-                   help="자동 영점 적용 범위(|Δθ|<band일 때만). 실제 밴딩(>band)은 보존")
+                   help="theta: 더 큰 밴딩서 풀려 정지한 잔차만 서서히 0으로(held 밴딩은 보존)")
+    p.add_argument("--rezero-release-deg", type=float, default=12.0,
+                   help="잔차 판정: 최근 peak보다 이만큼↓ 낮게 정지 시 잔차로 간주(작을수록 민감)")
     p.add_argument("--rezero-tau", type=float, default=2.5, help="자동 영점 시간상수(초). 클수록 느리게 복원")
     p.add_argument("--viz-fps", type=float, default=10.0)
     p.add_argument("--infer-max-fps", type=float, default=20.0)
@@ -236,19 +236,20 @@ def run_theta(args, engine, bi, reader) -> None:
     base = reader.baseline
     print("[theta] flat 영점 캡처 중 — 센서 평평·무접촉 유지 (2초)...")
     theta0, last_seq = _capture_theta0(bi, reader, base, 2.0)
-    print(f"[theta] flat 영점 theta0 = {theta0:+.1f} deg  → 이후 Δθ(상대) 표시")
+    print(f"[theta] flat 영점 theta0 = {theta0:+.1f} deg  → 이후 Δθ(상대) 표시  (유효 밴딩 ~20-150°)")
     ar = "ON" if args.auto_rezero else "OFF"
-    print(f"  ★ Enter=수동 재영점.  자동 영점(히스테리시스 필터)={ar} "
-          f"(|Δθ|<{args.rezero_band:g}° 안정 시 τ={args.rezero_tau:g}s로 잔차→0). (Ctrl+C 종료)\n")
-    hist: collections.deque = collections.deque(maxlen=15)
-    last_infer, last_adapt = 0.0, time.time()
+    print(f"  ★ Enter=수동 재영점.  자동 영점(release 기반)={ar} "
+          f"(최근 peak−{args.rezero_release_deg:g}° 아래로 정지=잔차 → τ={args.rezero_tau:g}s로 0; held 밴딩 보존). (Ctrl+C 종료)\n")
+    hist: collections.deque = collections.deque(maxlen=20)    # ~1s @20fps (평활·움직임)
+    peak_hist: collections.deque = collections.deque(maxlen=80)  # ~4s (최근 peak)
+    last_infer, last_frame = 0.0, time.time()
     interval = 0.0 if args.infer_max_fps <= 0 else 1.0 / args.infer_max_fps
     try:
         while True:
             now = time.time()
             if _enter_pressed():                      # 수동 재영점(현재 flat 상태를 0으로)
                 theta0, last_seq = _capture_theta0(bi, reader, base, 0.6)
-                hist.clear(); last_adapt = time.time()
+                hist.clear(); peak_hist.clear(); last_frame = time.time()
                 print(f"\n[theta] ★ 재영점 완료 theta0 = {theta0:+.1f} deg\n")
                 continue
             if now - last_infer < interval:
@@ -259,19 +260,25 @@ def run_theta(args, engine, bi, reader) -> None:
             last_seq, last_infer = seq, now
             theta_abs = bi.theta_from_pct(win, demo_baseline=base)
             theta_rel = theta_abs - theta0
-            hist.append(theta_rel)
-            # ★히스테리시스 필터: flat 근처(|Δθ|<band)서 안정(변동 작음)하면 잔차를 서서히 0으로.
-            #   활성 밴딩(변동 큼·|Δθ|≥band)은 미적용 → 실제 각 보존.
-            stable = len(hist) >= 5 and (max(hist) - min(hist)) < 4.0
-            if args.auto_rezero and stable and abs(theta_rel) < args.rezero_band:
-                alpha = min(1.0, (now - last_adapt) / max(args.rezero_tau, 1e-3))
-                theta0 += alpha * (theta_abs - theta0)    # baseline을 현재로 견인 → Δθ→0
-            last_adapt = now
-            flag = "~0(hold)" if (args.auto_rezero and stable and abs(theta_rel) < args.rezero_band) else "       "
-            print(f"\r  Δtheta = {theta_rel:+7.1f} deg  (smoothed {np.median(hist):+7.1f}) {flag} [Enter=재영점] ",
-                  end="", flush=True)
+            hist.append(theta_rel); peak_hist.append(theta_rel)
+            smoothed = float(np.median(list(hist)[-7:]))
+            # 움직임 감지(median, 노이즈 강건): 활성 밴딩 중엔 자동영점 미적용.
+            moving = True
+            if len(hist) >= 15:
+                moving = abs(float(np.median(list(hist)[-5:])) - float(np.median(list(hist)[:5]))) > 4.0
+            # ★release 감지: 최근 peak(~4s)보다 release_deg 이상 낮게 정지 = 히스테리시스 잔차.
+            #   held 밴딩은 자기 peak≈현재라 미적용 → 유효 20-150° 보존.
+            recent_max = max(peak_hist)
+            released = (recent_max - smoothed) > args.rezero_release_deg
+            adapting = args.auto_rezero and (not moving) and released
+            if adapting:
+                alpha = min(1.0, (now - last_frame) / max(args.rezero_tau, 1e-3))
+                theta0 += alpha * (theta_abs - theta0)    # baseline 견인 → 잔차 Δθ→0
+            last_frame = now
+            tag = "~0(residual)" if adapting else ("bending    " if moving else "hold        ")
+            print(f"\r  Δtheta = {smoothed:+7.1f} deg  {tag} [Enter=재영점] ", end="", flush=True)
     except KeyboardInterrupt:
-        print(f"\n\n=== 종료 ===  최종 smoothed Δtheta = {np.median(hist):+.1f} deg" if hist else "\n종료")
+        print(f"\n\n=== 종료 ===  최종 Δtheta = {float(np.median(list(hist)[-7:])):+.1f} deg" if hist else "\n종료")
 
 
 def run_bending(args, engine, z_calib, bi, reader) -> None:
