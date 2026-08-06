@@ -39,7 +39,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--diameter", type=float, default=10.0, help="인덴터 지름(mm) — size 조건 + z 보정")
     p.add_argument("--contacts", type=int, default=3, help="최대 접촉 수(1=단일, 3=다중)")
     p.add_argument("--z-calib", default=None, help="z 보정 json (기본=z_calibration_v6.json)")
-    p.add_argument("--min-distance-mm", type=float, default=3.0)
+    p.add_argument("--min-distance-mm", type=float, default=None,
+                   help="접촉 간 최소 간격(mm). 미지정 시 지름값으로 자동 — "
+                        "같은 지름 두 접촉은 중심간 지름보다 가까울 수 없으므로 단일접촉 peak-split 방지")
     p.add_argument("--rel-threshold", type=float, default=0.3)
     p.add_argument("--min-fz", type=float, default=0.2, help="무접촉 게이트: 접촉별 fz(N) 하한(약한 스퓨리어스 제거)")
     p.add_argument("--report-interval", type=float, default=2.0, help="최적 프레임 요약 주기(초)")
@@ -268,6 +270,10 @@ def main() -> None:
         list_serial_ports(); return
     if args.probe:
         probe_port(args.port, args.baudrate); return
+    # 접촉 최소 간격 미지정 시 지름값으로 — 단일접촉이 인접 peak로 쪼개지는 것 방지
+    if args.min_distance_mm is None:
+        args.min_distance_mm = args.diameter
+        print(f"[setup] min-distance = 지름 {args.diameter:g}mm (단일접촉 peak-split 방지)")
     print(f"[1/2] 엔진 로드: {args.run_dir}")
     engine = SATSInferenceEngine(args.run_dir, device=args.device, indenter_diameter_mm=args.diameter)
     z_path = args.z_calib or (Path(__file__).resolve().parent / "z_calibration_v6.json")

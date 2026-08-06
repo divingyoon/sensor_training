@@ -25,6 +25,18 @@ def test_single_contact_position():
     assert c[0].fz_n > 0
 
 
+def test_single_contact_not_split_when_min_distance_is_diameter():
+    """한 접촉 blob 안의 국소 최대 2개(지름 이내)는 min_distance=지름이면 하나로 병합."""
+    # d5 단일접촉: 주 peak + 2.5mm 옆의 약한 2차 lobe(saddle) — SATS 맵 peak-split 재현
+    pmap = _bump(8.0, 8.0, amp=100.0, sig=1.2) + _bump(8.0, 5.5, amp=60.0, sig=1.2)
+    split = extract_contacts(pmap, grid_min_mm=GMIN, grid_step_mm=STEP, taxel_area=AREA,
+                             diameter_mm=5.0, max_contacts=2, min_distance_mm=2.0, rel_threshold=0.3)
+    merged = extract_contacts(pmap, grid_min_mm=GMIN, grid_step_mm=STEP, taxel_area=AREA,
+                              diameter_mm=5.0, max_contacts=2, min_distance_mm=5.0, rel_threshold=0.3)
+    assert len(split) == 2      # 3mm 간격이면 두 개로 쪼개짐(회귀 대상)
+    assert len(merged) == 1     # 지름(5mm) 간격이면 하나로 병합
+
+
 def test_two_contacts_detected_and_split():
     pmap = _bump(-5.0, 0.0) + _bump(5.0, 0.0)
     c = _extract(pmap, 3)

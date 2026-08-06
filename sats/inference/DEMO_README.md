@@ -53,6 +53,9 @@ sudo chmod 666 /dev/ttyUSB0      # 또는 임시
 .venv/bin/python -m sats.inference.run_demo --mode bending --contacts 3 --diameter 10 --viz 2d --port /dev/ttyUSB0
 ```
 
+- `--min-distance-mm`: 접촉 간 최소 간격. **미지정 시 `--diameter` 값으로 자동**(d5→5·d10→10mm).
+  같은 지름 두 접촉은 중심간 지름보다 가까울 수 없으므로, 단일접촉이 인접 peak 2개로 쪼개지는 것을 막는다.
+  진짜 두 접촉을 더 가깝게 붙여야 하면 이 값을 직접 낮춘다.
 - `--mock`: 하드웨어 없이 파이프라인 확인(단 theta/bending은 flat baseline이 없어 비의미).
 - `--report-interval`: 최적(최대 Fz) 프레임 요약 주기. `--infer-max-fps`/`--viz-fps`: 속도.
 
