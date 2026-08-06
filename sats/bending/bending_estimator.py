@@ -61,7 +61,11 @@ class CNN2DEstimator(nn.Module):
 
     def forward(self, seq: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
         b, t, _ = seq.shape
-        g = seq.reshape(b * t, 1, 4, 4)                    # S1..16 → row=y,col=x
+        x = seq
+        if getattr(self, "shape_norm", False):
+            # 프레임별 크기 정규화(shape만) → 응력완화(크기 감소)에 불변 기대.
+            x = x / (x.norm(dim=-1, keepdim=True) + 1e-6)
+        g = x.reshape(b * t, 1, 4, 4)                      # S1..16 → row=y,col=x
         f = self.conv(g).reshape(b, t, 32).mean(dim=1)     # 윈도우 평균 집약
         return self.head(f).squeeze(-1) * float(self.cfg.deg_scale)
 
@@ -84,7 +88,11 @@ class MLPFrameEstimator(nn.Module):
 def build_estimator(cfg: BendingConfig) -> nn.Module:
     """cfg.estimator_arch 로 구조 선택(체크포인트 cfg에 저장되어 로드 시 자동 복원)."""
     arch = getattr(cfg, "estimator_arch", "lstm")
+    if arch == "cnn2d_shape":
+        m = CNN2DEstimator(cfg)
+        m.shape_norm = True                    # 프레임 크기 정규화(완화 불변 실험)
+        return m
     table = {"lstm": BendingEstimator, "cnn2d": CNN2DEstimator, "mlp_frame": MLPFrameEstimator}
     if arch not in table:
-        raise ValueError(f"estimator_arch must be one of {list(table)}, got {arch!r}")
+        raise ValueError(f"estimator_arch must be one of {list(table)}+cnn2d_shape, got {arch!r}")
     return table[arch](cfg)
