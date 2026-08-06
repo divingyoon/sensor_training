@@ -179,15 +179,30 @@ def run_contacts(args, engine, z_calib, reader) -> None:
 
 
 def run_theta(args, engine, bi, reader) -> None:
-    """산출물 3: 밴딩각 theta 실시간 터미널 (estimator). raw=base×(1+pct/100) 복원."""
-    from sats.inference.bending_infer import pct_to_raw
-    base = reader.baseline
-    if base is None:
+    """산출물 3: 밴딩각 theta 실시간 터미널 (estimator).
+
+    ★재앵커: 학습 참조 baseline(ref)에 pct를 얹어 기압 무관하게 추정.
+    ★영점보정: 시작 flat 구간의 theta를 0으로 잡고 상대 밴딩각(Δθ) 표시
+    (estimator가 저각도서 offset~80°를 갖고, 절대각은 세션 간 불안정하기 때문).
+    """
+    if reader.baseline is None:
         print("[theta] flat baseline 없음(mock 등) → theta 추정 불가. 실센서 필요."); return
-    base = np.asarray(base, float)
-    print("[theta] 밴딩각 실시간 출력 (Ctrl+C 종료)\n")
+    if bi.ref_baseline is None:
+        print("[theta] ⚠ ref_baseline.npy 없음 → 데모 baseline 폴백(기압 민감). 재생성 권장.")
+    # 시작 flat 구간 theta0 캡처(무접촉·미밴딩 상태 유지) → 영점
+    print("[theta] flat 영점 캡처 중 — 센서 평평·무접촉 유지 (2초)...")
+    t0s, last_seq = [], 0
+    t_end = time.time() + 2.0
+    while time.time() < t_end:
+        win, seq = _get_window(reader, last_seq)
+        if win is not None and seq != last_seq:
+            last_seq = seq
+            t0s.append(bi.theta_from_pct(win, demo_baseline=reader.baseline))
+        time.sleep(0.02)
+    theta0 = float(np.median(t0s)) if t0s else 0.0
+    print(f"[theta] flat 영점 theta0 = {theta0:+.1f} deg  → 이후 Δθ(상대) 표시\n")
     hist: collections.deque = collections.deque(maxlen=15)
-    last_seq, last_infer = 0, 0.0
+    last_infer = 0.0
     interval = 0.0 if args.infer_max_fps <= 0 else 1.0 / args.infer_max_fps
     try:
         while True:
@@ -198,16 +213,15 @@ def run_theta(args, engine, bi, reader) -> None:
             if win is None or seq == last_seq:
                 time.sleep(0.002); continue
             last_seq, last_infer = seq, now
-            theta = bi.theta_from_raw(pct_to_raw(win, base))
-            hist.append(theta)
-            print(f"\r  theta = {theta:+7.1f} deg   (smoothed {np.median(hist):+7.1f})     ", end="", flush=True)
+            theta_rel = bi.theta_from_pct(win, demo_baseline=reader.baseline) - theta0
+            hist.append(theta_rel)
+            print(f"\r  Δtheta = {theta_rel:+7.1f} deg   (smoothed {np.median(hist):+7.1f})     ", end="", flush=True)
     except KeyboardInterrupt:
-        print(f"\n\n=== 종료 ===  최종 smoothed theta = {np.median(hist):+.1f} deg" if hist else "\n종료")
+        print(f"\n\n=== 종료 ===  최종 smoothed Δtheta = {np.median(hist):+.1f} deg" if hist else "\n종료")
 
 
 def run_bending(args, engine, z_calib, bi, reader) -> None:
     """산출물 4: SATS+밴딩 통합 상태머신. 플랫 baseline→(장착·밴딩)→theta→복원→SATS."""
-    from sats.inference.bending_infer import pct_to_raw
     base = reader.baseline
     if base is None:
         print("[bending] flat baseline 없음(mock 등) → 통합 모드 불가. 실센서 필요."); return
@@ -215,12 +229,12 @@ def run_bending(args, engine, z_calib, bi, reader) -> None:
     print("\n[bending] === SATS+밴딩 통합 모드 (버클 방식) ===")
     print("  1) 지금 플랫 baseline 캡처됨.  2) 지그에 장착·밴딩 후 Enter를 누르세요.")
     input("  >> 밴딩 완료했으면 Enter: ")
-    # REARM: 밴딩 무접촉 상태서 theta 고정 추정(최근 몇 프레임 중앙값)
+    # REARM: 밴딩 무접촉 상태서 theta 고정 추정(재앵커, 최근 몇 프레임 중앙값)
     thetas = []
     for _ in range(15):
         win, _ = _get_window(reader, -1)
         if win is not None:
-            thetas.append(bi.theta_from_raw(pct_to_raw(win, base)))
+            thetas.append(bi.theta_from_pct(win, demo_baseline=base))
         time.sleep(0.03)
     theta = float(np.median(thetas)) if thetas else 0.0
     print(f"  ★ 밴딩 곡률 theta = {theta:+.1f} deg  (복원 조건 고정)\n")
