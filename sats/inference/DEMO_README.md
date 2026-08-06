@@ -64,9 +64,11 @@ sudo chmod 666 /dev/ttyUSB0      # 또는 임시
 ## 산출물별 동작
 1. **contacts**: 매 프레임 접촉별 `x,y,z,fz` 출력 + 최대 Fz 프레임 latch. z=peak_val LUT 근사, fz=Voronoi 적분.
 2. **viz**: 단일 패널 live heatmap(단색 초록, 상대 정규화), 접촉 마커(최대3)·라벨·theta.
-3. **theta**: ★**재앵커** — 학습 참조 baseline(`estimator_v6_ref_baseline.npy`)에 pct를 얹어
-   기압/온도/유닛 무관하게 추정(데모 raw 절대값 직접 사용 금지 — 0.5% 어긋나면 포화). 시작 flat
-   구간을 theta0으로 잡아 **Δθ(상대 밴딩각)** 표시(estimator 저각도 offset~80°·절대각 세션간 불안정).
+3. **theta**: ★**재앵커**(학습 참조 baseline에 pct) → 기압/온도/유닛 무관. 시작 flat=theta0 영점 → Δθ.
+   표시 방식 `--theta-mode`: **hold**(기본, 지그 고정각 peak-hold — 응력완화 creep 무시 상수) ·
+   **dynamic**(밴딩/해제 제스처가 0으로 복귀, 동적 시연용) · **live**(순수 연속).
+   ※ 지그에 물린 고정 밴딩은 응력완화로 연속값이 0으로 수렴 → **클램프 데모는 hold** 필수.
+   estimator는 연속 램프 학습이라 정적 hold와 신호 불일치(그래서 peak 래치). 유효 밴딩 ~20-150°.
 4. **bending 상태머신**:
    1. 시작 → **플랫 무접촉 baseline** 캡처(센서에서 손 떼고 대기).
    2. **지그 장착·밴딩** 후 **Enter** → 밴딩 무접촉서 theta 고정(재앵커).
