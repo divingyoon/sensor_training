@@ -13,6 +13,19 @@ from sats.inference.demo_contacts import Contact
 _MARKER_COLORS = ["#d81e00", "#0033cc", "#111111"]   # 접촉 #1,#2,#3 (초록 배경 대비 고대비)
 
 
+def _green_cmap():
+    """0=연한 초록 → 최고=어두운 초록, 밝기가 고르게 변하는 램프.
+
+    matplotlib 'Greens'(지각적 균일)를 흰색 대신 연한 초록(0.12)부터 잘라 씀 →
+    peak에서 바깥으로 매끄럽게 감쇠하는 압력장이 전 구간에서 그라데이션으로 보임.
+    """
+    import numpy as _np
+    import matplotlib as mpl
+    from matplotlib.colors import ListedColormap
+    base = mpl.colormaps["Greens"]        # 지각적 균일 초록(deprecated cm.get_cmap 회피)
+    return ListedColormap(base(_np.linspace(0.12, 1.0, 256)), name="demo_green")
+
+
 class DemoViz2D:
     """단일 패널 live heatmap — 단색 초록. 프레임 peak=1 상대 정규화(약접촉도 진한 초록으로).
 
@@ -25,13 +38,11 @@ class DemoViz2D:
         if not show:
             matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        from matplotlib.colors import LinearSegmentedColormap
         self.plt = plt
         self.show = show
         self.ext = [grid_min_mm, grid_max_mm, grid_min_mm, grid_max_mm]
         self.vmax = vmax                                  # None=상대(peak), 값=절대(학습스케일)
-        # 0=연한 초록 → 최고=어두운 초록
-        self.cmap = LinearSegmentedColormap.from_list("demo_green", ["#d8f5d8", "#0a5a0a", "#003300"])
+        self.cmap = _green_cmap()                         # 밝기 균일 초록 램프(감쇠 그라데이션)
         self.fig, self.ax_live = plt.subplots(1, 1, figsize=(7, 6))
         try:
             self.fig.canvas.manager.set_window_title(title)
@@ -47,7 +58,7 @@ class DemoViz2D:
 
     def _init_ax(self, ax, name):
         im = ax.imshow(np.zeros((2, 2)), origin="lower", extent=self.ext, cmap=self.cmap,
-                       vmin=0, vmax=1.0, aspect="equal", interpolation="bilinear")  # 표시는 0~1 정규화
+                       vmin=0, vmax=1.0, aspect="equal", interpolation="bicubic")  # 표시는 0~1 정규화, 매끄러운 감쇠
         ax.set_title(name, fontsize=11)
         ax.set_xlabel("x (mm)"); ax.set_ylabel("y (mm)")
         return im
@@ -105,11 +116,10 @@ class DemoViz3D:
         if not show:
             matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        from matplotlib.colors import LinearSegmentedColormap
         from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
         self.plt = plt; self.show = show
         self.vmax = vmax                                  # None=상대(peak), 값=절대(학습스케일)
-        self.cmap = LinearSegmentedColormap.from_list("demo_green", ["#d8f5d8", "#0a5a0a", "#003300"])
+        self.cmap = _green_cmap()
         coords = np.linspace(grid_min_mm, grid_max_mm, grid_size)
         self.XX, self.YY = np.meshgrid(coords, coords)
         self.fig = plt.figure(figsize=(8, 6))
