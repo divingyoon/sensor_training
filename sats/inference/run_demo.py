@@ -37,7 +37,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mode", choices=["contacts", "theta", "bending"], default="contacts")
     p.add_argument("--run-dir", default=str(_ROOT / "sats/training/runs/ecomesh_v6_deploy_all4"))
     p.add_argument("--diameter", type=float, default=10.0, help="인덴터 지름(mm) — size 조건 + z 보정")
-    p.add_argument("--contacts", type=int, default=3, help="최대 접촉 수(1=단일, 3=다중)")
+    p.add_argument("--contacts", type=int, default=None,
+                   help="최대 접촉 수(1=단일, 3=다중). 미지정 시 bending=1(단일)·contacts=3")
     p.add_argument("--z-calib", default=None, help="z 보정 json (기본=z_calibration_v6.json)")
     p.add_argument("--min-distance-mm", type=float, default=None,
                    help="접촉 간 최소 간격(mm). 미지정 시 지름값으로 자동 — "
@@ -323,6 +324,11 @@ def main() -> None:
         list_serial_ports(); return
     if args.probe:
         probe_port(args.port, args.baudrate); return
+    # 접촉 수 미지정 시: bending=1(단일, 표준 시나리오), contacts=3(다중)
+    if args.contacts is None:
+        args.contacts = 1 if args.mode == "bending" else 3
+    if args.mode == "bending" and args.contacts != 1:
+        print(f"[setup] bending 모드 접촉 수 = {args.contacts} (단일만 필요하면 --contacts 1)")
     # 접촉 최소 간격 미지정 시 지름값으로 — 단일접촉이 인접 peak로 쪼개지는 것 방지
     if args.min_distance_mm is None:
         args.min_distance_mm = args.diameter
