@@ -70,6 +70,20 @@ def format_contacts(frame_idx: int, contacts: list[Contact], theta_deg: float | 
     return "\n".join(lines)
 
 
+def format_contacts_line(contacts: list[Contact], theta_deg: float | None = None, width: int = 118) -> str:
+    """한 줄 갱신용 컴팩트 포맷(\\r 로 덮어쓰기). 무접촉이면 'no contact'."""
+    head = "" if theta_deg is None else f"theta={theta_deg:+5.1f}  "
+    if not contacts:
+        body = "no contact"
+    else:
+        parts = []
+        for i, c in enumerate(contacts, 1):
+            z = "n/a" if np.isnan(c.z_mm) else f"{c.z_mm:.2f}"
+            parts.append(f"#{i} ({c.x_mm:+.1f},{c.y_mm:+.1f}) z{z} fz{c.fz_n:.2f}N")
+        body = "  ".join(parts)
+    return (head + f"[{len(contacts)}] " + body).ljust(width)[:width]
+
+
 class FrameLatch:
     """총 fz 최대 프레임을 유지(최적/최대 프레임 = B1)."""
 

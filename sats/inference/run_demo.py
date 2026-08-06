@@ -23,7 +23,9 @@ import collections
 
 import numpy as np
 
-from sats.inference.demo_contacts import FrameLatch, extract_contacts, format_contacts
+from sats.inference.demo_contacts import (
+    FrameLatch, extract_contacts, format_contacts, format_contacts_line,
+)
 from sats.inference.inference_engine import SATSInferenceEngine
 from sats.inference.z_calibration import ZCalibration
 
@@ -158,20 +160,16 @@ def run_contacts(args, engine, z_calib, reader) -> None:
                                         max_contacts=args.contacts, min_distance_mm=args.min_distance_mm,
                                         rel_threshold=args.rel_threshold, min_fz=args.min_fz, z_calib=z_calib)
             if contacts:
-                print(format_contacts(frame, contacts))
                 latch.update(frame, pmap, contacts)
+            print("\r" + format_contacts_line(contacts), end="", flush=True)
             if viz and now - last_viz >= viz_interval:
                 for v in viz:
                     v.update(pmap, contacts, best_map=latch.pred_map, best_contacts=latch.contacts)
                 last_viz = now
-            if now - last_report >= args.report_interval and latch.contacts:
-                print(f"  ★ 최적 프레임 {latch.frame_idx} (총 fz={latch.best_total:.2f}N):")
-                print(format_contacts(latch.frame_idx, latch.contacts))
-                last_report = now
     except KeyboardInterrupt:
         print("\n\n=== 종료 ===")
         if latch.contacts:
-            print(f"최적(최대 fz) 프레임 {latch.frame_idx}:")
+            print(f"최적(최대 fz) 프레임 {latch.frame_idx} (총 fz={latch.best_total:.2f}N):")
             print(format_contacts(latch.frame_idx, latch.contacts))
 
 
@@ -244,19 +242,16 @@ def run_bending(args, engine, z_calib, bi, reader) -> None:
                                         max_contacts=args.contacts, min_distance_mm=args.min_distance_mm,
                                         rel_threshold=args.rel_threshold, min_fz=args.min_fz, z_calib=z_calib)
             if contacts:
-                print(format_contacts(frame, contacts, theta_deg=theta))
                 latch.update(frame, pmap, contacts)
+            print("\r" + format_contacts_line(contacts, theta_deg=theta), end="", flush=True)
             if viz and now - last_viz >= viz_interval:
                 for v in viz:
                     v.update(pmap, contacts, theta_deg=theta, best_map=latch.pred_map, best_contacts=latch.contacts)
                 last_viz = now
-            if now - last_report >= args.report_interval and latch.contacts:
-                print(f"  ★ 최적 프레임 {latch.frame_idx} (총 fz={latch.best_total:.2f}N, theta={theta:+.1f}):")
-                print(format_contacts(latch.frame_idx, latch.contacts, theta_deg=theta))
-                last_report = now
     except KeyboardInterrupt:
         print("\n\n=== 종료 ===")
         if latch.contacts:
+            print(f"최적 프레임 {latch.frame_idx} (총 fz={latch.best_total:.2f}N, theta={theta:+.1f}):")
             print(format_contacts(latch.frame_idx, latch.contacts, theta_deg=theta))
 
 
