@@ -61,9 +61,21 @@ class DemoViz2D:
             im.set_clim(0, max(pm.max(), 1e-6))
         self._draw_contacts(ax, contacts)
 
+    def _set_blank(self, im, ax):
+        """무접촉: 빈(0) 화면 — 노이즈 auto-scale로 뭔가 보이는 것 방지."""
+        im.set_data(np.zeros((2, 2)))
+        im.set_clim(0, self.vmax or 1.0)
+        for txt in list(ax.texts):
+            txt.remove()
+        for ln in list(ax.lines):
+            ln.remove()
+
     def update(self, pred_map, contacts, *, theta_deg=None, best_map=None, best_contacts=None):
-        self._set_map(self.im_live, self.ax_live, pred_map, contacts)
-        title = "live"
+        if contacts:
+            self._set_map(self.im_live, self.ax_live, pred_map, contacts)
+        else:
+            self._set_blank(self.im_live, self.ax_live)   # 무접촉 → 빈 화면
+        title = "live" if contacts else "live (no contact)"
         if theta_deg is not None:
             title += f"   theta={theta_deg:+.1f} deg"
         self.ax_live.set_title(title, fontsize=11)
@@ -99,6 +111,8 @@ class DemoViz3D:
 
     def update(self, pred_map, contacts, *, theta_deg=None, **_):
         pm = np.clip(pred_map, 0, None) / 100.0
+        if not contacts:                          # 무접촉 → 평평한 0 표면
+            pm = np.zeros_like(pm)
         self.ax.clear()
         self.ax.plot_surface(self.XX, self.YY, pm, cmap="turbo", linewidth=0, antialiased=False)
         for i, c in enumerate(contacts[:3]):
