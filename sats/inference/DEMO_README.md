@@ -66,7 +66,7 @@ sudo chmod 666 /dev/ttyUSB0      # 또는 임시
    3. 접촉 press → `restorer(pct,theta)` 복원 → 동결 SATS → `theta: x,y,z,fz`.
 
 ## ★ 내일 실기 체크리스트
-- [ ] serial `--protocol`(현 기본 v2)·`--baudrate`·`--port` 실센서 확인.
+- [ ] serial `--protocol`(기본 auto→binary, vensor2.ino=바이너리)·`--baudrate`(250000)·`--port` 실센서 확인.
 - [ ] baseline 캡처 시 **무접촉 유지**(플랫). d5/d10 `--diameter` 지정(z·size 조건).
 - [ ] theta 스케일: estimator는 **buckling(Y구동 δ=Y−18)** 학습 → 데모 지그도 **버클 방식**이어야 theta 유효. 순수 굽힘이면 정합 데이터 재학습 필요([[v6-test-eval]]).
 - [ ] 다중접촉: 접촉을 **동등·firm하게** 눌러야 분리 선명(약접촉은 확산).

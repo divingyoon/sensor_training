@@ -52,7 +52,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--baudrate", type=int, default=250000)   # vensor2.ino Serial.begin(250000)
     p.add_argument("--baseline-seconds", type=float, default=5.0)
     p.add_argument("--startup-delay", type=float, default=2.0)
-    p.add_argument("--protocol", default="v2")
+    p.add_argument("--protocol", choices=["auto", "binary", "csv"], default="auto",
+                   help="vensor2.ino=바이너리(0xAA..0x55). auto=자동감지(→binary 폴백)")
     return p
 
 
