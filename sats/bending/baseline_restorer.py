@@ -25,22 +25,34 @@ class BaselineRestorer(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.mode = getattr(cfg, "restorer_mode", "deg_only")
-        if self.mode not in ("deg_only", "seq_deg"):
-            raise ValueError(f"restorer_mode must be deg_only/seq_deg, got {self.mode!r}")
-        in_dim = 1 if self.mode == "deg_only" else cfg.n_sensors + 1
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, cfg.mlp_hidden),
-            nn.ReLU(),
-            nn.Linear(cfg.mlp_hidden, cfg.n_sensors),
-        )
-        nn.init.zeros_(self.net[-1].weight)
-        nn.init.zeros_(self.net[-1].bias)
+        if self.mode not in ("deg_only", "seq_deg", "deg_cnn"):
+            raise ValueError(f"restorer_mode must be deg_only/seq_deg/deg_cnn, got {self.mode!r}")
+        if self.mode == "deg_cnn":
+            # deg → 4×4 공간 seed → conv → 4×4 오프셋. 입력(seq) 비의존 = 접촉 보존 + 공간 구조.
+            self.seed = nn.Linear(1, 8 * 4 * 4)
+            self.deconv = nn.Sequential(
+                nn.Conv2d(8, 8, 3, padding=1), nn.ReLU(),
+                nn.Conv2d(8, 1, 3, padding=1))
+            nn.init.zeros_(self.deconv[-1].weight)
+            nn.init.zeros_(self.deconv[-1].bias)
+        else:
+            in_dim = 1 if self.mode == "deg_only" else cfg.n_sensors + 1
+            self.net = nn.Sequential(
+                nn.Linear(in_dim, cfg.mlp_hidden),
+                nn.ReLU(),
+                nn.Linear(cfg.mlp_hidden, cfg.n_sensors),
+            )
+            nn.init.zeros_(self.net[-1].weight)
+            nn.init.zeros_(self.net[-1].bias)
 
     def forward(self, seq: torch.Tensor, deg: torch.Tensor) -> torch.Tensor:
         """[B, T, 16] + signed deg[B] → flat 등가 [B, T, 16] = seq − 오프셋."""
         b, t, _ = seq.shape
         deg_n = deg / float(self.cfg.deg_scale)
-        if self.mode == "deg_only":
+        if self.mode == "deg_cnn":
+            s = self.seed(deg_n.view(b, 1)).view(b, 8, 4, 4)
+            offset = self.deconv(s).reshape(b, 1, self.cfg.n_sensors)  # [B,1,16] broadcast (seq 비의존)
+        elif self.mode == "deg_only":
             offset = self.net(deg_n.view(b, 1)).unsqueeze(1)   # [B,1,16] broadcast (seq 비의존)
         else:
             dg = deg_n.view(b, 1, 1).expand(b, t, 1)

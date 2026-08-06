@@ -39,3 +39,52 @@ class BendingEstimator(nn.Module):
         h = self._last_hidden(seq, lengths)
         deg = self.head(h).squeeze(-1) * float(self.cfg.deg_scale)
         return deg
+
+
+class CNN2DEstimator(nn.Module):
+    """프레임별 4×4 공간 CNN → 윈도우 평균 → signed deg.
+
+    16 taxel을 물리 배치(4×4, row=y·col=x)로 보고 2D conv로 **밴딩 공간 gradient**를 포착.
+    시계열은 평균 집약(정적 hold에 강건 — LSTM처럼 램프 전이에 과의존 안 함).
+    """
+
+    def __init__(self, cfg: BendingConfig) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.conv = nn.Sequential(
+            nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(),
+            nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1),                       # [.,32,1,1]
+        )
+        self.head = nn.Sequential(
+            nn.Linear(32, cfg.mlp_hidden), nn.ReLU(), nn.Linear(cfg.mlp_hidden, 1))
+
+    def forward(self, seq: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        b, t, _ = seq.shape
+        g = seq.reshape(b * t, 1, 4, 4)                    # S1..16 → row=y,col=x
+        f = self.conv(g).reshape(b, t, 32).mean(dim=1)     # 윈도우 평균 집약
+        return self.head(f).squeeze(-1) * float(self.cfg.deg_scale)
+
+
+class MLPFrameEstimator(nn.Module):
+    """프레임별 MLP(16→h→h→1) → 윈도우 평균. 시계열·공간구조 없는 최소 기준선."""
+
+    def __init__(self, cfg: BendingConfig) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.net = nn.Sequential(
+            nn.Linear(cfg.n_sensors, cfg.mlp_hidden), nn.ReLU(),
+            nn.Linear(cfg.mlp_hidden, cfg.mlp_hidden), nn.ReLU(),
+            nn.Linear(cfg.mlp_hidden, 1))
+
+    def forward(self, seq: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        return self.net(seq).squeeze(-1).mean(dim=1) * float(self.cfg.deg_scale)
+
+
+def build_estimator(cfg: BendingConfig) -> nn.Module:
+    """cfg.estimator_arch 로 구조 선택(체크포인트 cfg에 저장되어 로드 시 자동 복원)."""
+    arch = getattr(cfg, "estimator_arch", "lstm")
+    table = {"lstm": BendingEstimator, "cnn2d": CNN2DEstimator, "mlp_frame": MLPFrameEstimator}
+    if arch not in table:
+        raise ValueError(f"estimator_arch must be one of {list(table)}, got {arch!r}")
+    return table[arch](cfg)

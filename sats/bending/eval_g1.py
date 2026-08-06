@@ -104,10 +104,12 @@ def main() -> None:
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--session-per-trial", action="store_true",
                    help="각 trial 폴더=독립 세션(remounting). 같은 날 여러 remounting(v5 2mm)일 때 사용.")
+    p.add_argument("--estimator-arch", choices=["lstm", "cnn2d", "mlp_frame"], default="lstm",
+                   help="곡률 estimator 구조")
     args = p.parse_args()
-    print(f"G1 관측성 평가 — {args.data_dir}")
-    agg = run_g1(BendingConfig(), args.data_dir, epochs=args.epochs, device=args.device,
-                 session_per_trial=args.session_per_trial)
+    print(f"G1 관측성 평가 — {args.data_dir} (arch={args.estimator_arch})")
+    agg = run_g1(BendingConfig(estimator_arch=args.estimator_arch), args.data_dir,
+                 epochs=args.epochs, device=args.device, session_per_trial=args.session_per_trial)
     print(f"\n모드: {agg['mode']}  세션: {agg['sessions']}")
     print(f"평균 MAE={agg['mean_mae_deg']:.2f}°  평균 Spearman ρ={agg['mean_spearman']:.3f}")
     print(f"G1 판정: {'예비 통과 지표(단 세션≥3 필요)' if agg['mean_spearman'] > 0.9 else '순서상관 부족'}"

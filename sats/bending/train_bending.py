@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 
 from .baseline_restorer import BaselineRestorer
-from .bending_estimator import BendingEstimator
+from .bending_estimator import BendingEstimator, build_estimator
 from .config import BendingConfig
 from .dataset import (BendingTrial, NormStats, build_windows, compute_norm_stats,
                       load_bending_trial, make_windows)
@@ -40,7 +40,7 @@ def train_estimator(
 ) -> BendingEstimator:
     """BendingEstimator를 signed deg 회귀로 학습. 지표 = deg MAE."""
     device = cfg.device if torch.cuda.is_available() else "cpu"
-    model = BendingEstimator(cfg).to(device).train()
+    model = build_estimator(cfg).to(device).train()
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     X = torch.from_numpy(windows.astype(np.float32))
     y = torch.from_numpy(degs.astype(np.float32))
@@ -120,7 +120,7 @@ def train_estimator_holdout(
         raise ValueError(f"윈도우 부족: train={len(Xtr)} val={len(Xva)}")
 
     dev = cfg.device if torch.cuda.is_available() else "cpu"
-    model = BendingEstimator(cfg).to(dev)
+    model = build_estimator(cfg).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     Xtr_t, ytr_t = torch.from_numpy(Xtr).to(dev), torch.from_numpy(ytr).to(dev)
     Xva_t, yva_t = torch.from_numpy(Xva).to(dev), torch.from_numpy(yva).to(dev)
@@ -175,7 +175,7 @@ def load_estimator(ckpt_path: str | Path, device: str = "cpu") -> tuple[BendingE
     """저장된 estimator + 정규화 통계 로드 (추론용)."""
     ck = torch.load(Path(ckpt_path), map_location=device, weights_only=False)
     cfg = BendingConfig(**ck["cfg"])
-    model = BendingEstimator(cfg).to(device)
+    model = build_estimator(cfg).to(device)
     model.load_state_dict(ck["model_state"])
     stats = NormStats(mean=np.asarray(ck["norm_mean"], np.float32),
                       std=np.asarray(ck["norm_std"], np.float32))
@@ -285,9 +285,13 @@ def main() -> None:
     p.add_argument("--batch-size", type=int, default=512)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--estimator-arch", choices=["lstm", "cnn2d", "mlp_frame"], default="lstm",
+                   help="곡률 estimator 구조")
+    p.add_argument("--restorer-mode", choices=["deg_only", "seq_deg", "deg_cnn"], default="deg_only",
+                   help="restorer 구조(deg_cnn=곡률→4×4 공간 CNN 오프셋)")
     args = p.parse_args()
 
-    cfg = BendingConfig()
+    cfg = BendingConfig(estimator_arch=args.estimator_arch, restorer_mode=args.restorer_mode)
     if args.phase == "estimator":
         out = args.out or repo / "sats/bending/runs/estimator_v0/best.pt"
         result = train_estimator_holdout(

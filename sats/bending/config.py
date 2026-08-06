@@ -14,6 +14,9 @@ class BendingConfig:
     n_sensors: int = 16
     window_size: int = 10
 
+    # 곡률 estimator 구조: lstm(시계열) / cnn2d(4×4 공간) / mlp_frame(프레임 기준선)
+    estimator_arch: str = "lstm"
+
     # LSTM 인코더 (시계열/이력 → 밴딩 상태)
     lstm_hidden: int = 64
     lstm_layers: int = 2
