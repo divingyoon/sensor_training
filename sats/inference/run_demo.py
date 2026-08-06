@@ -178,44 +178,68 @@ def run_contacts(args, engine, z_calib, reader) -> None:
             print(format_contacts(latch.frame_idx, latch.contacts))
 
 
+def _enter_pressed() -> bool:
+    """비차단 stdin 확인 — Enter 입력 있으면 소비하고 True(재영점 트리거)."""
+    import select
+    if not sys.stdin.isatty():
+        return False
+    dr, _, _ = select.select([sys.stdin], [], [], 0)
+    if dr:
+        sys.stdin.readline()
+        return True
+    return False
+
+
+def _capture_theta0(bi, reader, base, seconds: float) -> tuple[float, int]:
+    """flat 구간 theta 중앙값 = 영점. (theta0, last_seq)."""
+    t0s, last_seq = [], 0
+    t_end = time.time() + seconds
+    while time.time() < t_end:
+        win, seq = _get_window(reader, last_seq)
+        if win is not None and seq != last_seq:
+            last_seq = seq
+            t0s.append(bi.theta_from_pct(win, demo_baseline=base))
+        time.sleep(0.02)
+    return (float(np.median(t0s)) if t0s else 0.0), last_seq
+
+
 def run_theta(args, engine, bi, reader) -> None:
     """산출물 3: 밴딩각 theta 실시간 터미널 (estimator).
 
     ★재앵커: 학습 참조 baseline(ref)에 pct를 얹어 기압 무관하게 추정.
-    ★영점보정: 시작 flat 구간의 theta를 0으로 잡고 상대 밴딩각(Δθ) 표시
-    (estimator가 저각도서 offset~80°를 갖고, 절대각은 세션 간 불안정하기 때문).
+    ★영점보정: flat 구간 theta를 0으로 잡고 상대 밴딩각(Δθ) 표시.
+    ★재영점: baseline 드리프트(손 타기·발열)로 flat인데 값이 뜨면 Enter로 현재 상태를 0으로 재설정.
     """
     if reader.baseline is None:
         print("[theta] flat baseline 없음(mock 등) → theta 추정 불가. 실센서 필요."); return
     if bi.ref_baseline is None:
         print("[theta] ⚠ ref_baseline.npy 없음 → 데모 baseline 폴백(기압 민감). 재생성 권장.")
-    # 시작 flat 구간 theta0 캡처(무접촉·미밴딩 상태 유지) → 영점
+    base = reader.baseline
     print("[theta] flat 영점 캡처 중 — 센서 평평·무접촉 유지 (2초)...")
-    t0s, last_seq = [], 0
-    t_end = time.time() + 2.0
-    while time.time() < t_end:
-        win, seq = _get_window(reader, last_seq)
-        if win is not None and seq != last_seq:
-            last_seq = seq
-            t0s.append(bi.theta_from_pct(win, demo_baseline=reader.baseline))
-        time.sleep(0.02)
-    theta0 = float(np.median(t0s)) if t0s else 0.0
-    print(f"[theta] flat 영점 theta0 = {theta0:+.1f} deg  → 이후 Δθ(상대) 표시\n")
+    theta0, last_seq = _capture_theta0(bi, reader, base, 2.0)
+    print(f"[theta] flat 영점 theta0 = {theta0:+.1f} deg  → 이후 Δθ(상대) 표시")
+    print("  ★ 지그에 평평하게 장착한 직후(밴딩 직전) Enter 로 재영점 하세요. (Ctrl+C 종료)\n")
     hist: collections.deque = collections.deque(maxlen=15)
     last_infer = 0.0
     interval = 0.0 if args.infer_max_fps <= 0 else 1.0 / args.infer_max_fps
     try:
         while True:
             now = time.time()
+            if _enter_pressed():                      # 재영점(현재 flat 상태를 0으로)
+                theta0, last_seq = _capture_theta0(bi, reader, base, 0.6)
+                hist.clear()
+                print(f"\n[theta] ★ 재영점 완료 theta0 = {theta0:+.1f} deg\n")
+                continue
             if now - last_infer < interval:
                 time.sleep(0.001); continue
             win, seq = _get_window(reader, last_seq)
             if win is None or seq == last_seq:
                 time.sleep(0.002); continue
             last_seq, last_infer = seq, now
-            theta_rel = bi.theta_from_pct(win, demo_baseline=reader.baseline) - theta0
+            theta_rel = bi.theta_from_pct(win, demo_baseline=base) - theta0
             hist.append(theta_rel)
-            print(f"\r  Δtheta = {theta_rel:+7.1f} deg   (smoothed {np.median(hist):+7.1f})     ", end="", flush=True)
+            print(f"\r  Δtheta = {theta_rel:+7.1f} deg   (smoothed {np.median(hist):+7.1f})   [Enter=재영점]  ",
+                  end="", flush=True)
     except KeyboardInterrupt:
         print(f"\n\n=== 종료 ===  최종 smoothed Δtheta = {np.median(hist):+.1f} deg" if hist else "\n종료")
 
