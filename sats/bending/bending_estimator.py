@@ -70,6 +70,34 @@ class CNN2DEstimator(nn.Module):
         return self.head(f).squeeze(-1) * float(self.cfg.deg_scale)
 
 
+class CNNLSTMEstimator(nn.Module):
+    """프레임별 4×4 CNN(공간 gradient) → LSTM(시계열 이력) → MLP head.
+
+    cnn2d(공간)+lstm(시계열) 결합. 밴딩 공간패턴을 프레임마다 인코딩한 뒤 시퀀스로 LSTM.
+    """
+
+    def __init__(self, cfg: BendingConfig) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.conv = nn.Sequential(
+            nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(),
+            nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(),
+            nn.AdaptiveAvgPool2d(1),                       # [.,32,1,1]
+        )
+        self.lstm = nn.LSTM(32, cfg.lstm_hidden, cfg.lstm_layers, batch_first=True,
+                            dropout=cfg.dropout if cfg.lstm_layers > 1 else 0.0)
+        self.head = nn.Sequential(
+            nn.Linear(cfg.lstm_hidden, cfg.mlp_hidden), nn.ReLU(), nn.Linear(cfg.mlp_hidden, 1))
+
+    def forward(self, seq: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        b, t, _ = seq.shape
+        f = self.conv(seq.reshape(b * t, 1, 4, 4)).reshape(b, t, 32)   # 프레임별 공간특징 시계열
+        out, _ = self.lstm(f)
+        idx = (lengths - 1).clamp(min=0)
+        bi = torch.arange(b, device=seq.device)
+        return self.head(out[bi, idx]).squeeze(-1) * float(self.cfg.deg_scale)
+
+
 class MLPFrameEstimator(nn.Module):
     """프레임별 MLP(16→h→h→1) → 윈도우 평균. 시계열·공간구조 없는 최소 기준선."""
 
@@ -92,7 +120,8 @@ def build_estimator(cfg: BendingConfig) -> nn.Module:
         m = CNN2DEstimator(cfg)
         m.shape_norm = True                    # 프레임 크기 정규화(완화 불변 실험)
         return m
-    table = {"lstm": BendingEstimator, "cnn2d": CNN2DEstimator, "mlp_frame": MLPFrameEstimator}
+    table = {"lstm": BendingEstimator, "cnn2d": CNN2DEstimator,
+             "cnn_lstm": CNNLSTMEstimator, "mlp_frame": MLPFrameEstimator}
     if arch not in table:
         raise ValueError(f"estimator_arch must be one of {list(table)}+cnn2d_shape, got {arch!r}")
     return table[arch](cfg)
