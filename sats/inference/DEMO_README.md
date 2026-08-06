@@ -46,6 +46,7 @@ sudo chmod 666 /dev/ttyUSB0      # 또는 임시
 # ② +시각화(2D/3D heatmap + 최적프레임). 위 명령에 --viz 추가
 .venv/bin/python -m sats.inference.run_demo --mode contacts --contacts 3 --diameter 10 --viz 2d --port /dev/ttyUSB0
 #   --viz {2d|3d|both}
+#   --show-units : 실시간 16-taxel 센싱유닛 heatmap(SATS 입력 원본) 창 추가(밴딩/접촉 패턴 확인)
 
 # ③ 밴딩각 theta (터미널)
 .venv/bin/python -m sats.inference.run_demo --mode theta --port /dev/ttyUSB0

@@ -46,6 +46,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-fz", type=float, default=0.2, help="무접촉 게이트: 접촉별 fz(N) 하한(약한 스퓨리어스 제거)")
     p.add_argument("--report-interval", type=float, default=2.0, help="최적 프레임 요약 주기(초)")
     p.add_argument("--viz", choices=["none", "2d", "3d", "both"], default="none", help="[산출물2] heatmap 시각화")
+    p.add_argument("--show-units", action="store_true", help="실시간 16-taxel 센싱유닛 heatmap(SATS 입력 원본) 창 추가")
     p.add_argument("--viz-fps", type=float, default=10.0)
     p.add_argument("--infer-max-fps", type=float, default=20.0)
     p.add_argument("--device", default="auto")
@@ -137,12 +138,21 @@ def _make_viz(args, engine):
     return vs
 
 
+def _make_units_viz(args):
+    """--show-units 시 실시간 16-taxel 센싱유닛 뷰 생성(없으면 None)."""
+    if not getattr(args, "show_units", False):
+        return None
+    from sats.inference.demo_viz import SensingUnitViz
+    return SensingUnitViz()
+
+
 def run_contacts(args, engine, z_calib, reader) -> None:
     """산출물 1: x,y,z,fz 단일/다중 실시간 터미널 + 최적(최대 fz) 프레임 latch."""
     kind = "단일" if args.contacts == 1 else f"다중(최대 {args.contacts})"
     print(f"[contacts] {kind}  d={args.diameter:g}mm  (Ctrl+C 종료)\n")
     latch = FrameLatch()
     viz = _make_viz(args, engine)
+    units_viz = _make_units_viz(args)
     disp = LiveDisplay()
     viz_interval = 0.0 if args.viz_fps <= 0 else 1.0 / args.viz_fps
     last_seq, frame, last_infer, last_viz, t_fps, fps = 0, 0, 0.0, 0.0, time.time(), 0.0
@@ -167,9 +177,11 @@ def run_contacts(args, engine, z_calib, reader) -> None:
             if contacts:
                 latch.update(frame, pmap, contacts)
             disp.render(format_contacts_block(contacts, frame=frame, fps=fps, mode="contacts"))
-            if viz and now - last_viz >= viz_interval:
+            if (viz or units_viz) and now - last_viz >= viz_interval:
                 for v in viz:
                     v.update(pmap, contacts, best_map=latch.pred_map, best_contacts=latch.contacts)
+                if units_viz:
+                    units_viz.update(win)                 # 16-taxel 센싱유닛(입력 원본)
                 last_viz = now
     except KeyboardInterrupt:
         print("\n\n=== 종료 ===")
@@ -265,6 +277,7 @@ def run_bending(args, engine, z_calib, bi, reader) -> None:
     print("  접촉 press 시작 (Ctrl+C 종료)\n")
     latch = FrameLatch()
     viz = _make_viz(args, engine)
+    units_viz = _make_units_viz(args)
     disp = LiveDisplay()
     viz_interval = 0.0 if args.viz_fps <= 0 else 1.0 / args.viz_fps
     last_seq, frame, last_infer, last_viz, t_fps, fps = 0, 0, 0.0, 0.0, time.time(), 0.0
@@ -290,9 +303,11 @@ def run_bending(args, engine, z_calib, bi, reader) -> None:
             if contacts:
                 latch.update(frame, pmap, contacts)
             disp.render(format_contacts_block(contacts, theta_deg=theta, frame=frame, fps=fps, mode="bending"))
-            if viz and now - last_viz >= viz_interval:
+            if (viz or units_viz) and now - last_viz >= viz_interval:
                 for v in viz:
                     v.update(pmap, contacts, theta_deg=theta, best_map=latch.pred_map, best_contacts=latch.contacts)
+                if units_viz:
+                    units_viz.update(win)                 # 밴딩 상태 16-taxel(복원 전 원본)
                 last_viz = now
     except KeyboardInterrupt:
         print("\n\n=== 종료 ===")

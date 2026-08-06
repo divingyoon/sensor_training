@@ -8,9 +8,56 @@ from __future__ import annotations
 
 import numpy as np
 
+from sats.bending.geometry import TAXEL_XY_MM
 from sats.inference.demo_contacts import Contact
 
 _MARKER_COLORS = ["#d81e00", "#0033cc", "#111111"]   # 접촉 #1,#2,#3 (초록 배경 대비 고대비)
+
+
+def taxel_grid(dp16: np.ndarray) -> np.ndarray:
+    """[16] Skin1..16 → 4x4 [row=y, col=x] (S1=(x-9.75,y-9.75), origin='lower')."""
+    return np.asarray(dp16, float).reshape(4, 4)
+
+
+class SensingUnitViz:
+    """실시간 16-taxel(4x4) 센싱유닛 heatmap. pct 윈도우 평균 표시(발산형 RdBu).
+
+    SATS 41×41 출력의 '입력 원본'(센서 그대로). 밴딩=공간 gradient, 접촉=국소 반응.
+    """
+
+    def __init__(self, title: str = "sensing units (16 taxel)", show: bool = True) -> None:
+        import matplotlib
+        if not show:
+            matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        self.plt = plt
+        self.show = show
+        self.fig, self.ax = plt.subplots(figsize=(5.2, 5))
+        self.im = self.ax.imshow(np.zeros((4, 4)), origin="lower", cmap="RdBu_r",
+                                 vmin=-1, vmax=1, extent=[-13, 13, -13, 13], interpolation="nearest")
+        self.ax.set_title(title, fontsize=10)
+        self.ax.set_xlabel("x (mm)"); self.ax.set_ylabel("y (mm)")
+        self.fig.colorbar(self.im, ax=self.ax, fraction=0.046, pad=0.04).set_label("relative change dp (%)", fontsize=8)
+        self._texts: list = []
+        if show:
+            plt.ion(); plt.show(block=False)
+
+    def update(self, pct_window: np.ndarray) -> None:
+        dp = np.asarray(pct_window, float).mean(0)     # [16] 윈도우 평균 Δp%
+        vmax = max(float(np.abs(dp).max()), 1e-6)
+        self.im.set_data(taxel_grid(dp)); self.im.set_clim(-vmax, vmax)
+        for t in self._texts:
+            t.remove()
+        self._texts = []
+        for i in range(16):
+            x, y = TAXEL_XY_MM[i + 1]
+            self._texts.append(self.ax.text(x, y, f"{dp[i]:+.1f}", ha="center", va="center",
+                                            fontsize=7, color="k" if abs(dp[i]) < vmax * 0.6 else "w"))
+        if self.show:
+            self.fig.canvas.draw_idle(); self.plt.pause(0.001)
+
+    def save(self, path) -> None:
+        self.fig.savefig(path, dpi=110, bbox_inches="tight")
 
 
 def _green_cmap():

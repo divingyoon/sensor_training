@@ -90,6 +90,7 @@ def build_panels(sats_run: Path, bending_dir: Path, contact_trial: Path, device:
     supp = 100.0 * (1.0 - p2.mean() / max(p1.mean(), 1e-9))
     print(f"[viz] 밴딩 환각 억제율(평균 |맵|): {supp:.1f}%")
     return {
+        "bent_units": bent.reshape(-1, 16).mean(0),      # 밴딩 상태 16-taxel Δp(SATS 입력 원본)
         "p1_bent_nc": p1,                                # 밴딩 무접촉 → 환각(평균)
         "p2_restored_nc": p2,                            # 복원 → 억제(평균)
         "p3a_flat_contact": _map_np(sats, contact),      # flat 접촉(reference)
@@ -97,6 +98,22 @@ def build_panels(sats_run: Path, bending_dir: Path, contact_trial: Path, device:
         "contact_xy": (float(cxy[k, 0]), float(cxy[k, 1])),
         "theta": theta_mean, "delta": float(np.mean(bdelta[sel])), "suppress": supp,
     }
+
+
+def _draw_units(ax, fig, dp16: np.ndarray, theta: float) -> None:
+    """(0) 밴딩 상태 16-taxel 센싱유닛 heatmap(SATS 입력 원본, 발산형)."""
+    from sats.bending.geometry import TAXEL_XY_MM
+    from sats.inference.demo_viz import taxel_grid
+    vmax = max(float(np.abs(dp16).max()), 1e-6)
+    im = ax.imshow(taxel_grid(dp16), origin="lower", cmap="RdBu_r", vmin=-vmax, vmax=vmax,
+                   extent=[-13, 13, -13, 13], interpolation="nearest")
+    for i in range(16):
+        x, y = TAXEL_XY_MM[i + 1]
+        ax.text(x, y, f"{dp16[i]:+.1f}", ha="center", va="center", fontsize=7,
+                color="k" if abs(dp16[i]) < vmax * 0.6 else "w")
+    ax.set_title(f"(0) bent sensing units (16 taxel)\nSATS input, theta~{theta:.0f}deg", fontsize=10)
+    ax.set_xlabel("x (mm)"); ax.set_ylabel("y (mm)")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04).set_label("dp (%)", fontsize=8)
 
 
 def render(panels: dict, out_png: Path, grid_min: float = -10.0, grid_max: float = 10.0) -> None:
@@ -108,17 +125,18 @@ def render(panels: dict, out_png: Path, grid_min: float = -10.0, grid_max: float
     ext = [grid_min, grid_max, grid_min, grid_max]
     cx, cy = panels["contact_xy"]
 
-    # 그룹별 공통 스케일: (1,2) = 밴딩 환각 크기 비교 / (3a,3b) = 같은 접촉 비교
-    g12 = max(panels["p1_bent_nc"].max(), 1e-6)
-    g3 = max(panels["p3a_flat_contact"].max(), panels["p3b_bent_restored_contact"].max(), 1e-6)
+    g12 = max(panels["p1_bent_nc"].max(), 1e-6)          # (1,2) 밴딩 환각 비교
+    g3 = max(panels["p3a_flat_contact"].max(), panels["p3b_bent_restored_contact"].max(), 1e-6)  # (3a,3b)
     specs = [
         ("p1_bent_nc", g12, f"(1) bent, no contact -> SATS\n(hallucination, theta~{panels['theta']:.0f}deg)", None),
         ("p2_restored_nc", g12, "(2) bent -> restored -> SATS\n(hallucination suppressed)", None),
         ("p3a_flat_contact", g3, "(3a) flat + contact -> SATS\n(reference, no bending)", (cx, cy)),
         ("p3b_bent_restored_contact", g3, "(3b) bent + contact -> restored -> SATS\n(same point, corrected)", (cx, cy)),
     ]
-    fig, axes = plt.subplots(2, 2, figsize=(11, 10))
-    for ax, (key, vmax, title, mark) in zip(axes.ravel(), specs):
+    fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+    _draw_units(axes[0, 0], fig, panels["bent_units"], panels["theta"])  # (0) 센싱유닛
+    slots = [axes[0, 1], axes[0, 2], axes[1, 0], axes[1, 1]]
+    for ax, (key, vmax, title, mark) in zip(slots, specs):
         im = ax.imshow(np.clip(panels[key] / vmax, 0, 1), origin="lower", extent=ext,
                        cmap=cmap, vmin=0, vmax=1.0, aspect="equal", interpolation="bicubic")
         ax.set_title(title, fontsize=10)
@@ -126,7 +144,8 @@ def render(panels: dict, out_png: Path, grid_min: float = -10.0, grid_max: float
         if mark is not None:
             ax.plot([mark[0]], [mark[1]], marker="+", color="#d81e00", markersize=15, markeredgewidth=2.2)
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04).set_label("relative intensity", fontsize=8)
-    fig.suptitle("v6 bending correction (live-style, frozen SATS 41x41)", fontsize=12)
+    axes[1, 2].axis("off")                               # 빈 슬롯
+    fig.suptitle("v6 bending correction: sensing units -> SATS -> restored (live-style)", fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     fig.savefig(out_png, dpi=120, bbox_inches="tight")
     print(f"[viz] 저장: {out_png}")
