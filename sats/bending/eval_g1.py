@@ -104,7 +104,7 @@ def main() -> None:
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--session-per-trial", action="store_true",
                    help="각 trial 폴더=독립 세션(remounting). 같은 날 여러 remounting(v5 2mm)일 때 사용.")
-    p.add_argument("--estimator-arch", choices=["lstm", "cnn2d", "mlp_frame"], default="lstm",
+    p.add_argument("--estimator-arch", choices=["lstm", "cnn2d", "cnn2d_shape", "mlp_frame"], default="lstm",
                    help="곡률 estimator 구조")
     args = p.parse_args()
     print(f"G1 관측성 평가 — {args.data_dir} (arch={args.estimator_arch})")

@@ -285,7 +285,7 @@ def main() -> None:
     p.add_argument("--batch-size", type=int, default=512)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--estimator-arch", choices=["lstm", "cnn2d", "mlp_frame"], default="lstm",
+    p.add_argument("--estimator-arch", choices=["lstm", "cnn2d", "cnn2d_shape", "mlp_frame"], default="lstm",
                    help="곡률 estimator 구조")
     p.add_argument("--restorer-mode", choices=["deg_only", "seq_deg", "deg_cnn"], default="deg_only",
                    help="restorer 구조(deg_cnn=곡률→4×4 공간 CNN 오프셋)")
