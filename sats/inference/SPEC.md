@@ -25,7 +25,7 @@
 | Output map | **41 × 41** | deploy config `grid_size` |
 | Grid pitch | **0.5 mm** | config `grid_step_mm` |
 | Sensing area | **20 × 20 mm** (−10 … +10 mm) | config `grid_min/max_mm` |
-| Super-resolution | 4×4 taxels → 41×41 (≈ **105× cells**) | 16 → 1681 |
+| Super-resolution | taxel pitch **~6.5 mm → 0.5 mm map** (≈13× linear, 105× cells) | 16 → 1681 |
 | Window size | 10 frames | config `window_size` |
 | Size conditioning | ON, fixed **d = 10 mm** | `use_indenter_size_input` |
 | Inference throughput | **129 Hz** (7.75 ms/frame, RTX GPU) | measured@4090 |
@@ -33,18 +33,23 @@
 
 ## 3. Force / position ranges & resolution (size-conditioned, D5 & D10)
 
-| Quantity | Range | Resolution (localization err) | Source |
+**★ 위치 분해능 정정**: "loc ≈ 0.5 mm"는 **argmax 격자 스냅** 아티팩트(출력 격자 0.5 mm를
+넘어설 수 없음)이지 실제 한계가 아니다. 데모는 **서브픽셀 무게중심 판독**(`detect_peaks
+subpixel=True`)을 쓰므로 격자 사이 접촉을 **< 0.5 mm**로 회복한다(합성 테스트 오차 < 0.25 mm).
+즉 super-resolution의 이득은 *taxel pitch ~6.5 mm → 서브밀리 위치*이며, 0.5 mm는 label·격자
+피치일 뿐이다. 더 미세한 출력이 필요하면 finer-grid 모델(0.25 mm=81², 0.1 mm=201²).
+
+| Quantity | Range | Resolution | Source |
 |---|---|---|---|
-| **x, y (D5)** | −10 … +10 mm | **≈ 0.5 mm** (1 grid cell) | map_quality reeval (size model) |
-| **x, y (D10)** | −10 … +10 mm | **≈ 1.0 mm** (2 grid cells) | map_quality reeval (size model) |
+| **x, y** | −10 … +10 mm | grid 0.5 mm; **서브픽셀 판독 < 0.5 mm** (argmax 스냅=0.5 mm는 하한 아님) | subpixel centroid |
 | **z (D10)** | **0.48 … 2.0 mm** | LUT (peak→z), r² = 0.59 (coarse) | z_calibration_v6.json `"10.0"` |
 | **z (D5)** | 0.72 … 2.0 mm | LUT, r² = 0.87 (더 신뢰) | z_calibration_v6.json `"5.0"` |
-| **Fz (D10)** | **0 … 3.9 N** | noise-floor gate `[measure@4090]` | GT-integral upper (memory) |
-| **Fz (D5)** | 0 … 1.5 N | noise-floor gate `[measure@4090]` | GT-integral upper (memory) |
+| **Fz (D10)** | **0 … 3.9 N** | 무접촉 노이즈 플로어 **p99 0.003 N** (사실상 0) | measured@4090 |
+| **Fz (D5)** | 0 … 1.5 N | 노이즈 플로어 measured@4090 | GT-integral upper |
 
-- localization = argmax(pred) vs GT 거리 median. grid pitch 0.5 mm 가 이론 하한.
-- **다중접촉(2·3)은 D5 권장**: D10 은 min-distance 10 mm 라 가까운 접촉이 병합됨(대시보드 `[d]` 토글).
-- **Fz 분해능 = 무접촉 노이즈 플로어**(필터 임계 `fz_on`/`fz_off` 근거) → `scripts/measure_resolution.py`(4090) 실측.
+- **Fz 노이즈가 사실상 0**(p99 0.003 N) → 필터 임계는 *노이즈*가 아니라 *의미있는 접촉*
+  기준(가벼운 손가락 ~0.2 N)으로 잡음: 기본 `fz_on 0.20 / fz_off 0.10`.
+- **다중접촉(2·3)은 D5 권장**: D10 은 min-distance 10 mm 라 가까운 접촉이 병합됨(`[d]` 토글).
 - Fz = Σ(clip≥0 pred) × taxel_area / 100 [N] (해상도 불변 적분, `inference_engine.get_fz`).
 
 ## 3b. Visualization filtering (contact_filter.py)

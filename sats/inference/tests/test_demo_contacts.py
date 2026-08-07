@@ -72,6 +72,15 @@ def test_empty_map():
     assert _extract(np.zeros((GRID, GRID)), 3) == []
 
 
+def test_subpixel_localization_beats_grid_snap():
+    """서브픽셀 판독: 격자 사이(0.2,-0.3) 접촉을 argmax 0.5mm 스냅보다 정밀하게 회복."""
+    cx, cy = 0.2, -0.3
+    c = _extract(_bump(cx, cy, sig=1.5), 1)
+    assert len(c) == 1
+    err = np.hypot(c[0].x_mm - cx, c[0].y_mm - cy)
+    assert err < 0.25             # 격자 피치 0.5mm보다 작은 오차(super-resolution 판독)
+
+
 def test_frame_latch_keeps_max():
     latch = FrameLatch()
     latch.update(1, _bump(0, 0, amp=50), [Contact(0, 0, 1.0, 2.0, 50)])

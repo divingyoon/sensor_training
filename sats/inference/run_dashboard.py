@@ -237,10 +237,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--z-calib", default=None)
     p.add_argument("--min-distance-mm", type=float, default=None)
     p.add_argument("--rel-threshold", type=float, default=0.3)
-    p.add_argument("--min-fz", type=float, default=0.2)
-    # 접촉 필터(히스테리시스·디바운스·무접촉 리셋·스무딩) — 무접촉 노이즈 플로어로 튜닝
-    p.add_argument("--fz-on", type=float, default=0.30, help="접촉 ON 총 fz 임계(N)")
-    p.add_argument("--fz-off", type=float, default=0.15, help="접촉 OFF 임계(N, 히스테리시스)")
+    p.add_argument("--min-fz", type=float, default=0.1)
+    # 접촉 필터 — 무접촉 노이즈 플로어(D10 fz p99≈0.003N=사실상 0)에 맞춘 기본값
+    p.add_argument("--fz-on", type=float, default=0.20, help="접촉 ON 총 fz 임계(N)")
+    p.add_argument("--fz-off", type=float, default=0.10, help="접촉 OFF 임계(N, 히스테리시스)")
     p.add_argument("--on-frames", type=int, default=2, help="ON 확정 연속 프레임")
     p.add_argument("--off-frames", type=int, default=5, help="OFF 확정 연속=무접촉 리셋")
     p.add_argument("--pos-smooth", type=int, default=3, help="위치 median 스무딩 프레임(1=off)")

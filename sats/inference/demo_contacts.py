@@ -98,7 +98,7 @@ def extract_contacts(pred_map: np.ndarray, *, grid_min_mm: float, grid_step_mm: 
         return []
     peaks = detect_peaks(pred_map, grid_min_mm=grid_min_mm, grid_step_mm=grid_step_mm,
                          min_distance_mm=min_distance_mm, rel_threshold=rel_threshold,
-                         max_peaks=max_contacts)
+                         max_peaks=max_contacts, subpixel=True)   # 서브픽셀(< grid_step) 판독
     if len(peaks) == 0:
         return []
     h, w = pred_map.shape

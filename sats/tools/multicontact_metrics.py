@@ -13,12 +13,35 @@ GRID_MIN_MM = -10.0
 GRID_STEP_MM = 0.5
 
 
+def refine_centroid_mm(pmap: np.ndarray, r: int, c: int, *, grid_min_mm: float,
+                       grid_step_mm: float, radius: int = 3) -> tuple[float, float]:
+    """argmax 셀 (r,c) 주변 ±radius 창의 압력-가중 무게중심 → 서브픽셀 (x_mm, y_mm).
+
+    super-resolution 판독: peak를 0.5mm 격자에 스냅(argmax)하지 않고, 매끄러운 압력장의
+    중심을 연속값으로 보간 → 격자 피치보다 미세한 위치(< grid_step)를 회복한다.
+    """
+    p = np.asarray(pmap, dtype=float)
+    h, w = p.shape
+    r0, r1 = max(0, r - radius), min(h, r + radius + 1)
+    c0, c1 = max(0, c - radius), min(w, c + radius + 1)
+    sub = np.clip(p[r0:r1, c0:c1], 0, None)
+    s = float(sub.sum())
+    if s <= 0:
+        return grid_min_mm + c * grid_step_mm, grid_min_mm + r * grid_step_mm
+    rr, cc = np.mgrid[r0:r1, c0:c1]
+    yc = float((rr * sub).sum() / s)
+    xc = float((cc * sub).sum() / s)
+    return grid_min_mm + xc * grid_step_mm, grid_min_mm + yc * grid_step_mm
+
+
 def detect_peaks(pmap: np.ndarray, *, grid_min_mm: float = GRID_MIN_MM,
                  grid_step_mm: float = GRID_STEP_MM, min_distance_mm: float = 2.0,
-                 rel_threshold: float = 0.3, max_peaks: int = 5) -> np.ndarray:
+                 rel_threshold: float = 0.3, max_peaks: int = 5,
+                 subpixel: bool = False) -> np.ndarray:
     """압력맵 → 검출 peak [K,3] (x_mm, y_mm, value). Greedy 최대치 + 원형 비최대억제.
 
     rel_threshold: 전역 최대 대비 이 비율 미만 peak는 버림. min_distance_mm: peak 간 최소 간격.
+    subpixel=True: 위치를 argmax 격자 스냅이 아니라 국소 무게중심(연속) → < grid_step 정밀.
     """
     p = np.asarray(pmap, dtype=float)
     if p.ndim != 2:
@@ -37,7 +60,12 @@ def detect_peaks(pmap: np.ndarray, *, grid_min_mm: float = GRID_MIN_MM,
         if val < thr:
             break
         r, c = divmod(idx, w)
-        peaks.append((grid_min_mm + c * grid_step_mm, grid_min_mm + r * grid_step_mm, val))
+        if subpixel:
+            x_mm, y_mm = refine_centroid_mm(p, r, c, grid_min_mm=grid_min_mm,
+                                            grid_step_mm=grid_step_mm)
+        else:
+            x_mm, y_mm = grid_min_mm + c * grid_step_mm, grid_min_mm + r * grid_step_mm
+        peaks.append((x_mm, y_mm, val))
         # 원형(Euclidean) 억제: min_distance 이내 셀 제거
         dist_mm = np.hypot((rr - r) * grid_step_mm, (cc - c) * grid_step_mm)
         work = np.where(dist_mm <= min_distance_mm, -np.inf, work)
