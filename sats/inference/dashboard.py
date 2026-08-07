@@ -15,9 +15,9 @@ from sats.inference.dashboard_panels import (
 )
 
 # 포스터 footer(영문 — matplotlib 한글 깨짐 회피)
-_SPEC_FOOTER = ("D10  |  SATS 41x41 @ 0.5mm (20x20mm)  |  raw 16-taxel 200Hz / 250k baud"
-                "  |  Fz 0-3.9N  |  theta 20-150 deg (G1 MAE 1.78)")
-_KEY_HINT = "keys:  [b] arm bending   [z] re-zero theta   [q] quit"
+_SPEC_FOOTER = ("SATS 41x41 @ 0.5mm (20x20mm)  |  raw 16-taxel 200Hz / 250k baud"
+                "  |  infer 129Hz  |  Fz 0-3.9N  |  theta 20-150 deg (G1 MAE 1.78)")
+_CONTACT_CYCLE = (1, 2, 3)
 
 
 class Dashboard:
@@ -31,6 +31,7 @@ class Dashboard:
         self.plt = plt
         self.show = show
         self.args = args
+        self.engine = engine
         self.channels = {c.role: c for c in channels}
         self._quit = False
         self._payloads: dict = {}
@@ -47,19 +48,39 @@ class Dashboard:
         self.p_bending = HeatmapPanel(self.fig.add_subplot(gs[0, 2]), gmin, gmax, "S3  bending -> SATS")
         self.p_units = UnitsInset(self.fig.add_subplot(gs[1, 2]))
         ax_foot = self.fig.add_subplot(gs[1, 0:2]); ax_foot.axis("off")
-        ax_foot.text(0.0, 0.65, _SPEC_FOOTER, fontsize=9, va="center", family="monospace")
-        ax_foot.text(0.0, 0.2, _KEY_HINT, fontsize=9, va="center", color="#0033cc",
-                     family="monospace")
+        ax_foot.text(0.0, 0.7, _SPEC_FOOTER, fontsize=9, va="center", family="monospace")
+        self._hint = ax_foot.text(0.0, 0.2, self._hint_str(), fontsize=9, va="center",
+                                  color="#0033cc", family="monospace")
 
         self.fig.canvas.mpl_connect("key_press_event", self._on_key)
         if show:
             plt.ion(); plt.show(block=False)
+
+    def _hint_str(self) -> str:
+        """현재 설정 + 키 안내(동적). D10=단일 정밀, D5=다중접촉(2·3) 권장."""
+        return (f"contacts={self.args.contacts}  indenter=D{int(self.args.diameter)}   |   "
+                f"[c] contacts 1>2>3   [d] d5/d10   [b] arm bending   [z] re-zero   [q] quit")
 
     # ── 키 이벤트 ──────────────────────────────────────────────────────────────
     def _on_key(self, event) -> None:
         k = (event.key or "").lower()
         if k == "q":
             self._quit = True
+        elif k == "c":
+            cur = self.args.contacts
+            nxt = _CONTACT_CYCLE[(_CONTACT_CYCLE.index(cur) + 1) % len(_CONTACT_CYCLE)] \
+                if cur in _CONTACT_CYCLE else 1
+            self.args.contacts = nxt
+            print(f"[dashboard] max contacts = {nxt}"
+                  + ("   (다중접촉은 [d]로 D5 권장)" if nxt > 1 and self.args.diameter >= 7.5 else ""))
+        elif k == "d":
+            self.args.diameter = 5.0 if self.args.diameter >= 7.5 else 10.0
+            self.args.min_distance_mm = self.args.diameter
+            setf = getattr(self.engine, "set_diameter", None)
+            if setf is not None:
+                setf(self.args.diameter)                     # size 조건(_size_t) 교체
+            print(f"[dashboard] indenter = D{int(self.args.diameter)} "
+                  f"(min-dist {self.args.diameter:g}mm, size 조건 갱신)")
         elif k == "b":
             print("\n[dashboard] bending 재장착 — 무접촉·고정 유지(~1s)...")
             self.channels["bending"].arm_bending()
@@ -84,6 +105,7 @@ class Dashboard:
             self.p_bending.update(pb["pred_map"], pb["contacts"], pb["banner"],
                                   theta_deg=pb.get("theta"))
             self.p_units.update(pb.get("units"))
+        self._hint.set_text(self._hint_str())          # 현재 contacts/d 설정 반영
         if self.show:
             self.fig.canvas.draw_idle()
             self.plt.pause(0.001)

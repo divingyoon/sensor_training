@@ -168,6 +168,17 @@ class SATSInferenceEngine:
         """
         return float(pred_map.clip(0).sum()) * self.taxel_area / 100.0
 
+    def set_diameter(self, diameter_mm: float) -> None:
+        """실시간 인덴터 지름 변경 — size 조건(_size_t)·저장값 갱신(모델 재로드 없음).
+
+        배포 모델은 size-conditioning(단일 모델)이라 d5/d10 전환이 조건 교체만으로 된다.
+        위치/fz 게이트(min_distance·z_calib)는 호출측(extract_contacts)이 지름을 받아 처리.
+        """
+        self.indenter_diameter_mm = float(diameter_mm)
+        if self.use_size_input:
+            self._size_t = torch.tensor([self.indenter_diameter_mm],
+                                        dtype=torch.float32).to(self.device)
+
     def get_taxel_value(self, pred_map: np.ndarray, x_mm: float, y_mm: float) -> float:
         """특정 (x_mm, y_mm) 위치의 taxel 값을 반환한다 (config grid 기준)."""
         col = int(round((x_mm - self.grid_min_mm) / self.grid_step_mm))

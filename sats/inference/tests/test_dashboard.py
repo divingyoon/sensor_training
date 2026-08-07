@@ -72,11 +72,20 @@ class _StubChannel:
 
 
 def _args():
-    return SimpleNamespace(infer_max_fps=20.0, viz_fps=10.0)
+    return SimpleNamespace(infer_max_fps=20.0, viz_fps=10.0,
+                           contacts=1, diameter=10.0, min_distance_mm=10.0)
+
+
+class _StubEngine(SimpleNamespace):
+    def __init__(self):
+        super().__init__(grid_min_mm=-10.0, grid_max_mm=10.0, diameter_set=None)
+
+    def set_diameter(self, d):
+        self.diameter_set = d
 
 
 def _engine():
-    return SimpleNamespace(grid_min_mm=-10.0, grid_max_mm=10.0)
+    return _StubEngine()
 
 
 def test_dashboard_renders_offline_and_data(tmp_path):
@@ -112,3 +121,22 @@ def test_dashboard_keys_arm_and_rezero():
     assert dash.channels["bending"].theta_fixed == 90.0
     assert dash.channels["theta"].rezeroed is True
     assert dash._quit is True
+
+
+def test_dashboard_toggle_contacts_and_diameter():
+    """[c] contacts 1→2→3→1, [d] d10↔d5(min-dist·엔진 size 조건 동반)."""
+    channels = [_StubChannel(r, {"kind": "heatmap", "banner": state_banner([]),
+                                 "pred_map": None, "contacts": [], "theta": None, "units": None})
+                for r in ("contacts", "theta", "bending")]
+    args, eng = _args(), _engine()
+    dash = Dashboard(channels, eng, args, show=False)
+    assert args.contacts == 1
+    for expect in (2, 3, 1):
+        dash._on_key(SimpleNamespace(key="c"))
+        assert args.contacts == expect
+    # d10 → d5 → d10, 엔진 size 조건·min-dist 동반
+    dash._on_key(SimpleNamespace(key="d"))
+    assert args.diameter == 5.0 and args.min_distance_mm == 5.0 and eng.diameter_set == 5.0
+    dash._on_key(SimpleNamespace(key="d"))
+    assert args.diameter == 10.0 and eng.diameter_set == 10.0
+    assert "contacts=1" in dash._hint_str() and "D10" in dash._hint_str()

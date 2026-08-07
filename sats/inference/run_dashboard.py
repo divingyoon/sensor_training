@@ -222,7 +222,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--bending-port", default="none", help="bending 센서 포트")
     p.add_argument("--run-dir", default=str(_ROOT / "sats/training/runs/ecomesh_v6_deploy_all4"))
     p.add_argument("--diameter", type=float, default=10.0, help="D10 기준(고정)")
-    p.add_argument("--contacts", type=int, default=3, help="최대 접촉 수(다중=3)")
+    p.add_argument("--contacts", type=int, default=1,
+                   help="최대 접촉 수(기본 1, 창에서 [c]로 1→2→3 토글)")
     p.add_argument("--z-calib", default=None)
     p.add_argument("--min-distance-mm", type=float, default=None)
     p.add_argument("--rel-threshold", type=float, default=0.3)
