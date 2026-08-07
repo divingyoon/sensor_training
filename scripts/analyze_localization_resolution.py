@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""미세 스텝 위치 분해능 분석 (D10, 오프라인) — 모터 GT vs SATS centroid 예측.
+"""미세 스텝 위치 분해능 분석 (D10, 오프라인) — 모터 상대변위 vs SATS centroid 상대변위.
 
-"격자 단위"가 아니라 **진짜 위치 분해능**을 잰다: 모터(0.1μm)로 미세 스텝을 눌러
-기록한 데이터를 SATS에 추론 → 서브픽셀 centroid 예측을 GT와 비교.
+★좌표 규약(중요): 모터 원점과 센서 원점은 정렬 불가 → **상대 변위**로 평가한다.
+  - pos_mm = 모터 **절대 좌표**(원점 임의). 첫 압입점(모터 0,0 등)이 기준점.
+  - 예측·GT 모두 기준점 대비 변위(Δ)로 바꿔 비교 → 원점 불일치(상수 offset)는
+    소거된다. slope·R²·σ·분해능은 원래 offset-불변(회귀 절편이 흡수).
+
+취득 절차(사용자 프로토콜): 모터 (0,0)에서 1회 압입(기준) → 절대 좌표로 0.1mm 등
+스텝 이동 → 동일 z 압입 반복. 각 점 dwell 중 ≥20프레임 기록.
+
 산출(SPEC.md 갱신 근거):
-  - slope·R²      : 예측이 실제 이동을 얼마나 추종하나 (1=완벽 추종)
+  - slope·R²      : 예측 변위가 실제 모터 변위를 얼마나 추종하나 (1=완벽)
   - σ (per-pos)   : 같은 위치 반복 예측의 흔들림 = 반복 노이즈
-  - loc err       : |예측−GT| median (정확도; 서브픽셀 vs argmax 격자스냅 비교)
+  - rel err       : 기준점 정렬 후 |예측Δ−GTΔ| median (상대 정확도)
   - resolution    : 2σ/slope = 두 위치를 분간 가능한 최소 간격(분해능)
 
 ────────────────────────────────────────────────────────────────────────
 입력 형식 (둘 중 하나):
-  A) --data-dir DIR : 위치당 npz 1개. 각 npz =
+  A) --data-dir DIR : 위치당 npz 1개(파일명 순=취득 순, 첫 파일=기준점). 각 npz =
         sensor   float32 [F,16]  (F≥window_size, pct 상대% = 라이브 데모 윈도우값)
-        pos_mm   float32 [2]     (모터 GT x,y, 센서 mm 프레임)
+        pos_mm   float32 [2]     (모터 절대 x,y[mm] — 센서 원점과 무관)
         baseline float32 [16]    (선택; sensor가 raw면 --input raw 로 pct 변환)
   B) --data FILE.npz : 전 프레임 한 파일.
         sensor   [N,16],  pos_mm [N,2]   (동일 위치 연속 프레임끼리 묶음)
@@ -95,33 +101,39 @@ def _predict_positions(engine, sensor_pct, subpixel):
 
 
 def analyze(positions, engine):
-    """위치별 예측 통계 + 스윕축 투영 회귀 → dict."""
-    gt = np.array([p for _, p in positions], float)                    # [K,2]
+    """상대변위 기반 분석 — 모터·센서 원점 불일치를 기준점 정렬로 소거.
+
+    GT/예측 모두 첫 위치(기준 압입점) 대비 Δ로 비교. slope·R²·σ·분해능은
+    원래 offset-불변(회귀 절편), rel err 는 기준점 정렬 후 상대 정확도.
+    """
+    gt = np.array([p for _, p in positions], float)                    # [K,2] 모터 절대
     axis = gt[-1] - gt[0]
     axis = axis / (np.linalg.norm(axis) + 1e-9)                        # 스윕 방향 단위벡터
     rows = []
     for sensor, pos in positions:
         pr = _predict_positions(engine, sensor, subpixel=True)
-        pr_arg = _predict_positions(engine, sensor, subpixel=False)
         if len(pr) == 0:
             continue
         mu = pr.mean(0)
         sig_axis = float(np.std(pr @ axis))                           # 스윕축 방향 반복 노이즈
-        loc = float(np.linalg.norm(mu - pos))                        # 서브픽셀 정확도
-        loc_arg = float(np.linalg.norm(pr_arg.mean(0) - pos)) if len(pr_arg) else float("nan")
-        rows.append({"gt": pos, "mu": mu, "sig": sig_axis, "loc": loc, "loc_arg": loc_arg,
+        rows.append({"gt": pos, "mu": mu, "sig": sig_axis,
                      "gt_proj": float(pos @ axis), "pred_proj": float(mu @ axis), "n": len(pr)})
-    gp = np.array([r["gt_proj"] for r in rows])
-    pp = np.array([r["pred_proj"] for r in rows])
+    # ★기준점 정렬: 첫 위치를 Δ=0 으로 — 원점 불일치(상수 offset) 소거
+    gt0, mu0 = rows[0]["gt"], rows[0]["mu"]
+    for r in rows:
+        r["gt_d"] = r["gt"] - gt0                                     # 모터 상대변위
+        r["mu_d"] = r["mu"] - mu0                                     # 예측 상대변위
+        r["rel"] = float(np.linalg.norm(r["mu_d"] - r["gt_d"]))       # 상대 정확도
+    gp = np.array([r["gt_proj"] for r in rows]); gp -= gp[0]          # 투영도 상대화
+    pp = np.array([r["pred_proj"] for r in rows]); pp -= pp[0]
     slope, intercept = np.polyfit(gp, pp, 1)
     resid = pp - (slope * gp + intercept)
     r2 = 1.0 - np.sum(resid ** 2) / max(np.sum((pp - pp.mean()) ** 2), 1e-12)
     sig_med = float(np.median([r["sig"] for r in rows]))
-    loc_med = float(np.median([r["loc"] for r in rows]))
-    loc_arg_med = float(np.median([r["loc_arg"] for r in rows]))
+    rel_med = float(np.median([r["rel"] for r in rows[1:]])) if len(rows) > 1 else float("nan")
     res_2s = 2.0 * sig_med / max(abs(slope), 1e-6)
     return {"rows": rows, "axis": axis, "slope": float(slope), "intercept": float(intercept),
-            "r2": float(r2), "sig_med": sig_med, "loc_med": loc_med, "loc_arg_med": loc_arg_med,
+            "r2": float(r2), "sig_med": sig_med, "rel_med": rel_med,
             "resolution_2sigma": float(res_2s), "gp": gp, "pp": pp}
 
 
@@ -136,12 +148,12 @@ def make_figure(res, out_png, diameter):
     a0.errorbar(gp, pp, yerr=sig, fmt="o", ms=4, capsize=2, color="#0a7", label="predicted (centroid)")
     lo, hi = gp.min(), gp.max()
     a0.plot([lo, hi], [lo, hi], "k--", lw=1, label="ideal (slope 1)")
-    a0.set_xlabel("GT position along sweep (mm)"); a0.set_ylabel("predicted (mm)")
+    a0.set_xlabel("motor displacement from ref (mm)"); a0.set_ylabel("predicted displacement (mm)")
     a0.set_title(f"D{diameter:g}  slope={res['slope']:.3f}  R2={res['r2']:.4f}")
     a0.legend(fontsize=8)
     a1.plot(gp, (pp - (res["slope"] * gp + res["intercept"])), "o-", ms=3, color="#c33")
     a1.axhline(0, color="k", lw=0.6)
-    a1.set_xlabel("GT position (mm)"); a1.set_ylabel("residual (mm)")
+    a1.set_xlabel("motor displacement (mm)"); a1.set_ylabel("residual (mm)")
     a1.set_title(f"sigma_med={res['sig_med']:.3f}mm  resolution(2σ)={res['resolution_2sigma']:.3f}mm")
     fig.tight_layout(); fig.savefig(out_png, dpi=120); plt.close(fig)
 
@@ -169,12 +181,11 @@ def main() -> None:
     make_figure(res, args.out, args.diameter)
 
     print("\n" + "=" * 60)
-    print(f"  위치 분해능 (D{args.diameter:g}, {len(res['rows'])} 위치)")
+    print(f"  위치 분해능 — 상대변위 기준 (D{args.diameter:g}, {len(res['rows'])} 위치)")
     print("=" * 60)
     print(f"  추종성   slope = {res['slope']:.3f}   R2 = {res['r2']:.4f}")
     print(f"  반복노이즈 sigma(축) median = {res['sig_med']:.3f} mm")
-    print(f"  정확도   loc err median = {res['loc_med']:.3f} mm  "
-          f"(argmax 격자스냅: {res['loc_arg_med']:.3f} mm)")
+    print(f"  상대정확도 |predΔ − motorΔ| median = {res['rel_med']:.3f} mm  (기준점 정렬 후)")
     print(f"  ★분해능  2σ/slope = {res['resolution_2sigma']:.3f} mm  "
           f"(이보다 가까운 두 위치는 노이즈에 묻힘)")
     print("=" * 60)
