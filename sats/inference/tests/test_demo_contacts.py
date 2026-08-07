@@ -83,3 +83,31 @@ def test_frame_latch_keeps_max():
 def test_format_contacts_has_theta_and_xyz():
     line = format_contacts(7, [Contact(1.0, 2.0, 1.2, 3.4, 80.0)], theta_deg=12.3)
     assert "theta=" in line and "x=" in line and "fz=" in line and "frame" in line
+
+
+# ── state_banner: 무접촉/접촉 판정 통일 ──────────────────────────────────────
+def test_state_banner_offline():
+    from sats.inference.demo_contacts import ContactState, state_banner
+    b = state_banner(None, connected=False)
+    assert b.state is ContactState.OFFLINE and not b.active
+
+
+def test_state_banner_no_contact():
+    from sats.inference.demo_contacts import ContactState, state_banner
+    b = state_banner([], connected=True)
+    assert b.state is ContactState.NO_CONTACT and not b.active
+
+
+def test_state_banner_contact_counts_and_theta():
+    from sats.inference.demo_contacts import ContactState, state_banner
+    cs = [Contact(0, 0, 1.0, 3.0, 80), Contact(5, 0, 1.0, 2.0, 50)]
+    b = state_banner(cs, theta_deg=90.0)
+    assert b.state is ContactState.CONTACT and b.active
+    assert "x2" in b.label and "90" in b.label
+
+
+def test_state_banner_bending_no_contact_above_band():
+    """접촉 없음 + theta≥band → BENDING(무접촉), band 미만 → NO_CONTACT."""
+    from sats.inference.demo_contacts import ContactState, state_banner
+    assert state_banner([], theta_deg=95.0, theta_band_deg=20.0).state is ContactState.BENDING
+    assert state_banner([], theta_deg=5.0, theta_band_deg=20.0).state is ContactState.NO_CONTACT

@@ -1,0 +1,114 @@
+"""통합 대시보드 헤드리스(Agg) 테스트 — 패널 렌더 + Dashboard 구동 없이 1틱 렌더."""
+from types import SimpleNamespace
+
+import matplotlib
+import numpy as np
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+
+from sats.inference.dashboard import Dashboard  # noqa: E402
+from sats.inference.dashboard_panels import (  # noqa: E402
+    HeatmapPanel, ThetaGaugePanel, UnitsInset,
+)
+from sats.inference.demo_contacts import Contact, state_banner  # noqa: E402
+
+GRID = 41
+
+
+def _map(cx, cy, amp=80.0, sig=1.5):
+    c = np.linspace(-10, 10, GRID); xx, yy = np.meshgrid(c, c)
+    return amp * np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * sig ** 2))
+
+
+def test_heatmap_panel_contact_and_blank(tmp_path):
+    fig = plt.figure(); ax = fig.add_subplot(111)
+    p = HeatmapPanel(ax, -10, 10, "S1")
+    # 접촉 → 맵 표시(peak>0)
+    p.update(_map(-3, 2), [Contact(-3, 2, 1.4, 3.0, 80)], state_banner([Contact(-3, 2, 1.4, 3.0, 80)]))
+    assert float(np.asarray(p.im.get_array()).max()) > 0.0
+    # 무접촉 → blank(0)
+    p.update(_map(0, 0), [], state_banner([]))
+    assert float(np.asarray(p.im.get_array()).max()) == 0.0
+    fig.savefig(tmp_path / "hm.png"); plt.close(fig)
+
+
+def test_theta_gauge_panel_renders(tmp_path):
+    fig = plt.figure(); ax = fig.add_subplot(111)
+    p = ThetaGaugePanel(ax)
+    p.update(92.0, 0.7, state_banner([], theta_deg=92.0))
+    assert any("92" in t.get_text() for t in ax.texts)
+    p.update(None, None, state_banner(None, connected=False))   # OFFLINE 안전
+    fig.savefig(tmp_path / "th.png"); plt.close(fig)
+
+
+def test_units_inset_renders():
+    fig = plt.figure(); ax = fig.add_subplot(111)
+    p = UnitsInset(ax)
+    p.update(np.random.randn(10, 16).astype(np.float32))
+    assert np.asarray(p.im.get_array()).shape == (4, 4)
+    p.update(None)                                              # None 안전
+    plt.close(fig)
+
+
+class _StubChannel:
+    """poll()가 고정 payload 반환. Dashboard 렌더 경로 검증용."""
+
+    def __init__(self, role, payload):
+        self.role = role
+        self._p = payload
+        self.reader = None
+        self.theta_fixed = 0.0
+        self.rezeroed = False
+
+    def poll(self):
+        return self._p
+
+    def arm_bending(self):
+        self.theta_fixed = 90.0
+
+    def rezero_theta(self):
+        self.rezeroed = True
+
+
+def _args():
+    return SimpleNamespace(infer_max_fps=20.0, viz_fps=10.0)
+
+
+def _engine():
+    return SimpleNamespace(grid_min_mm=-10.0, grid_max_mm=10.0)
+
+
+def test_dashboard_renders_offline_and_data(tmp_path):
+    cs = [Contact(-3, 2, 1.4, 3.0, 80)]
+    channels = [
+        _StubChannel("contacts", {"kind": "heatmap", "banner": state_banner(cs),
+                                  "pred_map": _map(-3, 2), "contacts": cs, "theta": None, "units": None}),
+        _StubChannel("theta", {"kind": "theta", "banner": state_banner([], theta_deg=92.0),
+                               "theta": 92.0, "noise": 0.6}),
+        _StubChannel("bending", {"kind": "heatmap", "banner": state_banner(cs, theta_deg=90.0),
+                                 "pred_map": _map(4, -1), "contacts": cs, "theta": 90.0,
+                                 "units": np.random.randn(10, 16).astype(np.float32)}),
+    ]
+    dash = Dashboard(channels, _engine(), _args(), show=False)
+    dash.poll_all()
+    dash.render_once()
+    out = tmp_path / "dash.png"; dash.save(out)
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_dashboard_keys_arm_and_rezero():
+    channels = [
+        _StubChannel("contacts", {"kind": "heatmap", "banner": state_banner([]),
+                                  "pred_map": None, "contacts": [], "theta": None, "units": None}),
+        _StubChannel("theta", {"kind": "theta", "banner": state_banner([]), "theta": 0.0, "noise": 0.0}),
+        _StubChannel("bending", {"kind": "heatmap", "banner": state_banner([]),
+                                 "pred_map": None, "contacts": [], "theta": None, "units": None}),
+    ]
+    dash = Dashboard(channels, _engine(), _args(), show=False)
+    dash._on_key(SimpleNamespace(key="b"))
+    dash._on_key(SimpleNamespace(key="z"))
+    dash._on_key(SimpleNamespace(key="q"))
+    assert dash.channels["bending"].theta_fixed == 90.0
+    assert dash.channels["theta"].rezeroed is True
+    assert dash._quit is True

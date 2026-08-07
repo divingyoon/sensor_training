@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 import numpy as np
 
@@ -20,6 +21,66 @@ class Contact:
     z_mm: float
     fz_n: float
     peak_val: float
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 상태 판정(무접촉/무하중 vs 접촉) — 3모드(contacts·theta·bending) 공통 단일 소스
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ContactState(Enum):
+    """센서 채널의 표시 상태."""
+    OFFLINE = "offline"          # 센서 미연결/데이터 없음
+    NO_CONTACT = "no_contact"    # 연결됨·무접촉(무하중)
+    CONTACT = "contact"          # 접촉 감지
+    BENDING = "bending"          # 밴딩 중·무접촉(bending 모드 전용)
+
+
+# 배너 색 — 초록 heatmap/포스터 대비 고대비
+STATE_COLORS: dict[ContactState, str] = {
+    ContactState.OFFLINE: "#bbbbbb",
+    ContactState.NO_CONTACT: "#888888",
+    ContactState.CONTACT: "#d81e00",
+    ContactState.BENDING: "#0033cc",
+}
+
+
+@dataclass(frozen=True)
+class StateBanner:
+    """상태 배너 표시 payload — 라벨·색·활성(접촉有) 플래그."""
+    state: ContactState
+    label: str
+    color: str
+
+    @property
+    def active(self) -> bool:
+        return self.state is ContactState.CONTACT
+
+
+def state_banner(contacts: list[Contact] | None, *, theta_deg: float | None = None,
+                 connected: bool = True, theta_band_deg: float = 20.0) -> StateBanner:
+    """접촉 리스트(+선택 theta)로 표시 상태 판정. 3모드 공통 게이트.
+
+    - connected=False           → OFFLINE
+    - 접촉 있음                  → CONTACT (theta 있으면 라벨에 병기)
+    - 접촉 없음·theta≥band       → BENDING(밴딩 중 무접촉)
+    - 접촉 없음·그 외            → NO_CONTACT
+    무접촉 판정 자체는 extract_contacts 의 fz/peak 게이트가 이미 수행하므로,
+    여기서는 그 결과를 일관된 배너로 변환만 한다(표시 통일).
+    """
+    if not connected:
+        return StateBanner(ContactState.OFFLINE, "SENSOR OFFLINE",
+                           STATE_COLORS[ContactState.OFFLINE])
+    n = len(contacts) if contacts else 0
+    if n > 0:
+        label = "CONTACT" if n == 1 else f"CONTACT x{n}"
+        if theta_deg is not None:
+            label += f"   theta {theta_deg:+.0f}°"
+        return StateBanner(ContactState.CONTACT, label, STATE_COLORS[ContactState.CONTACT])
+    if theta_deg is not None and abs(theta_deg) >= theta_band_deg:
+        return StateBanner(ContactState.BENDING, f"BENDING {theta_deg:+.0f}° (no contact)",
+                           STATE_COLORS[ContactState.BENDING])
+    return StateBanner(ContactState.NO_CONTACT, "NO CONTACT",
+                       STATE_COLORS[ContactState.NO_CONTACT])
 
 
 def extract_contacts(pred_map: np.ndarray, *, grid_min_mm: float, grid_step_mm: float,

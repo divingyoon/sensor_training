@@ -1,0 +1,111 @@
+"""통합 대시보드 figure — 3채널 payload를 3패널에 렌더 + 키 이벤트 루프.
+
+레이아웃 GridSpec(2,3, height=[5,1]):
+  [0,0] contacts heatmap  [0,1] theta gauge  [0,2] bending→SATS heatmap
+  [1,0:2] spec footer(D10)                   [1,2] 16-taxel raw inset
+
+run_dashboard 에서 SensorChannel 리스트를 받아 구동. show=False 면 Agg(헤드리스 테스트).
+"""
+from __future__ import annotations
+
+import time
+
+from sats.inference.dashboard_panels import (
+    HeatmapPanel, ThetaGaugePanel, UnitsInset,
+)
+
+# 포스터 footer(영문 — matplotlib 한글 깨짐 회피)
+_SPEC_FOOTER = ("D10  |  SATS 41x41 @ 0.5mm (20x20mm)  |  raw 16-taxel 200Hz / 250k baud"
+                "  |  Fz 0-3.9N  |  theta 20-150 deg (G1 MAE 1.78)")
+_KEY_HINT = "keys:  [b] arm bending   [z] re-zero theta   [q] quit"
+
+
+class Dashboard:
+    """3채널 통합 뷰. channels = [contacts, theta, bending] SensorChannel."""
+
+    def __init__(self, channels, engine, args, show: bool = True) -> None:
+        import matplotlib
+        if not show:
+            matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        self.plt = plt
+        self.show = show
+        self.args = args
+        self.channels = {c.role: c for c in channels}
+        self._quit = False
+        self._payloads: dict = {}
+
+        self.fig = plt.figure(figsize=(16, 6))
+        try:
+            self.fig.canvas.manager.set_window_title("SATS v6 — unified demo dashboard")
+        except Exception:
+            pass
+        gs = self.fig.add_gridspec(2, 3, height_ratios=[5, 1], hspace=0.35, wspace=0.25)
+        gmin, gmax = engine.grid_min_mm, engine.grid_max_mm
+        self.p_contacts = HeatmapPanel(self.fig.add_subplot(gs[0, 0]), gmin, gmax, "S1  SATS contacts")
+        self.p_theta = ThetaGaugePanel(self.fig.add_subplot(gs[0, 1]), "S2  bending theta (live)")
+        self.p_bending = HeatmapPanel(self.fig.add_subplot(gs[0, 2]), gmin, gmax, "S3  bending -> SATS")
+        self.p_units = UnitsInset(self.fig.add_subplot(gs[1, 2]))
+        ax_foot = self.fig.add_subplot(gs[1, 0:2]); ax_foot.axis("off")
+        ax_foot.text(0.0, 0.65, _SPEC_FOOTER, fontsize=9, va="center", family="monospace")
+        ax_foot.text(0.0, 0.2, _KEY_HINT, fontsize=9, va="center", color="#0033cc",
+                     family="monospace")
+
+        self.fig.canvas.mpl_connect("key_press_event", self._on_key)
+        if show:
+            plt.ion(); plt.show(block=False)
+
+    # ── 키 이벤트 ──────────────────────────────────────────────────────────────
+    def _on_key(self, event) -> None:
+        k = (event.key or "").lower()
+        if k == "q":
+            self._quit = True
+        elif k == "b":
+            print("\n[dashboard] bending 재장착 — 무접촉·고정 유지(~1s)...")
+            self.channels["bending"].arm_bending()
+            ch = self.channels["bending"]
+            print(f"[dashboard] armed. theta={ch.theta_fixed:+.1f} deg (bent-baseline 고정)")
+        elif k == "z":
+            print("\n[dashboard] theta 재영점...")
+            self.channels["theta"].rezero_theta()
+            print("[dashboard] theta0 갱신")
+
+    # ── 렌더 ──────────────────────────────────────────────────────────────────
+    def render_once(self) -> None:
+        """현재 _payloads 를 3패널에 반영(1회)."""
+        pc = self._payloads.get("contacts")
+        if pc is not None:
+            self.p_contacts.update(pc["pred_map"], pc["contacts"], pc["banner"], theta_deg=None)
+        pt = self._payloads.get("theta")
+        if pt is not None:
+            self.p_theta.update(pt["theta"], pt["noise"], pt["banner"])
+        pb = self._payloads.get("bending")
+        if pb is not None:
+            self.p_bending.update(pb["pred_map"], pb["contacts"], pb["banner"],
+                                  theta_deg=pb.get("theta"))
+            self.p_units.update(pb.get("units"))
+        if self.show:
+            self.fig.canvas.draw_idle()
+            self.plt.pause(0.001)
+
+    def poll_all(self) -> None:
+        self._payloads = {role: ch.poll() for role, ch in self.channels.items()}
+
+    def run(self) -> None:
+        print("\n[dashboard] 구동 — 창에서 [b]/[z]/[q]. (Ctrl+C 도 종료)\n")
+        infer_int = 0.0 if self.args.infer_max_fps <= 0 else 1.0 / self.args.infer_max_fps
+        viz_int = 0.0 if self.args.viz_fps <= 0 else 1.0 / self.args.viz_fps
+        last_infer, last_viz = 0.0, 0.0
+        try:
+            while not self._quit:
+                now = time.time()
+                if now - last_infer >= infer_int:
+                    self.poll_all(); last_infer = now
+                if now - last_viz >= viz_int:
+                    self.render_once(); last_viz = now
+                self.plt.pause(0.005)          # GUI 키 이벤트 처리
+        except KeyboardInterrupt:
+            print("\n[dashboard] 종료")
+
+    def save(self, path) -> None:
+        self.fig.savefig(path, dpi=110, bbox_inches="tight")
