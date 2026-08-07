@@ -79,18 +79,63 @@ def _progress(loader, desc: str | None):
 # staged 체크포인트에서 전체 가중치 초기화 (선택적)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _adapt_local_map_head(state: dict, model_state: dict) -> tuple[dict, list[str]]:
+    """grid 해상도가 다른 ckpt의 local_map 최종 레이어를 공간 업샘플로 이식.
+
+    _LocalMapMLP 최종 Linear는 [S², h] (행=출력 픽셀). S_old ≠ S_new 이면
+    [S,S,h]로 접어 bilinear 보간 후 다시 펼친다 → warm-start 정보 보존.
+    반환: (이식된 state 사본, 이식한 키 목록).
+    """
+    import torch.nn.functional as F
+    out = dict(state)
+    adapted: list[str] = []
+    for k, cur in model_state.items():
+        if k not in state or state[k].shape == cur.shape:
+            continue
+        old = state[k]
+        # 최종 Linear weight [S_old², h] → [S_new², h] / bias [S_old²] → [S_new²]
+        so, sn = int(old.shape[0] ** 0.5), int(cur.shape[0] ** 0.5)
+        if so * so != old.shape[0] or sn * sn != cur.shape[0]:
+            out.pop(k, None)                      # 정사각 아님 → 이식 불가, 새 초기화 유지
+            continue
+        if old.dim() == 2:                        # weight [S², h]
+            grid = old.view(so, so, -1).permute(2, 0, 1).unsqueeze(0)         # [1,h,S,S]
+            up = F.interpolate(grid, size=(sn, sn), mode="bilinear", align_corners=True)
+            out[k] = up.squeeze(0).permute(1, 2, 0).reshape(sn * sn, -1).contiguous()
+        else:                                     # bias [S²]
+            grid = old.view(1, 1, so, so)
+            up = F.interpolate(grid, size=(sn, sn), mode="bilinear", align_corners=True)
+            out[k] = up.reshape(sn * sn).contiguous()
+        adapted.append(k)
+    return out, adapted
+
+
 def init_from_staged_ckpt(ckpt_path: Union[str, Path], model: SATSCNNStage) -> None:
     """
     SATSCNNStage 형식의 체크포인트로 전체 모델을 초기화한다.
 
     staged train_cnn.py의 best_model.pt와 동일한 키 구조를 사용하므로
-    그대로 load_state_dict 가능.
+    그대로 load_state_dict 가능. grid 해상도가 다른 ckpt(예: 0.5mm 학습 →
+    0.25mm 재학습 warm-start)는 local_map 최종 레이어를 공간 업샘플로 이식한다.
 
     모든 파라미터는 requires_grad=True 상태를 유지한다 (E2E 학습).
     """
     ckpt = torch.load(ckpt_path, map_location="cpu")
-    model.load_state_dict(ckpt["model"], strict=True)
-    log.info("staged 체크포인트로 초기화 완료: %s", ckpt_path)
+    try:
+        model.load_state_dict(ckpt["model"], strict=True)
+        log.info("staged 체크포인트로 초기화 완료: %s", ckpt_path)
+        return
+    except RuntimeError as e:
+        if "size mismatch" not in str(e):
+            raise
+    state, adapted = _adapt_local_map_head(ckpt["model"], model.state_dict())
+    if not adapted:
+        raise RuntimeError(f"init-ckpt 해상도 이식 실패(정사각 아님): {ckpt_path}")
+    result = model.load_state_dict(state, strict=False)
+    if result.missing_keys:
+        raise RuntimeError(f"init-ckpt 이식 후 missing keys: {result.missing_keys}")
+    log.info("staged 체크포인트 초기화(해상도 이식 %d개 키: %s): %s",
+             len(adapted), adapted, ckpt_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
