@@ -63,7 +63,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--list-ports", action="store_true", help="시리얼 포트 목록 출력 후 종료(기본 셋업)")
     p.add_argument("--probe", action="store_true", help="포트에서 raw 바이트 몇 개 읽어 연결 확인 후 종료")
     p.add_argument("--mock", action="store_true")
-    p.add_argument("--port", default="/dev/ttyUSB0")
+    p.add_argument("--port", default="auto", help="시리얼 포트. 'auto'면 ttyACM*/ttyUSB* 자동 탐지")
     p.add_argument("--baudrate", type=int, default=250000)   # vensor2.ino Serial.begin(250000)
     p.add_argument("--baseline-seconds", type=float, default=5.0)
     p.add_argument("--startup-delay", type=float, default=2.0)
@@ -115,6 +115,33 @@ def list_serial_ports() -> None:
     for p in ports:
         print(f"  {p.device:16s}  {p.description}  [{p.hwid}]")
     print("\n→ 센서 포트를 --port 로 지정 (예: --port " + ports[0].device + ")")
+
+
+def auto_detect_port(baudrate: int) -> str | None:
+    """센서 시리얼 포트 자동 탐지. ttyACM*/ttyUSB* 후보 중 데이터(0xAA) 나오는 것 우선."""
+    try:
+        from serial.tools import list_ports
+    except ImportError:
+        return None
+    cands = [p.device for p in list_ports.comports()
+             if any(k in p.device for k in ("ttyACM", "ttyUSB"))]
+    if not cands:
+        return None
+    if len(cands) == 1:
+        return cands[0]                       # 하나면 프로브 없이(불필요한 리셋 방지)
+    import serial
+    fallback = None
+    for dev in cands:                          # 여러 개 → 실제 데이터 나오는 것
+        try:
+            s = serial.Serial(dev, baudrate, timeout=0.8)
+            time.sleep(0.3); data = s.read(64); s.close()
+        except Exception:
+            continue
+        if data and 0xAA in data:
+            return dev
+        if data and fallback is None:
+            fallback = dev
+    return fallback or cands[0]
 
 
 def probe_port(port: str, baudrate: int, n: int = 64) -> None:
@@ -359,7 +386,18 @@ def main() -> None:
     if args.list_ports:
         list_serial_ports(); return
     if args.probe:
-        probe_port(args.port, args.baudrate); return
+        port = auto_detect_port(args.baudrate) if args.port == "auto" else args.port
+        if port is None:
+            print("[probe] 포트 자동 탐지 실패 — --list-ports 로 확인."); return
+        probe_port(port, args.baudrate); return
+    # 시리얼 포트 자동 탐지(--port auto, mock 아닐 때)
+    if not args.mock and args.port == "auto":
+        found = auto_detect_port(args.baudrate)
+        if found is None:
+            print("[오류] 시리얼 포트 자동 탐지 실패 — 센서 USB 연결·전원 확인, --list-ports 로 확인.")
+            sys.exit(1)
+        args.port = found
+        print(f"[setup] 자동 감지 포트: {args.port}")
     # 접촉 수 미지정 시: bending=1(단일, 표준 시나리오), contacts=3(다중)
     if args.contacts is None:
         args.contacts = 1 if args.mode == "bending" else 3
