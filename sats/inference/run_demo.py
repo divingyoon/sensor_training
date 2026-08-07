@@ -56,6 +56,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rezero-release-deg", type=float, default=12.0,
                    help="[dynamic] 최근 peak보다 이만큼↓ 낮게 정지 시 잔차로 간주 → 0 복귀")
     p.add_argument("--rezero-tau", type=float, default=2.5, help="[dynamic] 0 복귀 시간상수(초)")
+    p.add_argument("--theta-smooth", type=int, default=7, help="theta 스무딩 median 창(클수록 안정·느림)")
     p.add_argument("--viz-fps", type=float, default=10.0)
     p.add_argument("--infer-max-fps", type=float, default=20.0)
     p.add_argument("--device", default="auto")
@@ -270,7 +271,8 @@ def run_theta(args, engine, bi, reader) -> None:
             "dynamic": f"밴딩/해제 제스처 0복귀(최근 peak−{args.rezero_release_deg:g}°↓ 정지 시 τ={args.rezero_tau:g}s)",
             "hold": f"지그 고정각 peak-hold(≥{args.hold_min_deg:g}°, 응력완화 무시 상수)"}[args.theta_mode]
     print(f"  ★ Enter=수동 재영점.  {desc}. (Ctrl+C 종료)\n")
-    hist: collections.deque = collections.deque(maxlen=20)    # ~1s @20fps
+    sm = max(1, int(args.theta_smooth))
+    hist: collections.deque = collections.deque(maxlen=max(20, sm))
     peak_hist: collections.deque = collections.deque(maxlen=80)  # ~4s (dynamic release용)
     peak = 0.0                                                 # hold 모드 래치
     last_infer, last_frame = 0.0, time.time()
@@ -292,7 +294,9 @@ def run_theta(args, engine, bi, reader) -> None:
             theta_abs = bi.theta_from_pct(win, demo_baseline=base)
             theta_rel = theta_abs - theta0
             hist.append(theta_rel); peak_hist.append(theta_rel)
-            smoothed = float(np.median(list(hist)[-7:]))
+            recent = list(hist)[-sm:]
+            smoothed = float(np.median(recent))
+            noise = float(np.std(recent))            # 라이브 흔들림(±) = 분해능 지표
             display, tag = smoothed, "live      "
             if args.theta_mode == "hold":
                 # 클램프(≥hold_min)면 peak 래치(응력완화 creep 무시), 풀리면 추종.
@@ -315,7 +319,8 @@ def run_theta(args, engine, bi, reader) -> None:
                     tag = "bending   " if moving else "hold      "
                 display = smoothed
             last_frame = now
-            print(f"\r  theta = {display:+7.1f} deg  {tag} [Enter=재영점] ", end="", flush=True)
+            print(f"\r  theta = {display:+7.1f} deg  (±{noise:4.1f} noise)  {tag} [Enter=재영점] ",
+                  end="", flush=True)
     except KeyboardInterrupt:
         print(f"\n\n=== 종료 ===  최종 theta = {float(np.median(list(hist)[-7:])):+.1f} deg" if hist else "\n종료")
 
