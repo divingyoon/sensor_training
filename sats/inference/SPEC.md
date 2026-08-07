@@ -28,7 +28,8 @@
 | Super-resolution | 4×4 taxels → 41×41 (≈ **105× cells**) | 16 → 1681 |
 | Window size | 10 frames | config `window_size` |
 | Size conditioning | ON, fixed **d = 10 mm** | `use_indenter_size_input` |
-| Inference output rate | cap **20 Hz** (`--infer-max-fps`); GPU-bound higher | `[measure@4090]` |
+| Inference throughput | **129 Hz** (7.75 ms/frame, RTX GPU) | measured@4090 |
+| Demo output rate | cap **20 Hz** (`--infer-max-fps`, 상향 가능) | run_demo |
 
 ## 3. Force / position ranges & resolution (D10)
 
