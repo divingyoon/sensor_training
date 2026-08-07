@@ -57,6 +57,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="[dynamic] 최근 peak보다 이만큼↓ 낮게 정지 시 잔차로 간주 → 0 복귀")
     p.add_argument("--rezero-tau", type=float, default=2.5, help="[dynamic] 0 복귀 시간상수(초)")
     p.add_argument("--theta-smooth", type=int, default=7, help="theta 스무딩 median 창(클수록 안정·느림)")
+    p.add_argument("--theta-deadband", type=float, default=20.0,
+                   help="관측 하한: |θ|<이 값이면 0 표시(유효 관측 ~20-150°, 미만은 불가→flat)")
     p.add_argument("--viz-fps", type=float, default=10.0)
     p.add_argument("--infer-max-fps", type=float, default=20.0)
     p.add_argument("--device", default="auto")
@@ -319,6 +321,9 @@ def run_theta(args, engine, bi, reader) -> None:
                     tag = "bending   " if moving else "hold      "
                 display = smoothed
             last_frame = now
+            # ★관측 하한 dead-band: |θ|<band은 관측 불가 구간 → 0(flat)로 표시
+            if abs(display) < args.theta_deadband:
+                display, tag = 0.0, "flat(<band)"
             print(f"\r  theta = {display:+7.1f} deg  (±{noise:4.1f} noise)  {tag} [Enter=재영점] ",
                   end="", flush=True)
     except KeyboardInterrupt:
