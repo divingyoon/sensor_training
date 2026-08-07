@@ -33,7 +33,9 @@ from pathlib import Path
 import numpy as np
 
 from sats.inference.contact_filter import ContactFilter, FilterConfig
-from sats.inference.demo_contacts import extract_contacts, state_banner
+from sats.inference.demo_contacts import (
+    ContactState, StateBanner, extract_contacts, state_banner,
+)
 from sats.inference.inference_engine import SATSInferenceEngine
 from sats.inference.run_demo import auto_detect_port
 from sats.inference.z_calibration import ZCalibration
@@ -78,6 +80,52 @@ class SensorChannel:
             fz_on=args.fz_on, fz_off=args.fz_off, on_frames=args.on_frames,
             off_frames=args.off_frames, pos_smooth=args.pos_smooth)) \
             if role in ("contacts", "bending") else None
+        self.busy: str = ""                       # "" 또는 진행 중 작업 라벨(UI 표시)
+
+    # ── 런타임 연결/해제 (UI 버튼) ────────────────────────────────────────────
+    def connect(self, port: str) -> str | None:
+        """포트에 리더 연결(기존 연결은 해제). 성공 None, 실패 사유 문자열."""
+        self.disconnect()
+        try:
+            reader = _build_reader(port, self.args, self.engine.window_size)
+        except Exception as e:                     # 포트 열기 실패 등 — UI에 사유 표시
+            return f"연결 실패: {e}"
+        if reader is None:
+            return "포트 탐지 실패"
+        self.reader, self.connected, self.last_seq = reader, True, 0
+        return None
+
+    def disconnect(self) -> None:
+        """리더 중지·상태 초기화(필터·재장착·영점 포함)."""
+        if self.reader is not None:
+            try:
+                self.reader.stop()
+            except Exception:
+                pass
+        self.reader, self.connected = None, False
+        self.armed, self.theta_fixed = False, 0.0
+        self.theta0 = 0.0
+        self.hist.clear()
+        if self.cfilter is not None:
+            self.cfilter.reset()
+
+    def reset(self) -> None:
+        """역할별 리셋: contacts=필터, theta=재영점, bending=재장착(무접촉 유지)."""
+        if self.role == "contacts":
+            if self.cfilter is not None:
+                self.cfilter.reset()
+        elif self.role == "theta":
+            self.busy = "re-zero..."
+            try:
+                self.rezero_theta()
+            finally:
+                self.busy = ""
+        else:
+            self.busy = "arming..."
+            try:
+                self.arm_bending()
+            finally:
+                self.busy = ""
 
     # ── 데이터 취득 ──────────────────────────────────────────────────────────
     def _latest(self):
@@ -132,13 +180,21 @@ class SensorChannel:
         self.armed = True
 
     # ── 매 틱 payload ─────────────────────────────────────────────────────────
+    def _idle_payload(self, banner: StateBanner) -> dict:
+        return {"kind": "heatmap" if self.role != "theta" else "theta",
+                "banner": banner, "pred_map": None, "contacts": [],
+                "theta": None, "noise": None, "units": None}
+
     def poll(self) -> dict:
         """현재 표시 payload. kind ∈ {heatmap, theta}."""
         if not self.connected:
-            banner = state_banner(None, connected=False)
-            return {"kind": "heatmap" if self.role != "theta" else "theta",
-                    "banner": banner, "pred_map": None, "contacts": [],
-                    "theta": None, "noise": None, "units": None}
+            return self._idle_payload(state_banner(None, connected=False))
+        if self.busy:                              # 재영점/재장착 진행 중
+            return self._idle_payload(StateBanner(ContactState.OFFLINE, self.busy.upper(), "#c8a200"))
+        if not getattr(self.reader, "baseline_ready", True):   # flat baseline 수집 중
+            prog = float(getattr(self.reader, "baseline_progress", 0.0)) * 100
+            return self._idle_payload(StateBanner(ContactState.OFFLINE,
+                                                  f"BASELINE {prog:.0f}% — hands off", "#c8a200"))
         win = self._latest()
         if self.role == "contacts":
             return self._poll_heatmap(win, theta_deg=None, bent=False)
@@ -227,6 +283,10 @@ def _wait_baselines(channels, timeout: float = 30.0) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="통합 데모 대시보드(3센서 1창)",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    p.add_argument("--ui", choices=["tk", "mpl"], default="tk",
+                   help="tk=컨트롤 UI(포트·연결·리셋 버튼) / mpl=구 matplotlib 뷰")
+    p.add_argument("--no-autoconnect", action="store_true",
+                   help="[tk] 시작 시 자동 연결 안 함(UI에서 수동 연결)")
     p.add_argument("--contacts-port", default="auto", help="contacts 센서 포트('none'=비활성)")
     p.add_argument("--theta-port", default="none", help="theta 센서 포트")
     p.add_argument("--bending-port", default="none", help="bending 센서 포트")
@@ -267,28 +327,48 @@ def main() -> None:
     if args.min_distance_mm is None:
         args.min_distance_mm = args.diameter        # 단일접촉 peak-split 방지
     ports = {"contacts": args.contacts_port, "theta": args.theta_port, "bending": args.bending_port}
-    if all(v == "none" for v in ports.values()):
-        ports["contacts"] = "auto"                  # 기본: 1센서 → contacts 패널
-        print("[dashboard] 포트 미지정 → contacts=auto 로 진행")
 
     print(f"[1/3] SATS 엔진 로드(공유): {args.run_dir}")
     engine = SATSInferenceEngine(args.run_dir, device=args.device, indenter_diameter_mm=args.diameter)
     z_path = args.z_calib or (Path(__file__).resolve().parent / "z_calibration_v6.json")
     z_calib = ZCalibration.load(z_path) if Path(z_path).exists() else None
 
+    # tk UI는 theta/bending 패널을 언제든 연결할 수 있으므로 estimator 항상 로드
     bi = None
-    if ports["theta"] != "none" or ports["bending"] != "none":
+    need_bi = args.ui == "tk" or ports["theta"] != "none" or ports["bending"] != "none"
+    if need_bi:
         from sats.bending.config import BendingConfig
         from sats.inference.bending_infer import BendingInference
         est = _estimator_ckpt()
         print(f"[2/3] bending estimator 로드: {est.parent.name if est.name=='best.pt' else est.name}")
         bi = BendingInference(est, device=engine.device, restorer=None, cfg=BendingConfig())
 
+    if args.ui == "tk":
+        # UI에서 패널별 연결 — CLI 포트 지정이 있으면 초기 연결로 반영
+        channels = [SensorChannel(role, None, engine, bi, z_calib, args) for role in _ROLES]
+        for c in channels:
+            if ports[c.role] != "none" and not args.no_autoconnect:
+                err = c.connect(ports[c.role]) if ports[c.role] != "auto" or c.role == "contacts" \
+                    else None                       # auto는 contacts만 초기 연결(포트 쟁탈 방지)
+                if err:
+                    print(f"[dashboard] {c.role} 초기 연결 실패: {err}")
+        from sats.inference.dashboard_ui import DashboardApp
+        app = DashboardApp(channels, engine, args)
+        try:
+            app.run()
+        finally:
+            for c in channels:
+                c.disconnect()
+        return
+
+    # ── 구 matplotlib 뷰(--ui mpl) ──
+    if all(v == "none" for v in ports.values()):
+        ports["contacts"] = "auto"                  # 기본: 1센서 → contacts 패널
+        print("[dashboard] 포트 미지정 → contacts=auto 로 진행")
     print("[3/3] 리더 시작")
     channels = [SensorChannel(role, _build_reader(ports[role], args, engine.window_size),
                               engine, bi, z_calib, args) for role in _ROLES]
     _wait_baselines(channels)
-
     from sats.inference.dashboard import Dashboard
     dash = Dashboard(channels, engine, args)
     try:

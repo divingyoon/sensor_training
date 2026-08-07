@@ -138,6 +138,34 @@ def test_dashboard_keys_arm_and_rezero():
     assert dash._quit is True
 
 
+def test_sensor_channel_connect_disconnect_and_busy(monkeypatch):
+    """UI 런타임 연결/해제 + baseline/busy 배너 상태."""
+    from types import SimpleNamespace as NS
+    import sats.inference.run_dashboard as rd
+
+    class FakeReader:
+        baseline_ready = False
+        baseline_progress = 0.4
+        baseline = None
+        def stop(self): self.stopped = True
+        def get_latest_window_with_seq(self): return None, 0
+
+    monkeypatch.setattr(rd, "_build_reader", lambda port, args, w: FakeReader())
+    args = NS(diameter=10.0, contacts=1, min_distance_mm=10.0, rel_threshold=0.3,
+              min_fz=0.1, theta_smooth=7, theta_deadband=20.0,
+              fz_on=0.2, fz_off=0.1, on_frames=2, off_frames=5, pos_smooth=3)
+    engine = NS(window_size=10)
+    ch = rd.SensorChannel("contacts", None, engine, None, None, args)
+    assert ch.poll()["banner"].label == "SENSOR OFFLINE"
+    assert ch.connect("auto") is None and ch.connected
+    assert "BASELINE 40%" in ch.poll()["banner"].label      # 수집 중 표시
+    ch.busy = "arming..."
+    assert "ARMING" in ch.poll()["banner"].label            # 작업 중 표시
+    ch.busy = ""
+    ch.disconnect()
+    assert not ch.connected and ch.poll()["banner"].label == "SENSOR OFFLINE"
+
+
 def test_dashboard_toggle_contacts_and_diameter():
     """[c] contacts 1→2→3→1, [d] d10↔d5(min-dist·엔진 size 조건 동반)."""
     channels = [_StubChannel(r, {"kind": "heatmap", "banner": state_banner([]),
