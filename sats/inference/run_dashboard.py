@@ -32,6 +32,7 @@ from pathlib import Path
 
 import numpy as np
 
+from sats.inference.contact_filter import ContactFilter, FilterConfig
 from sats.inference.demo_contacts import extract_contacts, state_banner
 from sats.inference.inference_engine import SATSInferenceEngine
 from sats.inference.run_demo import auto_detect_port
@@ -72,6 +73,11 @@ class SensorChannel:
         self.armed = False
         self.theta_fixed = 0.0
         self.bent_ref = np.zeros(16, np.float32)
+        # 접촉 필터(히스테리시스·디바운스·무접촉 리셋·스무딩) — heatmap 역할만
+        self.cfilter = ContactFilter(FilterConfig(
+            fz_on=args.fz_on, fz_off=args.fz_off, on_frames=args.on_frames,
+            off_frames=args.off_frames, pos_smooth=args.pos_smooth)) \
+            if role in ("contacts", "bending") else None
 
     # ── 데이터 취득 ──────────────────────────────────────────────────────────
     def _latest(self):
@@ -121,6 +127,8 @@ class SensorChannel:
         self.theta_fixed = float(np.median(thetas)) if thetas else 0.0
         self.bent_ref = (np.median(frames, axis=0).astype(np.float32)
                          if frames else np.zeros(16, np.float32))
+        if self.cfilter is not None:
+            self.cfilter.reset()                     # 재장착 시 트랙·상태 초기화
         self.armed = True
 
     # ── 매 틱 payload ─────────────────────────────────────────────────────────
@@ -147,11 +155,13 @@ class SensorChannel:
                     "contacts": [], "theta": theta_deg, "units": None}
         frame = (win - self.bent_ref[None, :]).astype(np.float32) if bent else win
         pmap = self.engine.predict(frame)
-        contacts = extract_contacts(
+        raw = extract_contacts(
             pmap, grid_min_mm=self.engine.grid_min_mm, grid_step_mm=self.engine.grid_step_mm,
             taxel_area=self.engine.taxel_area, diameter_mm=a.diameter,
             max_contacts=a.contacts, min_distance_mm=a.min_distance_mm,
             rel_threshold=a.rel_threshold, min_fz=a.min_fz, z_calib=self.z_calib)
+        # 히스테리시스·디바운스·무접촉 리셋·스무딩(released 시 빈 리스트 → blank)
+        contacts = self.cfilter.update(raw)[0] if self.cfilter is not None else raw
         banner = state_banner(contacts, theta_deg=theta_deg, theta_band_deg=a.theta_deadband)
         return {"kind": "heatmap", "banner": banner, "pred_map": pmap,
                 "contacts": contacts, "theta": theta_deg,
@@ -228,6 +238,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-distance-mm", type=float, default=None)
     p.add_argument("--rel-threshold", type=float, default=0.3)
     p.add_argument("--min-fz", type=float, default=0.2)
+    # 접촉 필터(히스테리시스·디바운스·무접촉 리셋·스무딩) — 무접촉 노이즈 플로어로 튜닝
+    p.add_argument("--fz-on", type=float, default=0.30, help="접촉 ON 총 fz 임계(N)")
+    p.add_argument("--fz-off", type=float, default=0.15, help="접촉 OFF 임계(N, 히스테리시스)")
+    p.add_argument("--on-frames", type=int, default=2, help="ON 확정 연속 프레임")
+    p.add_argument("--off-frames", type=int, default=5, help="OFF 확정 연속=무접촉 리셋")
+    p.add_argument("--pos-smooth", type=int, default=3, help="위치 median 스무딩 프레임(1=off)")
     p.add_argument("--theta-smooth", type=int, default=7)
     p.add_argument("--theta-deadband", type=float, default=20.0)
     p.add_argument("--viz-fps", type=float, default=10.0)
