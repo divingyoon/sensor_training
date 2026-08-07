@@ -337,17 +337,23 @@ def run_bending(args, engine, z_calib, bi, reader) -> None:
         print("[bending] flat baseline 없음(mock 등) → 통합 모드 불가. 실센서 필요."); return
     base = np.asarray(base, float)
     print("\n[bending] === SATS+밴딩 통합 모드 (버클 방식) ===")
-    print("  1) 지금 플랫 baseline 캡처됨.  2) 지그에 장착·밴딩 후 Enter를 누르세요.")
+    print("  1) 지금 플랫 baseline 캡처됨.  2) 지그에 장착·밴딩 후 (무접촉 유지) Enter.")
     input("  >> 밴딩 완료했으면 Enter: ")
-    # REARM: 밴딩 무접촉 상태서 theta 고정 추정(재앵커, 최근 몇 프레임 중앙값)
-    thetas = []
-    for _ in range(15):
+    # REARM: 밴딩 무접촉 상태서 theta 고정 + ★bent-baseline(밴딩 패턴) 캡처(약 1초).
+    #   restorer(버클 학습)는 외부 지그와 불일치 → 대신 실제 bent 무접촉 패턴을 빼서 밴딩 상쇄.
+    #   신호가 hold서 안정적이라 잘 동작. corrected=win−bent_ref ≈ flat 접촉 pct(§5.4 가법).
+    print("  bent-baseline 캡처 중 — 무접촉·고정 유지 (1초)...")
+    thetas, bent_frames = [], []
+    for _ in range(30):
         win, _ = _get_window(reader, -1)
         if win is not None:
             thetas.append(bi.theta_from_pct(win, demo_baseline=base))
+            bent_frames.append(np.asarray(win, np.float32).mean(0))   # 윈도우 평균 pct[16]
         time.sleep(0.03)
     theta = float(np.median(thetas)) if thetas else 0.0
-    print(f"  ★ 밴딩 곡률 theta = {theta:+.1f} deg  (복원 조건 고정)\n")
+    bent_ref = (np.median(bent_frames, axis=0).astype(np.float32)
+                if bent_frames else np.zeros(16, np.float32))         # 밴딩 무접촉 기준
+    print(f"  ★ 밴딩 곡률 theta = {theta:+.1f} deg  · bent-baseline 고정(밴딩 환각 상쇄)\n")
     print("  접촉 press 시작 (Ctrl+C 종료)\n")
     latch = FrameLatch()
     viz = _make_viz(args, engine)
@@ -368,8 +374,8 @@ def run_bending(args, engine, z_calib, bi, reader) -> None:
             frame += 1
             if frame % 10 == 0:
                 fps = 10.0 / max(now - t_fps, 1e-6); t_fps = now
-            restored = bi.restore(win, theta)            # 밴딩→flat 등가 복원
-            pmap = engine.predict(restored)               # 동결 SATS
+            corrected = (win - bent_ref[None, :]).astype(np.float32)  # ★밴딩 무접촉 빼기 → 접촉만
+            pmap = engine.predict(corrected)              # 동결 SATS
             contacts = extract_contacts(pmap, grid_min_mm=engine.grid_min_mm, grid_step_mm=engine.grid_step_mm,
                                         taxel_area=engine.taxel_area, diameter_mm=args.diameter,
                                         max_contacts=args.contacts, min_distance_mm=args.min_distance_mm,
@@ -427,7 +433,7 @@ def main() -> None:
     bi = None
     if args.mode in ("theta", "bending"):
         from sats.bending.config import BendingConfig
-        from sats.inference.bending_infer import BendingInference, load_restorer
+        from sats.inference.bending_infer import BendingInference
         # v6_2(긴 hold·정적프레임, clean 8세션) 우선 → v6new → 구 v6 폴백
         est_ckpt = next((p for p in [
             _ROOT / "sats/bending/runs/estimator_v6_2/best.pt",
@@ -440,12 +446,10 @@ def main() -> None:
             _ROOT / "learning_data/bending/v6",
         ] if p.exists()), _ROOT / "learning_data/bending/v6")
         print(f"[bending] estimator={est_ckpt.parent.name if est_ckpt.name=='best.pt' else est_ckpt.name}  data={bend_dir.name}")
-        cfg = BendingConfig(restorer_mode="deg_cnn")   # 공간CNN 복원(억제율↑, 접촉보존)
-        restorer = None
-        if args.mode == "bending":
-            print("[bending] restorer 학습(신규 v6 buckling, ~1분)...")
-            restorer = load_restorer(args.run_dir, bend_dir, device=engine.device, cfg=cfg)
-        bi = BendingInference(est_ckpt, device=engine.device, restorer=restorer, cfg=cfg)
+        cfg = BendingConfig()
+        # bending 모드는 bent-baseline 빼기로 밴딩 상쇄(외부 지그=버클학습 restorer와 불일치) →
+        # restorer 학습 불필요. estimator만 로드(theta 표시·고정용).
+        bi = BendingInference(est_ckpt, device=engine.device, restorer=None, cfg=cfg)
 
     reader = _start_reader(args, engine.window_size)
     try:
