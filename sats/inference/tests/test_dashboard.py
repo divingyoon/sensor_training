@@ -33,6 +33,21 @@ def test_heatmap_panel_contact_and_blank(tmp_path):
     fig.savefig(tmp_path / "hm.png"); plt.close(fig)
 
 
+def test_heatmap_panel_flip_y_reverses_axis():
+    """flip_y=True → y축 반전(위=−, 아래=+), flip_x=False → x 정상."""
+    fig = plt.figure(); ax = fig.add_subplot(111)
+    HeatmapPanel(ax, -10, 10, "S", flip_x=False, flip_y=True)
+    ylo, yhi = ax.get_ylim()
+    assert ylo > yhi                          # 반전(위쪽이 작은 값)
+    xlo, xhi = ax.get_xlim()
+    assert xlo < xhi                          # x 정상
+    plt.close(fig)
+    fig2 = plt.figure(); ax2 = fig2.add_subplot(111)
+    HeatmapPanel(ax2, -10, 10, "S", flip_y=False)
+    assert ax2.get_ylim()[0] < ax2.get_ylim()[1]   # 반전 해제 시 정상
+    plt.close(fig2)
+
+
 def test_theta_gauge_panel_renders(tmp_path):
     fig = plt.figure(); ax = fig.add_subplot(111)
     p = ThetaGaugePanel(ax)

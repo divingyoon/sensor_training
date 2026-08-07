@@ -43,10 +43,13 @@ class Dashboard:
             pass
         gs = self.fig.add_gridspec(2, 3, height_ratios=[5, 1], hspace=0.35, wspace=0.25)
         gmin, gmax = engine.grid_min_mm, engine.grid_max_mm
-        self.p_contacts = HeatmapPanel(self.fig.add_subplot(gs[0, 0]), gmin, gmax, "S1  SATS contacts")
+        fx, fy = getattr(args, "flip_x", False), getattr(args, "flip_y", True)  # 마운팅 방향 보정
+        self.p_contacts = HeatmapPanel(self.fig.add_subplot(gs[0, 0]), gmin, gmax,
+                                       "S1  SATS contacts", flip_x=fx, flip_y=fy)
         self.p_theta = ThetaGaugePanel(self.fig.add_subplot(gs[0, 1]), "S2  bending theta (live)")
-        self.p_bending = HeatmapPanel(self.fig.add_subplot(gs[0, 2]), gmin, gmax, "S3  bending -> SATS")
-        self.p_units = UnitsInset(self.fig.add_subplot(gs[1, 2]))
+        self.p_bending = HeatmapPanel(self.fig.add_subplot(gs[0, 2]), gmin, gmax,
+                                      "S3  bending -> SATS", flip_x=fx, flip_y=fy)
+        self.p_units = UnitsInset(self.fig.add_subplot(gs[1, 2]), flip_x=fx, flip_y=fy)
         ax_foot = self.fig.add_subplot(gs[1, 0:2]); ax_foot.axis("off")
         ax_foot.text(0.0, 0.7, _SPEC_FOOTER, fontsize=9, va="center", family="monospace")
         self._hint = ax_foot.text(0.0, 0.2, self._hint_str(), fontsize=9, va="center",

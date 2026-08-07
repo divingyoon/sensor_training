@@ -35,16 +35,25 @@ def _banner_title(ax, banner: StateBanner, prefix: str) -> None:
 
 
 class HeatmapPanel:
-    """SATS 초록 압력맵 + 접촉 마커. contacts/bending 공용(bending은 theta 병기)."""
+    """SATS 초록 압력맵 + 접촉 마커. contacts/bending 공용(bending은 theta 병기).
 
-    def __init__(self, ax, grid_min_mm: float, grid_max_mm: float, prefix: str = "SATS") -> None:
+    flip_y(기본 True): 센서 +y가 물리적으로 아래쪽이면 화면도 아래로 → 손 이동과 마커
+    이동 방향 일치(마운팅 방향 보정). flip_x 는 좌우 반전.
+    """
+
+    def __init__(self, ax, grid_min_mm: float, grid_max_mm: float, prefix: str = "SATS",
+                 flip_x: bool = False, flip_y: bool = True) -> None:
         self.ax = ax
         self.prefix = prefix
+        self.gmin, self.gmax = grid_min_mm, grid_max_mm
         self.ext = [grid_min_mm, grid_max_mm, grid_min_mm, grid_max_mm]
         self.cmap = _green_cmap()
         self.im = ax.imshow(np.zeros((2, 2)), origin="lower", extent=self.ext, cmap=self.cmap,
                             vmin=0, vmax=1.0, aspect="equal", interpolation="bicubic")
-        ax.set_xlabel("x (mm)"); ax.set_ylabel("y (mm)")
+        # 물리 마운팅 방향에 맞춰 축 반전(이미지+마커 함께 반전 → 방향 일치)
+        ax.set_xlim(grid_max_mm, grid_min_mm) if flip_x else ax.set_xlim(grid_min_mm, grid_max_mm)
+        ax.set_ylim(grid_max_mm, grid_min_mm) if flip_y else ax.set_ylim(grid_min_mm, grid_max_mm)
+        ax.set_xlabel("x (mm)"); ax.set_ylabel("y (mm)  (down = +)" if flip_y else "y (mm)")
         _banner_title(ax, StateBanner(ContactState.OFFLINE, "SENSOR OFFLINE",
                                       "#bbbbbb"), prefix)
 
@@ -104,10 +113,13 @@ class ThetaGaugePanel:
 class UnitsInset:
     """16-taxel(4×4) 원본 미니맵 — bending 패널 부속(밴딩 공간 gradient 관찰)."""
 
-    def __init__(self, ax, title: str = "16-taxel (raw)") -> None:
+    def __init__(self, ax, title: str = "16-taxel (raw)",
+                 flip_x: bool = False, flip_y: bool = True) -> None:
         self.ax = ax
         self.im = ax.imshow(np.zeros((4, 4)), origin="lower", cmap="RdBu_r",
                             vmin=-1, vmax=1, extent=[-13, 13, -13, 13], interpolation="nearest")
+        ax.set_xlim(13, -13) if flip_x else ax.set_xlim(-13, 13)   # heatmap 과 방향 일치
+        ax.set_ylim(13, -13) if flip_y else ax.set_ylim(-13, 13)
         ax.set_title(title, fontsize=8)
         ax.set_xticks([]); ax.set_yticks([])
 

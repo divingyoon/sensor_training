@@ -246,6 +246,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pos-smooth", type=int, default=3, help="위치 median 스무딩 프레임(1=off)")
     p.add_argument("--theta-smooth", type=int, default=7)
     p.add_argument("--theta-deadband", type=float, default=20.0)
+    # 화면 방향(마운팅 보정) — 손 이동과 마커 이동 방향 일치
+    p.add_argument("--flip-y", action=argparse.BooleanOptionalAction, default=True,
+                   help="센서 +y가 물리적으로 아래쪽이면 화면도 아래로(기본 on, --no-flip-y로 해제)")
+    p.add_argument("--flip-x", action=argparse.BooleanOptionalAction, default=False,
+                   help="좌우 반전(기본 off)")
     p.add_argument("--viz-fps", type=float, default=10.0)
     p.add_argument("--infer-max-fps", type=float, default=20.0)
     p.add_argument("--device", default="auto")
