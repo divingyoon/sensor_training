@@ -12,14 +12,17 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
-from sats.inference.inference_engine import SATSInferenceEngine
-
 _ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:           # 스크립트 직접 실행 시 repo 루트 import 경로 확보
+    sys.path.insert(0, str(_ROOT))
+
+from sats.inference.inference_engine import SATSInferenceEngine  # noqa: E402
 
 
 def measure_infer_hz(engine: SATSInferenceEngine, n: int) -> tuple[float, float]:
