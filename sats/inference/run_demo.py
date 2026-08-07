@@ -380,13 +380,17 @@ def main() -> None:
     if args.mode in ("theta", "bending"):
         from sats.bending.config import BendingConfig
         from sats.inference.bending_infer import BendingInference, load_restorer
-        # 신규 v6(y23-33·G1 MAE 1.78°) 우선, 없으면 구 v6 폴백
-        est_ckpt = _ROOT / "sats/bending/runs/estimator_v6new/best.pt"
-        if not est_ckpt.exists():
-            est_ckpt = _ROOT / "sats/bending/runs/estimator_v6"
-        bend_dir = _ROOT / "learning_data/bending/v6_new"
-        if not bend_dir.exists():
-            bend_dir = _ROOT / "learning_data/bending/v6"
+        # v6_2(긴 hold·정적프레임, clean 8세션) 우선 → v6new → 구 v6 폴백
+        est_ckpt = next((p for p in [
+            _ROOT / "sats/bending/runs/estimator_v6_2/best.pt",
+            _ROOT / "sats/bending/runs/estimator_v6new/best.pt",
+            _ROOT / "sats/bending/runs/estimator_v6",
+        ] if p.exists()), _ROOT / "sats/bending/runs/estimator_v6")
+        bend_dir = next((p for p in [
+            _ROOT / "learning_data/bending/v6_2_clean",
+            _ROOT / "learning_data/bending/v6_new",
+            _ROOT / "learning_data/bending/v6",
+        ] if p.exists()), _ROOT / "learning_data/bending/v6")
         print(f"[bending] estimator={est_ckpt.parent.name if est_ckpt.name=='best.pt' else est_ckpt.name}  data={bend_dir.name}")
         cfg = BendingConfig(restorer_mode="deg_cnn")   # 공간CNN 복원(억제율↑, 접촉보존)
         restorer = None
