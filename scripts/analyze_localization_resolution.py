@@ -46,6 +46,105 @@ from sats.inference.inference_engine import SATSInferenceEngine       # noqa: E4
 from sats.tools.multicontact_metrics import detect_peaks              # noqa: E402
 
 
+def _read_em_v2(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """EM_V2 bin → (t[s], xyzu[N,4]).  x,y,z,u 단위=μm."""
+    import struct
+    rows = []
+    with open(path, "rb") as f:
+        f.readline()                               # magic line "EM_V2"
+        while True:
+            d = f.read(8 + 32)
+            if len(d) < 40:
+                break
+            rows.append(struct.unpack("<Qdddd", d))
+    a = np.asarray(rows, float)
+    if len(a) == 0:
+        raise ValueError(f"EM_V2 레코드 없음: {path}")
+    return a[:, 0] / 1e9, a[:, 1:]
+
+
+def _read_due_v2(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """DUE_V2 bin → (t[s] per frame, raw[N,16]). burst=16센서×10프레임."""
+    import struct
+    rec = 8 + 16 * 10 * 4
+    ts, vals = [], []
+    with open(path, "rb") as f:
+        f.readline()                               # magic line "DUE_V2"
+        while True:
+            d = f.read(rec)
+            if len(d) < rec:
+                break
+            ns = struct.unpack("<Q", d[:8])[0]
+            v = np.frombuffer(d[8:], dtype="<u4").reshape(16, 10).T   # [frame,sensor]
+            ts.append(ns / 1e9)
+            vals.append(v)
+    if not ts:
+        raise ValueError(f"DUE_V2 레코드 없음: {path}")
+    t_burst = np.asarray(ts)
+    raw = np.concatenate(vals).astype(np.float64)
+    # burst 내 10프레임 시각을 선형 보간(200Hz, burst당 50ms)
+    t = np.repeat(t_burst, 10) + np.tile(np.arange(10) * 0.005, len(t_burst))
+    return t, raw
+
+
+def _load_v2_session(data_dir: Path, *, hold_min_s: float = 0.3,
+                     trim_frac: float = 0.25) -> list[tuple[np.ndarray, np.ndarray]]:
+    """V2 취득 세션(due+em bin) → 압입(hold)별 (sensor_pct[F,16], pos_mm[2]).
+
+    - z 정지 구간 중 z가 압입 깊이(최댓값 근처)인 세그먼트 = 압입 hold.
+    - hold 앞뒤 trim_frac 씩 잘라 과도(진입/이탈) 제거.
+    - baseline = 최초 비압입 대기 구간(z 하위) 채널 평균 → pct 변환.
+    - 같은 (x,y) 반복 압입은 프레임을 합쳐 한 위치로(반복 노이즈 포함 측정).
+    """
+    due = sorted(data_dir.glob("due_v2_*.bin"))
+    em = sorted(data_dir.glob("em_v2_*.bin"))
+    if not due or not em:
+        raise FileNotFoundError(f"due_v2/em_v2 bin 없음: {data_dir}")
+    t_s, raw = _read_due_v2(due[0])
+    t_e, xyz = _read_em_v2(em[0])
+    z = xyz[:, 2]
+    z_press = z.max() - 0.25 * (z.max() - z.min())         # 압입=최대 z 근처(상위 25%)만
+    # 정지 세그먼트(위치 반올림 불변)
+    key = np.round(xyz[:, :3], 1)
+    change = np.any(np.diff(key, axis=0) != 0, axis=1)
+    starts = np.concatenate([[0], np.where(change)[0] + 1])
+    ends = np.concatenate([np.where(change)[0], [len(xyz) - 1]])
+    # baseline: 최초 비압입 정지 구간(≥1s)
+    base = None
+    for s, e in zip(starts, ends):
+        if z[s] < z_press and t_e[e] - t_e[s] >= 1.0:
+            m = (t_s >= t_e[s] + 0.2) & (t_s <= t_e[e] - 0.2)
+            if m.sum() >= 50:
+                base = raw[m].mean(0)
+                break
+    if base is None:
+        raise ValueError("baseline(비압입 대기 ≥1s) 구간 없음")
+    # 압입 hold 수집 → (x,y)별 pct 프레임 합침
+    groups: dict[tuple[float, float], list[np.ndarray]] = {}
+    order: list[tuple[float, float]] = []
+    for s, e in zip(starts, ends):
+        dur = t_e[e] - t_e[s]
+        if z[s] < z_press or dur < hold_min_s:
+            continue
+        trim = dur * trim_frac
+        m = (t_s >= t_e[s] + trim) & (t_s <= t_e[e] - trim)
+        if m.sum() < 12:
+            continue
+        pct = ((raw[m] / base[None, :] - 1.0) * 100.0).astype(np.float32)
+        pos = (round(xyz[s, 0] / 1000.0, 4), round(xyz[s, 1] / 1000.0, 4))   # μm→mm
+        if pos not in groups:
+            groups[pos] = []
+            order.append(pos)
+        groups[pos].append(pct)
+    if not groups:
+        raise ValueError("압입 hold 구간 없음(z 왕복 확인)")
+    out = [(np.concatenate(groups[p]), np.asarray(p, np.float32)) for p in order]
+    n_press = sum(len(v) for v in groups.values())
+    print(f"[v2] {len(out)} 위치, 압입 {n_press}회, baseline {base.mean():.0f} "
+          f"(z 대기 {z.min()/1000:.1f} / 압입 {z.max()/1000:.1f} mm)")
+    return out
+
+
 def _to_pct(sensor: np.ndarray, baseline: np.ndarray | None, is_raw: bool) -> np.ndarray:
     """raw면 baseline으로 pct(상대%) 변환, 이미 pct면 그대로."""
     if not is_raw:
@@ -58,6 +157,8 @@ def _to_pct(sensor: np.ndarray, baseline: np.ndarray | None, is_raw: bool) -> np
 def _load_positions(args) -> list[tuple[np.ndarray, np.ndarray]]:
     """(sensor_pct[F,16], pos_mm[2]) 리스트로 정규화 로드."""
     out: list[tuple[np.ndarray, np.ndarray]] = []
+    if args.v2_dir:
+        return _load_v2_session(Path(args.v2_dir))
     if args.data_dir:
         files = sorted(glob.glob(str(Path(args.data_dir) / "*.npz")))
         if not files:
@@ -107,8 +208,10 @@ def analyze(positions, engine):
     원래 offset-불변(회귀 절편), rel err 는 기준점 정렬 후 상대 정확도.
     """
     gt = np.array([p for _, p in positions], float)                    # [K,2] 모터 절대
-    axis = gt[-1] - gt[0]
-    axis = axis / (np.linalg.norm(axis) + 1e-9)                        # 스윕 방향 단위벡터
+    # 스윕 방향 = GT 분산 주성분(PCA) — σ(반복 노이즈) 측정 축
+    c = gt - gt.mean(0)
+    _, _, vt = np.linalg.svd(c, full_matrices=False)
+    axis = vt[0] / (np.linalg.norm(vt[0]) + 1e-9)
     rows = []
     for sensor, pos in positions:
         pr = _predict_positions(engine, sensor, subpixel=True)
@@ -118,23 +221,34 @@ def analyze(positions, engine):
         sig_axis = float(np.std(pr @ axis))                           # 스윕축 방향 반복 노이즈
         rows.append({"gt": pos, "mu": mu, "sig": sig_axis,
                      "gt_proj": float(pos @ axis), "pred_proj": float(mu @ axis), "n": len(pr)})
-    # ★기준점 정렬: 첫 위치를 Δ=0 으로 — 원점 불일치(상수 offset) 소거
-    gt0, mu0 = rows[0]["gt"], rows[0]["mu"]
-    for r in rows:
-        r["gt_d"] = r["gt"] - gt0                                     # 모터 상대변위
-        r["mu_d"] = r["mu"] - mu0                                     # 예측 상대변위
-        r["rel"] = float(np.linalg.norm(r["mu_d"] - r["gt_d"]))       # 상대 정확도
-    gp = np.array([r["gt_proj"] for r in rows]); gp -= gp[0]          # 투영도 상대화
-    pp = np.array([r["pred_proj"] for r in rows]); pp -= pp[0]
-    slope, intercept = np.polyfit(gp, pp, 1)
-    resid = pp - (slope * gp + intercept)
-    r2 = 1.0 - np.sum(resid ** 2) / max(np.sum((pp - pp.mean()) ** 2), 1e-12)
+    # ★2D 유사변환 정합(스케일드 프로크루스테스, 반사 허용): pred ≈ s·R·gt + t
+    #   모터축↔센서축은 원점·회전·반전이 모두 다를 수 있음(마운팅). 이를 적합해
+    #   소거한 뒤의 잔차·스케일이 진짜 추종성/정확도.
+    G = np.array([r["gt"] for r in rows]); P = np.array([r["mu"] for r in rows])
+    Gc, Pc = G - G.mean(0), P - P.mean(0)
+    U, S, Vt = np.linalg.svd(Gc.T @ Pc)
+    R = (U @ Vt).T                                                    # 회전(+반사 허용)
+    denom = float((Gc ** 2).sum())
+    scale = float(S.sum() / max(denom, 1e-12))                        # 예측/모터 스케일(1=정확)
+    fit = (scale * (R @ Gc.T)).T                                      # 정합된 GT
+    resid2d = Pc - fit
+    resid_rms = float(np.sqrt((resid2d ** 2).sum(1).mean()))
+    rel_med = float(np.median(np.sqrt((resid2d ** 2).sum(1))))
+    ss_tot = float((Pc ** 2).sum())
+    r2 = 1.0 - float((resid2d ** 2).sum()) / max(ss_tot, 1e-12)
+    rot_deg = float(np.degrees(np.arctan2(R[1, 0], R[0, 0])))
+    reflected = bool(np.linalg.det(R) < 0)
     sig_med = float(np.median([r["sig"] for r in rows]))
-    rel_med = float(np.median([r["rel"] for r in rows[1:]])) if len(rows) > 1 else float("nan")
-    res_2s = 2.0 * sig_med / max(abs(slope), 1e-6)
-    return {"rows": rows, "axis": axis, "slope": float(slope), "intercept": float(intercept),
-            "r2": float(r2), "sig_med": sig_med, "rel_med": rel_med,
-            "resolution_2sigma": float(res_2s), "gp": gp, "pp": pp}
+    res_2s = 2.0 * sig_med / max(abs(scale), 1e-6)
+    # 그림용 1D 투영(정합 후)
+    gp = (scale * (R @ Gc.T)).T @ axis
+    pp = Pc @ axis
+    for r, res in zip(rows, np.sqrt((resid2d ** 2).sum(1))):
+        r["rel"] = float(res)
+    return {"rows": rows, "axis": axis, "scale": scale, "rot_deg": rot_deg,
+            "reflected": reflected, "r2": float(r2), "sig_med": sig_med,
+            "rel_med": rel_med, "resid_rms": resid_rms,
+            "resolution_2sigma": float(res_2s), "gp": np.asarray(gp), "pp": np.asarray(pp)}
 
 
 def make_figure(res, out_png, diameter):
@@ -148,12 +262,13 @@ def make_figure(res, out_png, diameter):
     a0.errorbar(gp, pp, yerr=sig, fmt="o", ms=4, capsize=2, color="#0a7", label="predicted (centroid)")
     lo, hi = gp.min(), gp.max()
     a0.plot([lo, hi], [lo, hi], "k--", lw=1, label="ideal (slope 1)")
-    a0.set_xlabel("motor displacement from ref (mm)"); a0.set_ylabel("predicted displacement (mm)")
-    a0.set_title(f"D{diameter:g}  slope={res['slope']:.3f}  R2={res['r2']:.4f}")
+    a0.set_xlabel("aligned motor displacement (mm)"); a0.set_ylabel("predicted displacement (mm)")
+    a0.set_title(f"D{diameter:g}  scale={res['scale']:.3f}  R2={res['r2']:.4f}"
+                 f"  rot={res['rot_deg']:.1f}deg" + ("  reflected" if res["reflected"] else ""))
     a0.legend(fontsize=8)
-    a1.plot(gp, (pp - (res["slope"] * gp + res["intercept"])), "o-", ms=3, color="#c33")
+    a1.plot(gp, pp - gp, "o-", ms=3, color="#c33")
     a1.axhline(0, color="k", lw=0.6)
-    a1.set_xlabel("motor displacement (mm)"); a1.set_ylabel("residual (mm)")
+    a1.set_xlabel("aligned motor displacement (mm)"); a1.set_ylabel("residual (mm)")
     a1.set_title(f"sigma_med={res['sig_med']:.3f}mm  resolution(2σ)={res['resolution_2sigma']:.3f}mm")
     fig.tight_layout(); fig.savefig(out_png, dpi=120); plt.close(fig)
 
@@ -162,6 +277,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="미세 스텝 위치 분해능 분석(D10)")
     ap.add_argument("--data-dir", default=None, help="위치당 npz 디렉토리(형식 A)")
     ap.add_argument("--data", default=None, help="전 프레임 단일 npz(형식 B)")
+    ap.add_argument("--v2-dir", default=None,
+                    help="V2 취득 세션 디렉토리(due_v2_*.bin + em_v2_*.bin) — 압입 자동 추출")
     ap.add_argument("--run-dir", default=str(_ROOT / "sats/training/runs/ecomesh_v6_deploy_all4"))
     ap.add_argument("--diameter", type=float, default=10.0)
     ap.add_argument("--input", choices=["pct", "raw"], default="pct", help="sensor가 pct인지 raw인지")
@@ -169,8 +286,8 @@ def main() -> None:
     ap.add_argument("--device", default="auto")
     ap.add_argument("--out", default=str(_ROOT / "history/fig_data/experiments_archive/reeval/loc_resolution_d10.png"))
     args = ap.parse_args()
-    if not args.data_dir and not args.data:
-        ap.error("--data-dir 또는 --data 필요")
+    if not args.data_dir and not args.data and not args.v2_dir:
+        ap.error("--data-dir / --data / --v2-dir 중 하나 필요")
 
     engine = SATSInferenceEngine(args.run_dir, device=args.device, indenter_diameter_mm=args.diameter)
     positions = _load_positions(args)
@@ -180,13 +297,15 @@ def main() -> None:
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     make_figure(res, args.out, args.diameter)
 
+    flip = "  (반사=축 반전 포함)" if res["reflected"] else ""
     print("\n" + "=" * 60)
-    print(f"  위치 분해능 — 상대변위 기준 (D{args.diameter:g}, {len(res['rows'])} 위치)")
+    print(f"  위치 분해능 — 2D 정합(회전·반전 소거) 기준 (D{args.diameter:g}, {len(res['rows'])} 위치)")
     print("=" * 60)
-    print(f"  추종성   slope = {res['slope']:.3f}   R2 = {res['r2']:.4f}")
+    print(f"  추종성   scale = {res['scale']:.3f} (1=정확)   R2 = {res['r2']:.4f}")
+    print(f"  축 정렬  rot = {res['rot_deg']:+.1f}°{flip}")
     print(f"  반복노이즈 sigma(축) median = {res['sig_med']:.3f} mm")
-    print(f"  상대정확도 |predΔ − motorΔ| median = {res['rel_med']:.3f} mm  (기준점 정렬 후)")
-    print(f"  ★분해능  2σ/slope = {res['resolution_2sigma']:.3f} mm  "
+    print(f"  상대정확도 잔차 median = {res['rel_med']:.3f} mm  (RMS {res['resid_rms']:.3f})")
+    print(f"  ★분해능  2σ/scale = {res['resolution_2sigma']:.3f} mm  "
           f"(이보다 가까운 두 위치는 노이즈에 묻힘)")
     print("=" * 60)
     print(f"  그림: {args.out}")
