@@ -36,5 +36,6 @@ class BendingConfig:
     #            접촉을 건드릴 수 없음(접촉 보존). ★기본.
     #  seq_deg  = 입력+deg MLP(표현력↑, 무접촉 학습 시 접촉 파괴 위험 — 준-합성 검증서 실증). 레거시.
     restorer_mode: str = "deg_only"
+    latent_dim: int = 2          # [latent 모드] 잠재 변형 코드 차원(정보 병목; 작을수록 접촉 보존↑)
 
     device: str = "cuda"

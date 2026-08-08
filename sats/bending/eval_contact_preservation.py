@@ -55,8 +55,16 @@ def contact_windows(trial_dir: str | Path, window: int, n: int, fz_min: float
 
 
 def train_restorer(cfg: BendingConfig, data_dir: Path, trials: list[str], device: str,
-                   epochs: int = 120, lr: float = 1e-3) -> BaselineRestorer:
-    """밴딩%(+deg) → flat(0%) restorer 학습(target=0). cfg.restorer_mode 에 따라 구조 결정."""
+                   epochs: int = 120, lr: float = 1e-3,
+                   contact_win: np.ndarray | None = None, lam: float = 1.0) -> BaselineRestorer:
+    """밴딩%(+deg) → flat(0%) restorer 학습. cfg.restorer_mode 에 따라 구조 결정.
+
+    손실:
+      L_suppress = ||restore(bend)||²                    (무접촉 변형 → 0)
+      L_contact  = ||restore(bend+contact) − contact||²  (접촉 보존; contact_win 제공 시)
+    L_contact 는 seq 의존 모드(latent/seq_deg)의 붕괴(접촉 삭제)를 직접 막는다.
+    deg 비의존 모드(deg_only/deg_cnn)는 구조적으로 이미 보존되므로 영향이 작다.
+    """
     Xs, ds = [], []
     for t in trials:
         z = np.load(data_dir / f"{t}.npz"); m = z["valid"].astype(bool)
@@ -69,11 +77,17 @@ def train_restorer(cfg: BendingConfig, data_dir: Path, trials: list[str], device
     dg = torch.from_numpy(np.concatenate(ds)).to(device)
     model = BaselineRestorer(cfg).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
+    C = (torch.from_numpy(np.asarray(contact_win, np.float32)).to(device)
+         if contact_win is not None else None)
     for _ in range(epochs):
         perm = torch.randperm(len(X), device=device)
         for i in range(0, len(X), 512):
             bi = perm[i:i + 512]
-            loss = nn.functional.mse_loss(model(X[bi], dg[bi]), torch.zeros_like(X[bi]))
+            xb, db = X[bi], dg[bi]
+            loss = nn.functional.mse_loss(model(xb, db), torch.zeros_like(xb))
+            if C is not None:                      # 준-합성 접촉 보존(가법 §5.4)
+                cb = C[torch.randint(0, len(C), (len(bi),), device=device)]
+                loss = loss + lam * nn.functional.mse_loss(model(xb + cb, db), cb)
             opt.zero_grad(); loss.backward(); opt.step()
     return model.eval()
 
@@ -88,6 +102,7 @@ def _peak_xy(m: torch.Tensor) -> np.ndarray:
 def evaluate(
     sats_run_dir: str | Path, contact_trial: str | Path, bending_dir: str | Path,
     *, bending_val: list[str], bending_train: list[str], modes: tuple[str, ...] = ("seq_deg", "deg_only"),
+    train_contact_trial: str | Path | None = None,
     device: str = "cpu", n_contact: int = 300, fz_min: float = 0.5, seed: int = 42,
 ) -> dict:
     torch.manual_seed(seed)
@@ -99,6 +114,9 @@ def evaluate(
     idx = np.linspace(0, len(bX) - 1, len(cwin)).astype(int)
     bwin, bdeg_k, bd = bX[idx], bdeg[idx], bdelta[idx]
 
+    # 학습용 접촉(붕괴 방지 손실)은 ★평가와 다른 trial★ 에서 — 누수 방지
+    train_contact = (contact_windows(train_contact_trial, W, n_contact, fz_min)[0]
+                     if train_contact_trial is not None else None)
     ct = torch.from_numpy(cwin).to(device); bt = torch.from_numpy(bwin).to(device)
     dg = torch.from_numpy(bdeg_k).to(device); synth = ct + bt
     with torch.no_grad():
@@ -123,8 +141,14 @@ def evaluate(
                               "by_delta": bin_stats(eu, loc_unc)},
               "modes": {}}
     for mode in modes:
-        cfg = replace(base_cfg, restorer_mode=mode)
-        restorer = train_restorer(cfg, Path(bending_dir), list(bending_train), device)
+        # "latent:k" 형식이면 잠재차원 k 지정(정보 병목 스윕용)
+        if mode.startswith("latent:"):
+            cfg = replace(base_cfg, restorer_mode="latent", latent_dim=int(mode.split(":")[1]))
+        else:
+            cfg = replace(base_cfg, restorer_mode=mode)
+        use_contact = train_contact is not None and cfg.restorer_mode in ("latent", "seq_deg")
+        restorer = train_restorer(cfg, Path(bending_dir), list(bending_train), device,
+                                  contact_win=train_contact if use_contact else None)
         with torch.no_grad():
             cor = _sats_map(sats, restorer(synth, dg))
         ec = (cor - ref).abs().mean(dim=(1, 2)).cpu().numpy()
@@ -167,12 +191,18 @@ def main() -> None:
     p.add_argument("--bending-dir", type=Path, default=repo / "learning_data/bending/v0")
     p.add_argument("--bending-val", nargs="+", default=["20260727_test4"])
     p.add_argument("--bending-train", nargs="+", default=["20260727_test2", "20260727_test3"])
+    p.add_argument("--train-contact-trial", type=Path, default=None,
+                   help="접촉보존 손실용 접촉 trial(★평가용과 다른 trial 지정). 미지정=손실 미사용")
+    p.add_argument("--modes", nargs="+", default=["seq_deg", "deg_only"],
+                   help="비교할 restorer 모드. latent 는 'latent:k'(k=잠재차원)로도 지정 가능")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--figure", type=Path, default=None)
     args = p.parse_args()
 
     r = evaluate(args.sats_run, args.contact_trial, args.bending_dir,
-                 bending_val=args.bending_val, bending_train=args.bending_train, device=args.device)
+                 bending_val=args.bending_val, bending_train=args.bending_train,
+                 modes=tuple(args.modes), train_contact_trial=args.train_contact_trial,
+                 device=args.device)
     print(f"[접촉보존] n={r['n']} 접촉윈도우 × v0 밴딩(δ {r['delta_range'][0]:.1f}~{r['delta_range'][1]:.1f}mm)")
     print(f"  정답(접촉만) 위치오차 상한 = {r['loc_ref_mm']:.2f}mm")
     u = r["uncorrected"]
