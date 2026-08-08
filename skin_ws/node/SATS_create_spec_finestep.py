@@ -9,7 +9,11 @@ SATS_create_stair_xy1_d5d10.py 의 검증 노하우(U 토글 dwell·prev_drive �
   - (0,0) 기준점을 시작/중간/끝 3회 방문 — 드리프트 체크
   - 시작 무접촉 대기 ≥5s — 분석 baseline
 
-z 규약(새 리그): contact_z=12.5(접촉 직전) → press 14.0(깊이 1.5). 셋업 바뀌면 조정.
+z 규약(★2026-08-08 실측 교정): v6_finestep 하강곡선에서 신호가 z≈13.25부터 상승
+(13.0 이하 0.29% → 13.5 1.07% → 14.0 3.38%) → **실제 접촉 시작 z=13.25**.
+12.5 가정 시 실제 압입은 0.75mm뿐이라 신호가 학습(1.5mm→33%)의 1/4(≤9%)에 그쳐
+예측이 고정점으로 붕괴했다. contact_z=13.25 기준으로 press 14.75(깊이 1.5).
+셋업(센서 교체·재장착)이 바뀌면 접촉 z를 다시 실측해 갱신할 것.
 """
 import os
 import random
@@ -18,7 +22,7 @@ import random
 def generate(save_dir: str, *, name: str = "SATS_d10_spec_finestep",
              axis: str = "x", span_mm: float = 1.5, step_mm: float = 0.1,
              repeats: int = 3, seed: int = 42,
-             contact_z: float = 12.5, depth_mm: float = 1.5, safe_lift: float = 1.0,
+             contact_z: float = 13.25, depth_mm: float = 1.5, safe_lift: float = 1.25,
              hold_toggles: int = 2, rest_toggles: int = 1,
              baseline_toggles: int = 6) -> str:
     """미세 스텝 랜덤 방문 node 파일 생성. 반환=파일 경로.

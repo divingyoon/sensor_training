@@ -108,12 +108,14 @@ def _load_v2_session(data_dir: Path, *, hold_min_s: float = 0.3,
     # ★절대 허용치 판정(상대 분위수는 세션에 이동 구간(z=0 등)이 섞이면 오분류):
     #   압입 = z가 최댓값 −0.3mm 이내 정지 / baseline = 접촉영역보다 1.2mm↓ 정지
     z_press_lo = z_top - 0.3
-    z_idle_hi = z_top - 1.2
     # 정지 세그먼트(위치 반올림 불변)
     key = np.round(xyz[:, :3], 1)
     change = np.any(np.diff(key, axis=0) != 0, axis=1)
     starts = np.concatenate([[0], np.where(change)[0] + 1])
     ends = np.concatenate([np.where(change)[0], [len(xyz) - 1]])
+    # baseline 판정은 '정지 세그먼트 z의 최저 클러스터'(=safe_z) 기준 — 압입 깊이와 무관하게 강건
+    seg_z = np.array([z_mm[s] for s in starts])
+    z_idle_hi = float(seg_z[seg_z > 0.1].min()) + 0.3 if (seg_z > 0.1).any() else z_top - 1.2
     # baseline: 최초 비접촉 정지 구간(≥1s)
     base = None
     for s, e in zip(starts, ends):
