@@ -99,17 +99,30 @@ def _load_v2_session(data_dir: Path, *, hold_min_s: float = 0.3,
     """
     due = sorted(data_dir.glob("due_v2_*.bin"))
     em = sorted(data_dir.glob("em_v2_*.bin"))
-    if not due or not em:
-        raise FileNotFoundError(f"due_v2/em_v2 bin 없음: {data_dir}")
-    t_s, raw = _read_due_v2(due[0])
-    t_e, xyz = _read_em_v2(em[0])
-    z_mm = xyz[:, 2] / 10000.0                             # 0.1μm → mm (EM 단위=0.1μm)
+    if due and em:                                         # V2 포맷(신규 로거)
+        t_s, raw = _read_due_v2(due[0])
+        t_e, xyz = _read_em_v2(em[0])
+        z_mm = xyz[:, 2] / 10000.0                         # 0.1μm → mm (EM 단위=0.1μm)
+        xy_scale = 10000.0
+    else:                                                  # V1 포맷(학습 취득과 동일)
+        due1 = sorted(data_dir.glob("due_raw_burst_*.bin"))
+        em1 = sorted(data_dir.glob("ethermotion_encoder_*.bin"))
+        if not due1 or not em1:
+            raise FileNotFoundError(f"due/em bin 없음(V2·V1 모두): {data_dir}")
+        from sats.preprocessing.bin_merge import load_due_bin, load_ethermotion_bin
+        d = load_due_bin(due1[0])
+        e = load_ethermotion_bin(em1[0])
+        t_s, raw = np.asarray(d.time_s, float), np.asarray(d.sensors, float)
+        t_e = np.asarray(e.time_s, float)
+        xyz = np.stack([e.x_mm, e.y_mm, e.z_mm], axis=1).astype(float)   # 이미 mm
+        z_mm = xyz[:, 2]
+        xy_scale = 1.0
     z_top = float(z_mm.max())
     # ★절대 허용치 판정(상대 분위수는 세션에 이동 구간(z=0 등)이 섞이면 오분류):
     #   압입 = z가 최댓값 −0.3mm 이내 정지 / baseline = 접촉영역보다 1.2mm↓ 정지
     z_press_lo = z_top - 0.3
     # 정지 세그먼트(위치 반올림 불변)
-    key = np.round(xyz[:, :3], 1)
+    key = np.round(np.stack([xyz[:, 0] / xy_scale, xyz[:, 1] / xy_scale, z_mm], 1), 2)
     change = np.any(np.diff(key, axis=0) != 0, axis=1)
     starts = np.concatenate([[0], np.where(change)[0] + 1])
     ends = np.concatenate([np.where(change)[0], [len(xyz) - 1]])
@@ -138,7 +151,7 @@ def _load_v2_session(data_dir: Path, *, hold_min_s: float = 0.3,
         if m.sum() < 12:
             continue
         pct = ((raw[m] / base[None, :] - 1.0) * 100.0).astype(np.float32)
-        pos = (round(xyz[s, 0] / 10000.0, 5), round(xyz[s, 1] / 10000.0, 5))  # 0.1μm→mm
+        pos = (round(xyz[s, 0] / xy_scale, 5), round(xyz[s, 1] / xy_scale, 5))  # 포맷별 단위→mm
         if pos not in groups:
             groups[pos] = []
             order.append(pos)
@@ -258,6 +271,72 @@ def analyze(positions, engine):
             "resolution_2sigma": float(res_2s), "gp": np.asarray(gp), "pp": np.asarray(pp)}
 
 
+def analyze_1d(positions, engine):
+    """1D 스윕 전용 — 2D 프로크루스테스는 1D에서 회전이 부족결정이라 gain을 왜곡한다.
+
+    모델: p(s) = p0 + s·v  (s=모터 스윕 좌표, v=예측공간 이동벡터)
+      gain      = |v|  (모터 1mm당 예측 이동, 1=정확). 축 회전은 v 방향이 흡수.
+      resid     = 직선에서의 이탈(계통 비선형)
+      ★실효 분해능 = 인접 위치가 노이즈를 넘어 구분되는지 — 플래토(구분 불가 구간) 폭.
+        두 위치 구분 기준: 예측 거리 > 2σ (σ=두 위치 반복 노이즈 평균).
+    """
+    S = np.array([float(p[0] if abs(p[0]) > abs(p[1]) else p[1]) for _, p in positions])
+    P, SD = [], []
+    for sensor, _ in positions:
+        pr = _predict_positions(engine, sensor, subpixel=True)
+        P.append(pr.mean(0))
+        SD.append(float(np.hypot(pr[:, 0].std(), pr[:, 1].std())))
+    P = np.asarray(P); SD = np.asarray(SD)
+    o = np.argsort(S); S, P, SD = S[o], P[o], SD[o]
+    ax, bx = np.polyfit(S, P[:, 0], 1)
+    ay, by = np.polyfit(S, P[:, 1], 1)
+    gain = float(np.hypot(ax, ay))
+    resid = np.hypot(P[:, 0] - (ax * S + bx), P[:, 1] - (ay * S + by))
+    # 인접 위치 구분 판정(플래토)
+    d = np.hypot(*(P[1:] - P[:-1]).T)
+    thr = (SD[1:] + SD[:-1])                       # = 2 × 평균 σ
+    resolved = d > np.maximum(thr, 1e-6)
+    widths, w = [], float(np.median(np.diff(S)))
+    step = w
+    for ok in resolved:
+        if ok:
+            widths.append(w); w = step
+        else:
+            w += step
+    widths.append(w)
+    return {"S": S, "P": P, "SD": SD, "gain": gain, "slope_xy": (float(ax), float(ay)),
+            "resid": resid, "resid_rms": float(np.sqrt((resid ** 2).mean())),
+            "sig_med": float(np.median(SD)), "step_mm": step,
+            "resolved_frac": float(resolved.mean()),
+            "plateau_med": float(np.median(widths)), "plateau_max": float(max(widths)),
+            "n_distinct": int(len(widths))}
+
+
+def make_figure_1d(r, out_png, diameter):
+    """1D: (좌) 모터 vs 예측 이동거리 + σ, (우) 인접 스텝 이동 vs 노이즈 문턱."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    S, P, SD = r["S"], r["P"], r["SD"]
+    proj = (P - P[0]) @ (np.array(r["slope_xy"]) / max(r["gain"], 1e-9))
+    fig, (a0, a1) = plt.subplots(1, 2, figsize=(11, 4.5))
+    a0.errorbar(S - S[0], proj, yerr=SD, fmt="o-", ms=4, lw=1, capsize=2, color="#0a7")
+    lo, hi = 0, float(S[-1] - S[0])
+    a0.plot([lo, hi], [lo, hi], "k--", lw=1, label="ideal gain 1")
+    a0.set_xlabel("motor sweep (mm)"); a0.set_ylabel("predicted along sweep (mm)")
+    a0.set_title(f"D{diameter:g}  gain={r['gain']:.2f}  residRMS={r['resid_rms']:.2f}mm")
+    a0.legend(fontsize=8)
+    d = np.hypot(*(P[1:] - P[:-1]).T)
+    thr = SD[1:] + SD[:-1]
+    mid = (S[1:] + S[:-1]) / 2 - S[0]
+    a1.semilogy(mid, np.maximum(d, 1e-4), "o-", ms=4, color="#0a7", label="step move")
+    a1.semilogy(mid, np.maximum(thr, 1e-4), "r--", lw=1, label="noise threshold (2 sigma)")
+    a1.set_xlabel("motor sweep (mm)"); a1.set_ylabel("distance (mm, log)")
+    a1.set_title(f"resolved {r['resolved_frac']*100:.0f}%  plateau med {r['plateau_med']:.2f}mm")
+    a1.legend(fontsize=8)
+    fig.tight_layout(); fig.savefig(out_png, dpi=120); plt.close(fig)
+
+
 def make_figure(res, out_png, diameter):
     import matplotlib
     matplotlib.use("Agg")
@@ -299,6 +378,28 @@ def main() -> None:
     engine = SATSInferenceEngine(args.run_dir, device=args.device, indenter_diameter_mm=args.diameter)
     positions = _load_positions(args)
     print(f"[분석] {len(positions)} 위치, window={engine.window_size}, D{args.diameter:g}")
+    gt = np.array([p for _, p in positions], float)
+    c = gt - gt.mean(0)
+    sv = np.linalg.svd(c, compute_uv=False)
+    is_1d = len(positions) >= 5 and sv[1] < 0.05 * sv[0]      # 2번째 주성분이 미미 = 1D 스윕
+    if is_1d:
+        r1 = analyze_1d(positions, engine)
+        print("\n" + "=" * 62)
+        print(f"  1D 스윕 위치 분해능 (D{args.diameter:g}, {len(positions)}점, "
+              f"스텝 {r1['step_mm']:.2f}mm)")
+        print("=" * 62)
+        print(f"  추종 gain = {r1['gain']:.3f} mm/mm (1=정확)  "
+              f"[dx/ds={r1['slope_xy'][0]:+.3f}, dy/ds={r1['slope_xy'][1]:+.3f}]")
+        print(f"  직선 잔차 RMS = {r1['resid_rms']:.3f} mm (계통 비선형)")
+        print(f"  반복 노이즈 sigma median = {r1['sig_med']:.4f} mm")
+        print(f"  ★인접 {r1['step_mm']:.2f}mm 스텝 구분 성공률 = {r1['resolved_frac']*100:.0f}%"
+              f"  (구분되는 위치 {r1['n_distinct']}/{len(positions)})")
+        print(f"  ★실효 분해능(플래토 폭) median = {r1['plateau_med']:.2f} mm, "
+              f"worst = {r1['plateau_max']:.2f} mm")
+        print("=" * 62)
+        make_figure_1d(r1, args.out, args.diameter)
+        print(f"  그림: {args.out}\n")
+        return
     res = analyze(positions, engine)
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
