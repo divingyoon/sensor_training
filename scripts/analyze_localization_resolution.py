@@ -3,6 +3,7 @@
 
 ★좌표 규약(중요): 모터 원점과 센서 원점은 정렬 불가 → **상대 변위**로 평가한다.
   - pos_mm = 모터 **절대 좌표**(원점 임의). 첫 압입점(모터 0,0 등)이 기준점.
+  - EM_V2 인코더 단위 = **0.1μm**(mm = 값/10000). node z14.0 → EM 140000 실측 확정.
   - 예측·GT 모두 기준점 대비 변위(Δ)로 바꿔 비교 → 원점 불일치(상수 offset)는
     소거된다. slope·R²·σ·분해능은 원래 offset-불변(회귀 절편이 흡수).
 
@@ -102,36 +103,40 @@ def _load_v2_session(data_dir: Path, *, hold_min_s: float = 0.3,
         raise FileNotFoundError(f"due_v2/em_v2 bin 없음: {data_dir}")
     t_s, raw = _read_due_v2(due[0])
     t_e, xyz = _read_em_v2(em[0])
-    z = xyz[:, 2]
-    z_press = z.max() - 0.25 * (z.max() - z.min())         # 압입=최대 z 근처(상위 25%)만
+    z_mm = xyz[:, 2] / 10000.0                             # 0.1μm → mm (EM 단위=0.1μm)
+    z_top = float(z_mm.max())
+    # ★절대 허용치 판정(상대 분위수는 세션에 이동 구간(z=0 등)이 섞이면 오분류):
+    #   압입 = z가 최댓값 −0.3mm 이내 정지 / baseline = 접촉영역보다 1.2mm↓ 정지
+    z_press_lo = z_top - 0.3
+    z_idle_hi = z_top - 1.2
     # 정지 세그먼트(위치 반올림 불변)
     key = np.round(xyz[:, :3], 1)
     change = np.any(np.diff(key, axis=0) != 0, axis=1)
     starts = np.concatenate([[0], np.where(change)[0] + 1])
     ends = np.concatenate([np.where(change)[0], [len(xyz) - 1]])
-    # baseline: 최초 비압입 정지 구간(≥1s)
+    # baseline: 최초 비접촉 정지 구간(≥1s)
     base = None
     for s, e in zip(starts, ends):
-        if z[s] < z_press and t_e[e] - t_e[s] >= 1.0:
+        if z_mm[s] < z_idle_hi and t_e[e] - t_e[s] >= 1.0:
             m = (t_s >= t_e[s] + 0.2) & (t_s <= t_e[e] - 0.2)
             if m.sum() >= 50:
                 base = raw[m].mean(0)
                 break
     if base is None:
-        raise ValueError("baseline(비압입 대기 ≥1s) 구간 없음")
+        raise ValueError("baseline(비접촉 대기 ≥1s) 구간 없음")
     # 압입 hold 수집 → (x,y)별 pct 프레임 합침
     groups: dict[tuple[float, float], list[np.ndarray]] = {}
     order: list[tuple[float, float]] = []
     for s, e in zip(starts, ends):
         dur = t_e[e] - t_e[s]
-        if z[s] < z_press or dur < hold_min_s:
+        if z_mm[s] < z_press_lo or dur < hold_min_s:
             continue
         trim = dur * trim_frac
         m = (t_s >= t_e[s] + trim) & (t_s <= t_e[e] - trim)
         if m.sum() < 12:
             continue
         pct = ((raw[m] / base[None, :] - 1.0) * 100.0).astype(np.float32)
-        pos = (round(xyz[s, 0] / 1000.0, 4), round(xyz[s, 1] / 1000.0, 4))   # μm→mm
+        pos = (round(xyz[s, 0] / 10000.0, 5), round(xyz[s, 1] / 10000.0, 5))  # 0.1μm→mm
         if pos not in groups:
             groups[pos] = []
             order.append(pos)
@@ -141,7 +146,7 @@ def _load_v2_session(data_dir: Path, *, hold_min_s: float = 0.3,
     out = [(np.concatenate(groups[p]), np.asarray(p, np.float32)) for p in order]
     n_press = sum(len(v) for v in groups.values())
     print(f"[v2] {len(out)} 위치, 압입 {n_press}회, baseline {base.mean():.0f} "
-          f"(z 대기 {z.min()/1000:.1f} / 압입 {z.max()/1000:.1f} mm)")
+          f"(z 압입 {z_top:.1f} / 압입판정 ≥{z_press_lo:.1f} / 대기판정 <{z_idle_hi:.1f} mm)")
     return out
 
 
