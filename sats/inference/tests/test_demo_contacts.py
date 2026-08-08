@@ -72,6 +72,23 @@ def test_empty_map():
     assert _extract(np.zeros((GRID, GRID)), 3) == []
 
 
+def test_position_gain_shrinks_toward_center():
+    """gain>1 보정: 중심에서 먼 접촉일수록 안쪽으로(1/gain), 중심은 불변."""
+    from sats.inference.demo_contacts import apply_position_gain
+    assert apply_position_gain(0.0, 0.0, 1.8) == (0.0, 0.0)
+    x, y = apply_position_gain(3.6, -1.8, 1.8)
+    assert abs(x - 2.0) < 1e-9 and abs(y + 1.0) < 1e-9
+    assert apply_position_gain(3.6, -1.8, 1.0) == (3.6, -1.8)   # gain 1 = off
+
+
+def test_extract_contacts_applies_position_gain():
+    c1 = _extract(_bump(4.0, 0.0), 1)
+    c2 = extract_contacts(_bump(4.0, 0.0), grid_min_mm=GMIN, grid_step_mm=STEP,
+                          taxel_area=AREA, diameter_mm=10.0, max_contacts=1,
+                          position_gain=2.0)
+    assert abs(c2[0].x_mm - c1[0].x_mm / 2.0) < 0.05          # 중심 기준 절반으로
+
+
 def test_subpixel_localization_beats_grid_snap():
     """서브픽셀 판독: 격자 사이(0.2,-0.3) 접촉을 argmax 0.5mm 스냅보다 정밀하게 회복."""
     cx, cy = 0.2, -0.3

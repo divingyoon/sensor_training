@@ -33,15 +33,29 @@
 
 ## 3. Force / position ranges & resolution (size-conditioned, D5 & D10)
 
-**★ 위치 분해능 정정**: "loc ≈ 0.5 mm"는 **argmax 격자 스냅** 아티팩트(출력 격자 0.5 mm를
-넘어설 수 없음)이지 실제 한계가 아니다. 데모는 **서브픽셀 무게중심 판독**(`detect_peaks
-subpixel=True`)을 쓰므로 격자 사이 접촉을 **< 0.5 mm**로 회복한다(합성 테스트 오차 < 0.25 mm).
-즉 super-resolution의 이득은 *taxel pitch ~6.5 mm → 서브밀리 위치*이며, 0.5 mm는 label·격자
-피치일 뿐이다. 더 미세한 출력이 필요하면 finer-grid 모델(0.25 mm=81², 0.1 mm=201²).
+**★ 위치 분해능 — 모터 실측 확정(2026-08-08)**: 0.1μm 스테이지로 0.1 mm 스텝 31점을
+랜덤 순서·3회 반복 압입(D10, 깊이 1.5 mm)해 측정(`scripts/analyze_localization_resolution.py
+--v2-dir`, 데이터 `skin_ws/raw_data/v6_finestep_2`, 모델 `ecomesh_v6_deploy_g025`).
+
+| 측정 항목 | 실측값 | 비고 |
+|---|---|---|
+| 반복 노이즈 σ | **0.028 mm** | 같은 점 반복 예측의 흔들림 |
+| 0.1 mm 스텝 구분 성공률 | **40 %** | 인접 위치가 2σ를 넘어 구분되는 비율 |
+| **실효 분해능 (플래토 폭)** | **median 0.20 mm, worst 0.50 mm** | ★ 실제로 분간 가능한 최소 간격 |
+| 추종 gain | **1.80** | 모터 1 mm 이동 → 예측 1.8 mm (과대응답, §3c 보정) |
+| 직선 잔차 RMS | 0.48 mm | 계통 비선형 |
+
+- **σ(0.028 mm)를 분해능으로 읽으면 안 된다**: 응답이 계단형이라 플래토 안에서 안정적일 뿐
+  위치를 구분하지 못한다. 정직한 스펙은 **실효 분해능 0.2 mm**.
+- 계단의 원인은 **학습 라벨 간격**(v6 = xy **1 mm** 격자)으로 추정. 출력 격자를 0.25 mm로
+  낮춰도(81²) 라벨 사이는 보간이라 계단이 남는다. warm-start(xy0.5 가중치)는 초기값일 뿐
+  fine-tuning으로 새 라벨 분포에 적응하므로 0.5 mm 해상 능력이 보존되지 않는다.
+- 그래도 **taxel pitch ~6.5 mm → 0.2 mm 분간 = 약 32× super-resolution**.
+- 측정 조건 한계: **x축 ±1.5 mm 구간·D10·깊이 1.5 mm**. 전면(±10 mm) 지도·y축은 미측정.
 
 | Quantity | Range | Resolution | Source |
 |---|---|---|---|
-| **x, y** | −10 … +10 mm | grid 0.5 mm; **서브픽셀 판독 < 0.5 mm** (argmax 스냅=0.5 mm는 하한 아님) | subpixel centroid |
+| **x, y** | −10 … +10 mm | **실효 0.20 mm** (σ 0.028 mm, grid 0.25/0.5 mm) | motor sweep measured |
 | **z (D10)** | **0.48 … 2.0 mm** | LUT (peak→z), r² = 0.59 (coarse) | z_calibration_v6.json `"10.0"` |
 | **z (D5)** | 0.72 … 2.0 mm | LUT, r² = 0.87 (더 신뢰) | z_calibration_v6.json `"5.0"` |
 | **Fz (D10)** | **0 … 3.9 N** | 무접촉 노이즈 플로어 **p99 0.003 N** (사실상 0) | measured@4090 |
@@ -51,6 +65,16 @@ subpixel=True`)을 쓰므로 격자 사이 접촉을 **< 0.5 mm**로 회복한�
   기준(가벼운 손가락 ~0.2 N)으로 잡음: 기본 `fz_on 0.20 / fz_off 0.10`.
 - **다중접촉(2·3)은 D5 권장**: D10 은 min-distance 10 mm 라 가까운 접촉이 병합됨(`[d]` 토글).
 - Fz = Σ(clip≥0 pred) × taxel_area / 100 [N] (해상도 불변 적분, `inference_engine.get_fz`).
+
+## 3c. Position gain correction (과대응답 보정)
+
+실측 gain **1.80** = 접촉이 실제보다 중심에서 멀게 추정됨. 역보정:
+`s = c + (p − c)/gain` (`demo_contacts.apply_position_gain`, 중심 c=(0,0)).
+
+- 활성화: `--position-gain 1.8` (run_demo / run_dashboard). **기본 1.0 = off.**
+- ⚠ 기본 off 인 이유: "중심에서는 정확하다"는 가정이 **x축 ±1.5 mm 한 구간에서만**
+  검증됨. 전면 2D 격자로 gain map을 측정하기 전에는 전역 적용이 오히려 왜곡을 만들 수 있다.
+- 보정해도 **분해능(0.2 mm)은 개선되지 않는다** — gain 은 계통 스케일 오차만 줄인다.
 
 ## 3b. Visualization filtering (contact_filter.py)
 

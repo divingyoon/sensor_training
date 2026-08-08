@@ -45,6 +45,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         "같은 지름 두 접촉은 중심간 지름보다 가까울 수 없으므로 단일접촉 peak-split 방지")
     p.add_argument("--rel-threshold", type=float, default=0.3)
     p.add_argument("--min-fz", type=float, default=0.2, help="무접촉 게이트: 접촉별 fz(N) 하한(약한 스퓨리어스 제거)")
+    p.add_argument("--position-gain", type=float, default=1.0,
+                   help="과대응답 보정(중심 기준 1/gain). 실측 D10 gain=1.80, 기본 1.0=off")
     p.add_argument("--report-interval", type=float, default=2.0, help="최적 프레임 요약 주기(초)")
     p.add_argument("--viz", choices=["none", "2d", "3d", "both"], default="none", help="[산출물2] heatmap 시각화")
     p.add_argument("--show-units", action="store_true", help="실시간 16-taxel 센싱유닛 heatmap(SATS 입력 원본) 창 추가")
@@ -212,7 +214,8 @@ def run_contacts(args, engine, z_calib, reader) -> None:
             contacts = extract_contacts(pmap, grid_min_mm=engine.grid_min_mm, grid_step_mm=engine.grid_step_mm,
                                         taxel_area=engine.taxel_area, diameter_mm=args.diameter,
                                         max_contacts=args.contacts, min_distance_mm=args.min_distance_mm,
-                                        rel_threshold=args.rel_threshold, min_fz=args.min_fz, z_calib=z_calib)
+                                        rel_threshold=args.rel_threshold, min_fz=args.min_fz,
+                                        position_gain=args.position_gain, z_calib=z_calib)
             if contacts:
                 latch.update(frame, pmap, contacts)
             disp.render(format_contacts_block(contacts, frame=frame, fps=fps, mode="contacts"))
@@ -379,7 +382,8 @@ def run_bending(args, engine, z_calib, bi, reader) -> None:
             contacts = extract_contacts(pmap, grid_min_mm=engine.grid_min_mm, grid_step_mm=engine.grid_step_mm,
                                         taxel_area=engine.taxel_area, diameter_mm=args.diameter,
                                         max_contacts=args.contacts, min_distance_mm=args.min_distance_mm,
-                                        rel_threshold=args.rel_threshold, min_fz=args.min_fz, z_calib=z_calib)
+                                        rel_threshold=args.rel_threshold, min_fz=args.min_fz,
+                                        position_gain=args.position_gain, z_calib=z_calib)
             if contacts:
                 latch.update(frame, pmap, contacts)
             disp.render(format_contacts_block(contacts, theta_deg=theta, frame=frame, fps=fps, mode="bending"))

@@ -215,7 +215,8 @@ class SensorChannel:
             pmap, grid_min_mm=self.engine.grid_min_mm, grid_step_mm=self.engine.grid_step_mm,
             taxel_area=self.engine.taxel_area, diameter_mm=a.diameter,
             max_contacts=a.contacts, min_distance_mm=a.min_distance_mm,
-            rel_threshold=a.rel_threshold, min_fz=a.min_fz, z_calib=self.z_calib)
+            rel_threshold=a.rel_threshold, min_fz=a.min_fz,
+            position_gain=getattr(a, "position_gain", 1.0), z_calib=self.z_calib)
         # 히스테리시스·디바운스·무접촉 리셋·스무딩(released 시 빈 리스트 → blank)
         contacts = self.cfilter.update(raw)[0] if self.cfilter is not None else raw
         banner = state_banner(contacts, theta_deg=theta_deg, theta_band_deg=a.theta_deadband)
@@ -298,6 +299,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-distance-mm", type=float, default=None)
     p.add_argument("--rel-threshold", type=float, default=0.3)
     p.add_argument("--min-fz", type=float, default=0.1)
+    p.add_argument("--position-gain", type=float, default=1.0,
+                   help="과대응답 보정(중심 기준 1/gain 축소). 실측 D10 gain=1.80, "
+                        "기본 1.0=off(전면 검증 전)")
     # 접촉 필터 — 무접촉 노이즈 플로어(D10 fz p99≈0.003N=사실상 0)에 맞춘 기본값
     p.add_argument("--fz-on", type=float, default=0.20, help="접촉 ON 총 fz 임계(N)")
     p.add_argument("--fz-off", type=float, default=0.10, help="접촉 OFF 임계(N, 히스테리시스)")

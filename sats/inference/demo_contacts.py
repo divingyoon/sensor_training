@@ -83,10 +83,26 @@ def state_banner(contacts: list[Contact] | None, *, theta_deg: float | None = No
                        STATE_COLORS[ContactState.NO_CONTACT])
 
 
+def apply_position_gain(x_mm: float, y_mm: float, gain: float,
+                        center_mm: tuple[float, float] = (0.0, 0.0)) -> tuple[float, float]:
+    """과대응답(gain>1) 보정 — 중심 기준 반경을 1/gain 로 축소.
+
+    실측(D10, v6): 모터 1mm 이동에 예측이 1.8mm 이동(gain 1.80) = 위치 과장.
+    p = c + g·(s − c) 모델이므로 역보정은 s = c + (p − c)/g.
+    ⚠ 'center 에서는 정확하다'는 가정 — 1D 3mm 구간에서만 측정했으므로 전면(±10mm)
+    검증 안 됨. 기본 gain=1.0(off), 필요 시 --position-gain 으로 활성화.
+    """
+    if gain == 1.0 or gain <= 0:
+        return x_mm, y_mm
+    cx, cy = center_mm
+    return cx + (x_mm - cx) / gain, cy + (y_mm - cy) / gain
+
+
 def extract_contacts(pred_map: np.ndarray, *, grid_min_mm: float, grid_step_mm: float,
                      taxel_area: float, diameter_mm: float, max_contacts: int = 3,
                      min_distance_mm: float = 3.0, rel_threshold: float = 0.3,
                      min_fz: float = 0.0, min_peak_val: float = 0.0,
+                     position_gain: float = 1.0,
                      z_calib=None) -> list[Contact]:
     """압력맵 → 접촉 리스트(총 fz 내림차순). z_calib 없으면 z=nan.
 
@@ -114,7 +130,8 @@ def extract_contacts(pred_map: np.ndarray, *, grid_min_mm: float, grid_step_mm: 
         if fz < min_fz:                                  # 약한 스퓨리어스(무접촉) 제거
             continue
         z = float(z_calib.z_from_peak(pv, diameter_mm)) if z_calib is not None else float("nan")
-        contacts.append(Contact(x_mm=float(px), y_mm=float(py), z_mm=z, fz_n=fz, peak_val=float(pv)))
+        gx, gy = apply_position_gain(float(px), float(py), position_gain)   # 과대응답 보정
+        contacts.append(Contact(x_mm=gx, y_mm=gy, z_mm=z, fz_n=fz, peak_val=float(pv)))
     return sorted(contacts, key=lambda c: -c.fz_n)
 
 
