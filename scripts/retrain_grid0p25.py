@@ -92,7 +92,8 @@ def _grid_params(step: float) -> tuple[int, int, str]:
     return grid_size, local_map, tag
 
 
-def train_version(ver: str, idx_dir: Path, epochs: int, step: float) -> None:
+def train_version(ver: str, idx_dir: Path, epochs: int, step: float,
+                  batch_size: int | None = None) -> None:
     from sats.training.config import SATSConfig
     from sats.training.train_e2e import train
 
@@ -108,10 +109,13 @@ def train_version(ver: str, idx_dir: Path, epochs: int, step: float) -> None:
         run_name=run_name, out_dir=str(_ROOT / "sats/training/runs"),
         epochs=epochs,
     )
+    if batch_size:                       # 0.1mm(201²)는 VRAM 24GB서 2048 OOM → 축소 필요
+        cfg_d["batch_size"] = batch_size
     ckpt = warm_ckpt(ver)
     print(f"\n===== [{ver}] {step}mm 재학습 시작 → runs/{run_name} =====")
     print(f"  warm-start: {ckpt.parent.name} (해상도 이식 자동)")
-    print(f"  epochs={epochs}  grid={grid_size}²@{step}mm  local_map={local_map}")
+    print(f"  epochs={epochs}  grid={grid_size}²@{step}mm  local_map={local_map}"
+          f"  batch={cfg_d.get('batch_size')}")
     train(SATSConfig(**cfg_d), init_ckpt=str(ckpt))
     print(f"===== [{ver}] 완료 =====\n")
 
@@ -122,13 +126,15 @@ def main() -> None:
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--grid-step", type=float, default=0.25,
                     help="출력 격자 간격 mm (0.25=81² / 0.1=201²)")
+    ap.add_argument("--batch-size", type=int, default=None,
+                    help="미지정=템플릿(2048). 0.1mm는 VRAM 24GB서 OOM → 1024 권장")
     ap.add_argument("--skip-train", action="store_true", help="전처리·인덱스만")
     args = ap.parse_args()
     for ver in args.versions:
         raw_bin = preprocess_if_needed(ver)
         idx_dir = build_index_if_needed(ver, raw_bin)
         if not args.skip_train:
-            train_version(ver, idx_dir, args.epochs, args.grid_step)
+            train_version(ver, idx_dir, args.epochs, args.grid_step, args.batch_size)
     print("전체 완료:", ", ".join(args.versions))
 
 
