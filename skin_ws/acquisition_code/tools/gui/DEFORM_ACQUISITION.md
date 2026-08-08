@@ -6,13 +6,19 @@
 
 ```bash
 # 취득 PC(Windows). 경로는 이 파일 위치 기준 상대해석 → 어느 폴더에서 실행해도 동일.
-python deform_logger_gui.py --version v1                      # 기본: baseline 10s / 변형 240s
-python deform_logger_gui.py --version v1 --deform-sec 300     # 변형 5분
-python deform_logger_gui.py --version v1 --port COM11
-python deform_logger_gui.py --version v1 --mock               # 하드웨어 없이 UI·경로 점검
+python deform_logger_gui.py                        # ★시작 시 터미널에서 버전 입력(예: v7)
+python deform_logger_gui.py --version v7           # 버전을 인자로 바로 지정
+python deform_logger_gui.py --version v7 --deform-sec 300 --port COM11
+python deform_logger_gui.py --mock                 # 하드웨어 없이 UI·경로 점검
 ```
 
 `Space` 또는 **시작** 버튼 → 이후 **자동 진행**(단계 전환·카운트다운·저장 모두 자동).
+
+### ★ 터미널 Enter = 구간 flag
+취득 중 **로거를 띄운 터미널에서 Enter** 를 치면 그 시각이 flag 로 기록된다
+(`session_meta.json` 의 `flags_s`, GUI 하단에 flags 카운트 표시).
+**변형 종류를 바꿀 때마다** 치는 것을 권장 — 나중에 "이 구간=비틀림, 저 구간=상하 휨"
+식으로 데이터를 분리·분석할 수 있다. 분석 로더(`DeformSession.flags_s`)가 자동으로 읽는다.
 
 ## 2. 프로토콜 (GUI가 안내)
 
@@ -41,16 +47,16 @@ python deform_logger_gui.py --version v1 --mock               # 하드웨어 없
 ## 3. 저장 경로 (분석과 직결)
 
 ```
-skin_ws/raw_data/deform/<version>/
-  s01_20260808_143022/
-    due_v2_20260808_143022.bin      ← DUE_V2 포맷(final_logger_gui 와 동일)
-    session_meta.json               ← 프레임 수·deform peak·프로토콜 파라미터
-  s02_.../
+skin_ws/raw_data/deform/<version>/        ← 예: v7 입력 시 deform/v7/
+  test1/
+    due_v2_20260809_143022.bin      ← DUE_V2 포맷(final_logger_gui 와 동일)
+    session_meta.json               ← 프레임 수·deform peak·프로토콜·flags_s
+  test2/
   ...
 ```
 
-- **버전별 분리**: `--version v1` / `v2` … 센서나 취득 조건이 바뀌면 버전을 올린다.
-- **세션 번호 자동 증가**: 같은 버전 폴더에 계속 쌓기만 하면 된다.
+- **버전별 분리**: 시작 시 입력(또는 `--version v7`). 센서·취득 조건이 바뀌면 버전을 올린다.
+- **test 순번 자동 증가**: 기존 취득 폴더 규약(test*)과 동일 — 같은 버전에 계속 쌓기만 하면 된다.
 - 학습 스크립트가 하위 폴더를 **재귀 탐색**하므로 별도 정리·변환이 필요 없다.
 
 ## 4. 바로 분석
@@ -58,7 +64,7 @@ skin_ws/raw_data/deform/<version>/
 ```bash
 # 학습 PC(Linux). 취득 폴더를 그대로 가리키면 끝.
 .venv/bin/python -m sats.bending.train_deform_restorer \
-  --deform-root skin_ws/raw_data/deform/v1 \
+  --deform-root skin_ws/raw_data/deform/v7 \
   --contact-trial learning_data/sensor_raw_bin/ecomesh_v6_xy1/d5/z_2.5mm/test1 \
   --sats-run sats/training/runs/ecomesh_v6_deploy_g025 \
   --latent-dims 2 4 8
@@ -67,7 +73,7 @@ skin_ws/raw_data/deform/<version>/
 로드 즉시 세션별 품질 요약(프레임 수·드리프트·|pct|max)이 출력되므로 **취득 직후 점검**에도 쓴다:
 
 ```bash
-.venv/bin/python -c "from sats.bending.deform_data import load_all; load_all('skin_ws/raw_data/deform/v1')"
+.venv/bin/python -c "from sats.bending.deform_data import load_all; load_all('skin_ws/raw_data/deform/v7')"
 ```
 
 ## 5. 수량 · 검증 세션

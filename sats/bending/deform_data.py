@@ -35,6 +35,7 @@ class DeformSession:
     t: np.ndarray                 # [N] 초
     baseline_head: np.ndarray     # [16] 앞 baseline 채널 평균(raw)
     baseline_tail: np.ndarray     # [16] 뒤 baseline 채널 평균(raw)
+    flags_s: tuple = ()           # 취득 중 터미널 Enter 로 찍은 구간 flag(초) — 분석 보조
 
     @property
     def drift_pct(self) -> float:
@@ -87,13 +88,22 @@ def load_deform_session(session_dir: str | Path, *, baseline_sec: float = _BASEL
     if head_m.sum() < 50 or tail_m.sum() < 50:
         raise ValueError(f"baseline 구간 프레임 부족(head {head_m.sum()}, tail {tail_m.sum()})")
     b_head, b_tail = raw[head_m].mean(0), raw[tail_m].mean(0)
+    # 세션 메타(로거 저장)에서 Enter flag 로드 — 없으면 빈 튜플
+    meta_p = session_dir / "session_meta.json"
+    flags: tuple = ()
+    if meta_p.exists():
+        try:
+            import json
+            flags = tuple(json.loads(meta_p.read_text(encoding="utf-8")).get("flags_s", []))
+        except Exception:
+            pass
     # ★선형 드리프트 baseline: 앞 baseline 중앙 시각 → 뒤 baseline 중앙 시각 사이를 보간
     t0, t1 = float(t[head_m].mean()), float(t[tail_m].mean())
     w = np.clip((t - t0) / max(t1 - t0, 1e-9), 0.0, 1.0)[:, None]
     base_t = b_head[None, :] * (1 - w) + b_tail[None, :] * w        # [N,16]
     pct = ((raw / np.where(np.abs(base_t) < 1e-9, 1e-9, base_t) - 1.0) * 100.0).astype(np.float32)
     return DeformSession(name=session_dir.name, sensor_pct=pct, t=t,
-                         baseline_head=b_head, baseline_tail=b_tail)
+                         baseline_head=b_head, baseline_tail=b_tail, flags_s=flags)
 
 
 def deform_windows(session: DeformSession, window_size: int, *,
@@ -149,7 +159,7 @@ def load_all(root: str | Path, **kw) -> list[DeformSession]:
         sessions.append(s)
         span = float(np.abs(s.sensor_pct).max())
         print(f"  [{s.name}] {len(s.sensor_pct):6d} frames  {s.t[-1]:5.0f}s  "
-              f"drift {s.drift_pct:5.2f}%  |pct|max {span:5.1f}%")
+              f"drift {s.drift_pct:5.2f}%  |pct|max {span:5.1f}%  flags {len(s.flags_s)}")
     if not sessions:
         raise FileNotFoundError(f"유효한 변형 세션 없음: {root}")
     return sessions

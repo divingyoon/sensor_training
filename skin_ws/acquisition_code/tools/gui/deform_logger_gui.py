@@ -77,6 +77,7 @@ _TIPS = [
 
 is_running = True
 due_queue: Queue = Queue()
+flag_queue: Queue = Queue()          # 터미널 Enter → 구간 flag(ns)
 reader_errors: Queue = Queue()
 log_start_ns = 0
 
@@ -107,6 +108,19 @@ def due_reader(port: str, baud: int) -> None:
         ser.close()
     except Exception as e:
         reader_errors.put(("DUE", str(e)))
+
+
+def stdin_flag_listener() -> None:
+    """터미널에서 Enter 칠 때마다 flag 시각(ns) 기록 — 변형 종류 전환 등 구간 분리용."""
+    while is_running:
+        try:
+            line = sys.stdin.readline()
+        except Exception:
+            return
+        if not line:                     # EOF(파이프 등)
+            return
+        flag_queue.put(elapsed_ns())
+        print(f"[flag] #{flag_queue.qsize()} 기록 ({elapsed_ns()/1e9:.1f}s)")
 
 
 def mock_reader() -> None:
@@ -158,13 +172,13 @@ def repo_paths() -> tuple[Path, Path]:
 
 
 def next_session_dir(raw_data: Path, version: str) -> Path:
-    """raw_data/deform/<version>/sNN_YYYYmmdd_HHMMSS/ 생성(번호 자동 증가)."""
+    """raw_data/deform/<version>/testN/ 생성 — 기존 취득 폴더 규약(test*)과 동일, 순번 자동."""
     root = raw_data / "deform" / version
     root.mkdir(parents=True, exist_ok=True)
-    used = [int(p.name[1:3]) for p in root.iterdir()
-            if p.is_dir() and len(p.name) > 3 and p.name[0] == "s" and p.name[1:3].isdigit()]
+    used = [int(p.name[4:]) for p in root.iterdir()
+            if p.is_dir() and p.name.startswith("test") and p.name[4:].isdigit()]
     n = max(used, default=0) + 1
-    d = root / f"s{n:02d}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    d = root / f"test{n}"
     d.mkdir()
     return d
 
@@ -181,6 +195,7 @@ if HAS_GUI:
             self.stage_t0 = 0.0
             self.baseline: list[float] | None = None
             self.count = 0
+            self.flags: list[float] = []             # Enter flag 시각(초, 로깅 기준)
             self.deform_max = 0.0                    # 변형 중 도달한 |pct| 최대(다양성 지표)
             self.deform_hist: list[float] = []
             self.last_flush = time.perf_counter()
@@ -273,6 +288,10 @@ if HAS_GUI:
                 self.stage_lbl.setText(f"{who} 오류: {msg}")
                 self.stage_lbl.setStyleSheet("color:#c22; font-weight:bold; font-size:18px;")
                 return
+            while not flag_queue.empty():            # 터미널 Enter flag 수집
+                ns = flag_queue.get()
+                if self.stage in ("BASE_HEAD", "DEFORM", "BASE_TAIL"):
+                    self.flags.append(round(ns / 1e9, 3))
             latest = None
             while True:                              # 큐 비우며 기록
                 try:
@@ -297,7 +316,7 @@ if HAS_GUI:
                     self.deform_hist.append(mx)
                 self.stat_lbl.setText(
                     f"frames {self.count:7d} | |pct|max {mx:5.1f}% | "
-                    f"deform peak {self.deform_max:5.1f}%")
+                    f"deform peak {self.deform_max:5.1f}% | flags {len(self.flags)}")
 
             if self.stage in ("BASE_HEAD", "DEFORM", "BASE_TAIL"):
                 el = time.perf_counter() - self.stage_t0
@@ -340,6 +359,7 @@ if HAS_GUI:
                 "frames": self.count,
                 "deform_peak_pct": round(self.deform_max, 2),
                 "deform_median_pct": round(float(sorted(hist)[len(hist) // 2]), 2) if hist else 0.0,
+                "flags_s": self.flags,               # 터미널 Enter 로 찍은 구간 flag(초)
                 "stage_reached": self.stage,
                 "due_file": self.due_path.name,
                 "mock": bool(self.args.mock),
@@ -366,7 +386,8 @@ def main() -> None:
     if not HAS_GUI:
         return
     p = argparse.ArgumentParser(description="변형 취득 전용 로거(DUE only)")
-    p.add_argument("--version", default="v1", help="센서/취득 버전 폴더명 (raw_data/deform/<version>)")
+    p.add_argument("--version", default=None,
+                   help="버전 폴더명(예: v7). 미지정 시 시작할 때 터미널에서 입력받음")
     p.add_argument("--port", default=DEFAULT_PORT)
     p.add_argument("--baud", type=int, default=DUE_BAUD_RATE)
     p.add_argument("--base-sec", type=float, default=BASE_SEC, help="앞뒤 baseline 길이(초)")
@@ -374,14 +395,21 @@ def main() -> None:
     p.add_argument("--mock", action="store_true", help="하드웨어 없이 UI·경로 점검")
     args = p.parse_args()
 
+    if not args.version:                             # 시작 시 버전 입력(v* 분리)
+        v = input("버전 입력 (예: v7): ").strip()
+        args.version = v if v else "v1"
+
     _, raw_data = repo_paths()
     session_dir = next_session_dir(raw_data, args.version)
     print(f"[deform] 세션 폴더: {session_dir}")
     print(f"[deform] 프로토콜: baseline {args.base_sec:.0f}s → 변형 {args.deform_sec:.0f}s "
           f"→ baseline {args.base_sec:.0f}s")
+    print("[deform] ★ 이 터미널에서 Enter 를 치면 구간 flag 가 기록됩니다"
+          " (변형 종류 바꿀 때마다 권장)")
 
     target = mock_reader if args.mock else (lambda: due_reader(args.port, args.baud))
     threading.Thread(target=target, daemon=True).start()
+    threading.Thread(target=stdin_flag_listener, daemon=True).start()
 
     app = QtWidgets.QApplication(sys.argv)
     gui = DeformLoggerGUI(session_dir, args)
