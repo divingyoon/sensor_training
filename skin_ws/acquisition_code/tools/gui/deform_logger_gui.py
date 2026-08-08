@@ -74,6 +74,11 @@ _TIPS = [
     "빠르게 변형",
     "★극단 변형 — 데모에서 쓸 최대보다 조금 더 강하게",
 ]
+# 터미널 숫자 입력 → 구간 라벨 프리셋(위 가이드와 1:1)
+_SEGMENT_PRESETS = {
+    "1": "bend_up_down", "2": "bend_left_right", "3": "twist", "4": "bend_one_end",
+    "5": "hold_static", "6": "slow_continuous", "7": "fast", "8": "extreme",
+}
 
 is_running = True
 due_queue: Queue = Queue()
@@ -111,7 +116,15 @@ def due_reader(port: str, baud: int) -> None:
 
 
 def stdin_flag_listener() -> None:
-    """터미널에서 Enter 칠 때마다 flag 시각(ns) 기록 — 변형 종류 전환 등 구간 분리용."""
+    """터미널 입력 → 구간(segment) 시작 마커.
+
+    입력 규약(입력 시각부터 그 라벨의 구간이 시작):
+      1~8 + Enter : 프리셋 라벨(_SEGMENT_PRESETS, 화면 가이드와 동일 번호)
+      텍스트 + Enter : 자유 라벨(예: twist_hold)
+      빈 Enter    : 라벨 없는 경계(구간만 나눔)
+    """
+    print("[segment] 입력 규약: 1=상하휨 2=좌우휨 3=비틀림 4=한쪽끝 5=정지유지 "
+          "6=느린연속 7=빠름 8=극단 · 텍스트=자유라벨 · 빈 Enter=경계만")
     while is_running:
         try:
             line = sys.stdin.readline()
@@ -119,8 +132,11 @@ def stdin_flag_listener() -> None:
             return
         if not line:                     # EOF(파이프 등)
             return
-        flag_queue.put(elapsed_ns())
-        print(f"[flag] #{flag_queue.qsize()} 기록 ({elapsed_ns()/1e9:.1f}s)")
+        key = line.strip()
+        label = _SEGMENT_PRESETS.get(key, key)      # 숫자→프리셋, 그 외=입력 그대로(빈 문자열 허용)
+        t_s = elapsed_ns() / 1e9
+        flag_queue.put((t_s, label))
+        print(f"[segment] {t_s:7.1f}s → '{label or '(무라벨)'}' 구간 시작")
 
 
 def mock_reader() -> None:
@@ -195,7 +211,8 @@ if HAS_GUI:
             self.stage_t0 = 0.0
             self.baseline: list[float] | None = None
             self.count = 0
-            self.flags: list[float] = []             # Enter flag 시각(초, 로깅 기준)
+            self.segments: list[dict] = []           # [{t_s, label}] 터미널 입력 구간 마커
+            self.stage_times: dict[str, float] = {}  # 단계 전환 시각(초) — 프로토콜 경계 명시
             self.deform_max = 0.0                    # 변형 중 도달한 |pct| 최대(다양성 지표)
             self.deform_hist: list[float] = []
             self.last_flush = time.perf_counter()
@@ -241,6 +258,10 @@ if HAS_GUI:
                     self.boxes.append(b)
             v.addLayout(grid)
 
+            self.seg_lbl = QtWidgets.QLabel("현재 구간: (미지정 — 터미널에서 1~8/텍스트 입력)")
+            self.seg_lbl.setStyleSheet("font-size: 14px; color: #7a3ca3; font-weight: bold;")
+            v.addWidget(self.seg_lbl)
+
             self.stat_lbl = QtWidgets.QLabel("frames 0 | |pct|max 0.0%")
             self.stat_lbl.setStyleSheet("font-family: monospace; font-size: 13px;")
             v.addWidget(self.stat_lbl)
@@ -269,6 +290,7 @@ if HAS_GUI:
         def _enter(self, stage: str) -> None:
             self.stage = stage
             self.stage_t0 = time.perf_counter()
+            self.stage_times[stage] = round(elapsed_ns() / 1e9, 3)   # 프로토콜 경계 기록
             self.stage_lbl.setText(_STAGE_MSG[stage])
             self.stage_lbl.setStyleSheet(
                 f"font-weight:bold; font-size:21px; color:{_STAGE_COLOR[stage]};")
@@ -288,10 +310,12 @@ if HAS_GUI:
                 self.stage_lbl.setText(f"{who} 오류: {msg}")
                 self.stage_lbl.setStyleSheet("color:#c22; font-weight:bold; font-size:18px;")
                 return
-            while not flag_queue.empty():            # 터미널 Enter flag 수집
-                ns = flag_queue.get()
+            while not flag_queue.empty():            # 터미널 구간 마커 수집
+                t_s, label = flag_queue.get()
                 if self.stage in ("BASE_HEAD", "DEFORM", "BASE_TAIL"):
-                    self.flags.append(round(ns / 1e9, 3))
+                    self.segments.append({"t_s": round(t_s, 3), "label": label})
+                    self.seg_lbl.setText(f"현재 구간: {label or '(무라벨)'}  "
+                                         f"(총 {len(self.segments)}개)")
             latest = None
             while True:                              # 큐 비우며 기록
                 try:
@@ -316,7 +340,7 @@ if HAS_GUI:
                     self.deform_hist.append(mx)
                 self.stat_lbl.setText(
                     f"frames {self.count:7d} | |pct|max {mx:5.1f}% | "
-                    f"deform peak {self.deform_max:5.1f}% | flags {len(self.flags)}")
+                    f"deform peak {self.deform_max:5.1f}% | segments {len(self.segments)}")
 
             if self.stage in ("BASE_HEAD", "DEFORM", "BASE_TAIL"):
                 el = time.perf_counter() - self.stage_t0
@@ -359,7 +383,9 @@ if HAS_GUI:
                 "frames": self.count,
                 "deform_peak_pct": round(self.deform_max, 2),
                 "deform_median_pct": round(float(sorted(hist)[len(hist) // 2]), 2) if hist else 0.0,
-                "flags_s": self.flags,               # 터미널 Enter 로 찍은 구간 flag(초)
+                "stage_times_s": self.stage_times,   # 프로토콜 단계 전환 시각(초)
+                "segments": self.segments,           # [{t_s,label}] 변형 구간 마커(터미널 입력)
+                "flags_s": [g["t_s"] for g in self.segments],   # 하위호환(시각만)
                 "stage_reached": self.stage,
                 "due_file": self.due_path.name,
                 "mock": bool(self.args.mock),

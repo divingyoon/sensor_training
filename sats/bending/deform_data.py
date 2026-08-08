@@ -35,7 +35,9 @@ class DeformSession:
     t: np.ndarray                 # [N] 초
     baseline_head: np.ndarray     # [16] 앞 baseline 채널 평균(raw)
     baseline_tail: np.ndarray     # [16] 뒤 baseline 채널 평균(raw)
-    flags_s: tuple = ()           # 취득 중 터미널 Enter 로 찍은 구간 flag(초) — 분석 보조
+    flags_s: tuple = ()           # (하위호환) 구간 마커 시각(초)
+    segments: tuple = ()          # ({"t_s","label"}, ...) 라벨 있는 변형 구간 마커
+    stage_times: dict | None = None   # 프로토콜 단계 전환 시각 {"BASE_HEAD":0.0, "DEFORM":10.0, ...}
 
     @property
     def drift_pct(self) -> float:
@@ -90,11 +92,14 @@ def load_deform_session(session_dir: str | Path, *, baseline_sec: float = _BASEL
     b_head, b_tail = raw[head_m].mean(0), raw[tail_m].mean(0)
     # 세션 메타(로거 저장)에서 Enter flag 로드 — 없으면 빈 튜플
     meta_p = session_dir / "session_meta.json"
-    flags: tuple = ()
+    flags: tuple = (); segments: tuple = (); stage_times = None
     if meta_p.exists():
         try:
             import json
-            flags = tuple(json.loads(meta_p.read_text(encoding="utf-8")).get("flags_s", []))
+            meta = json.loads(meta_p.read_text(encoding="utf-8"))
+            flags = tuple(meta.get("flags_s", []))
+            segments = tuple(meta.get("segments", []))
+            stage_times = meta.get("stage_times_s")
         except Exception:
             pass
     # ★선형 드리프트 baseline: 앞 baseline 중앙 시각 → 뒤 baseline 중앙 시각 사이를 보간
@@ -103,7 +108,8 @@ def load_deform_session(session_dir: str | Path, *, baseline_sec: float = _BASEL
     base_t = b_head[None, :] * (1 - w) + b_tail[None, :] * w        # [N,16]
     pct = ((raw / np.where(np.abs(base_t) < 1e-9, 1e-9, base_t) - 1.0) * 100.0).astype(np.float32)
     return DeformSession(name=session_dir.name, sensor_pct=pct, t=t,
-                         baseline_head=b_head, baseline_tail=b_tail, flags_s=flags)
+                         baseline_head=b_head, baseline_tail=b_tail, flags_s=flags,
+                         segments=segments, stage_times=stage_times)
 
 
 def deform_windows(session: DeformSession, window_size: int, *,
@@ -135,6 +141,35 @@ def deform_windows(session: DeformSession, window_size: int, *,
         np.zeros((0, window_size, pct.shape[1]), np.float32)
 
 
+def segment_windows(session: DeformSession, window_size: int, *,
+                    baseline_sec: float = _BASELINE_SEC, stride: int = 1
+                    ) -> dict[str, np.ndarray]:
+    """라벨별 윈도우 {label: [K,W,16]} — "비틀림 구간만 억제율" 식 구간별 분석용.
+
+    segments 의 각 마커 시각부터 다음 마커(또는 변형 구간 끝)까지를 그 라벨의 구간으로 본다.
+    마커 이전(변형 시작~첫 마커)은 "(unlabeled)" 로 묶는다.
+    """
+    t = session.t
+    dur = float(t[-1])
+    lo, hi = baseline_sec, dur - baseline_sec
+    marks = [(float(g["t_s"]), str(g.get("label") or "(unlabeled)"))
+             for g in session.segments if lo <= float(g["t_s"]) <= hi]
+    marks.sort()
+    bounds = [(lo, "(unlabeled)")] + marks + [(hi, None)]
+    out: dict[str, list] = {}
+    for (t0, label), (t1, _) in zip(bounds[:-1], bounds[1:]):
+        if label is None or t1 - t0 <= 0:
+            continue
+        m = (t > t0) & (t < t1)
+        idx = np.where(m)[0]
+        if len(idx) < window_size:
+            continue
+        seg = np.stack([session.sensor_pct[idx[s:s + window_size]]
+                        for s in range(0, len(idx) - window_size + 1, max(1, stride))])
+        out.setdefault(label, []).append(seg.astype(np.float32))
+    return {k: np.concatenate(v) for k, v in out.items()}
+
+
 def discover_sessions(root: str | Path) -> list[Path]:
     """root 아래에서 due bin 을 가진 세션 폴더를 찾는다(root 자신도 후보)."""
     root = Path(root)
@@ -159,7 +194,7 @@ def load_all(root: str | Path, **kw) -> list[DeformSession]:
         sessions.append(s)
         span = float(np.abs(s.sensor_pct).max())
         print(f"  [{s.name}] {len(s.sensor_pct):6d} frames  {s.t[-1]:5.0f}s  "
-              f"drift {s.drift_pct:5.2f}%  |pct|max {span:5.1f}%  flags {len(s.flags_s)}")
+              f"drift {s.drift_pct:5.2f}%  |pct|max {span:5.1f}%  segments {len(s.segments)}")
     if not sessions:
         raise FileNotFoundError(f"유효한 변형 세션 없음: {root}")
     return sessions
