@@ -76,6 +76,23 @@ def available_runs(sensor: str) -> list[str]:
     return sorted(runs, key=lambda n: order.get(n.rsplit("_", 1)[-1], 9))
 
 
+def available_estimators() -> list[str]:
+    """theta estimator 후보(best.pt 보유) — S2 의 '다른 센서' 선택용."""
+    out = []
+    for r in sorted((_ROOT / "sats/bending/runs").glob("estimator_*")):
+        if r.is_dir() and (r / "best.pt").exists():
+            out.append(r.name)
+        elif r.is_file() and r.suffix == "":         # 구 포맷(단일 파일)
+            out.append(r.name)
+    return out
+
+
+def available_restorers() -> list[str]:
+    """deform 복원기 후보 — 여러 취득 버전을 UI 에서 골라 쓴다."""
+    return sorted(r.name for r in (_ROOT / "sats/bending/runs").glob("deform_restorer*")
+                  if (r / "best.pt").exists())
+
+
 def available_sensors() -> list[str]:
     """배포 run 이 존재하는 센서 버전 목록 — UI 드롭다운용."""
     import re as _re
@@ -187,6 +204,36 @@ class SensorChannel:
         self.hist.clear()
         if self.cfilter is not None:
             self.cfilter.reset()
+
+    def apply_estimator(self, name: str) -> str | None:
+        """S2: theta estimator 교체(패널별 — 다른 센서의 각도 추정)."""
+        from sats.bending.config import BendingConfig
+        from sats.inference.bending_infer import BendingInference
+        path = _ROOT / "sats/bending/runs" / name
+        ckpt = path / "best.pt" if (path / "best.pt").exists() else path
+        try:
+            self.bi = BendingInference(ckpt, device=self.args.device,
+                                       restorer=None, cfg=BendingConfig())
+        except Exception as e:
+            return f"estimator 로드 실패: {e}"
+        self.theta0 = 0.0
+        self.hist.clear()
+        return None
+
+    def apply_restorer(self, name: str) -> str | None:
+        """deform 복원기 교체(UI 선택). 센서 불일치는 막지 않고 경고만 —
+        사용자가 명시적으로 골랐다면 그 판단을 따른다."""
+        from sats.inference.deform_restore import try_load
+        r, msg = try_load(_ROOT / "sats/bending/runs" / name / "best.pt",
+                          device=self.args.device)
+        if r is None:
+            return msg
+        self._restorer_all = self.restorer = r
+        self.restore_on = True
+        print(f"[dashboard] {self.role}: {msg}")
+        if self.sensor and getattr(r, "sensor", None) not in (None, self.sensor):
+            return f"주의 — 복원기는 {r.sensor} 학습본(현재 패널 {self.sensor})"
+        return None
 
     def apply_run(self, sensor: str, run_name: str, engines: "EngineCache") -> str | None:
         """이 패널의 (센서, 추론 run) 확정 — UI 의 port→v*→추론파일 흐름 마지막 단계.

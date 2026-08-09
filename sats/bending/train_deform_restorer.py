@@ -282,7 +282,9 @@ def main() -> None:
     p.add_argument("--dead-channels", default="auto",
                    help="파손 taxel(1-based, 예 '11,15'). 'auto'=채널 건강도 진단으로 "
                         "자동 검출(기본) · 'none'=마스킹 안 함")
-    p.add_argument("--out", type=Path, default=_REPO / "sats/bending/runs/deform_restorer")
+    p.add_argument("--out", type=Path, default=None,
+                   help="저장 폴더(기본: runs/deform_restorer_<센서> — 대시보드 restore "
+                        "드롭다운에 센서별로 나열된다)")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = p.parse_args()
 
@@ -327,6 +329,8 @@ def main() -> None:
                              f"  → 해당 센서의 xy 취득/학습이 되어 있는지 확인하거나 직접 지정")
     print(f"[센서 {sensor}] contact={_rel(args.contact_trial)}  sats={args.sats_run.name}")
 
+    if args.out is None:
+        args.out = _REPO / f"sats/bending/runs/deform_restorer_{sensor or 'x'}"
     cfg0 = BendingConfig()
     W = cfg0.window_size
     dead = _resolve_dead_channels(args.dead_channels, args.deform_root)

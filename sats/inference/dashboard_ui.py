@@ -85,6 +85,28 @@ class PanelUI(ttk.Frame):
                                      values=list_port_choices(), state="readonly")
         self.port_box.pack(side="left", padx=4)
         self.port_box.bind("<Button-1>", lambda e: self.port_box.configure(values=list_port_choices()))
+        if engines is not None and sensors and role == "theta":
+            # ★S2: 다른 센서의 theta + deform 복원기 선택
+            from sats.inference.run_dashboard import available_estimators, available_restorers
+            ttk.Label(row, text="v*").pack(side="left", padx=(6, 0))
+            self.sensor_var = tk.StringVar(value="")
+            sbox = ttk.Combobox(row, textvariable=self.sensor_var, width=3,
+                                values=list(sensors), state="readonly")
+            sbox.pack(side="left", padx=2)
+            sbox.bind("<<ComboboxSelected>>",
+                      lambda e: setattr(self.channel, "sensor", self.sensor_var.get()))
+            ttk.Label(row, text="est").pack(side="left", padx=(6, 0))
+            self.est_var = tk.StringVar(value="")
+            ebox = ttk.Combobox(row, textvariable=self.est_var, width=14,
+                                values=available_estimators(), state="readonly")
+            ebox.pack(side="left", padx=2)
+            ebox.bind("<<ComboboxSelected>>", lambda e: self._apply_estimator())
+            ttk.Label(row, text="restore").pack(side="left", padx=(6, 0))
+            self.restore_var = tk.StringVar(value="")
+            rbox = ttk.Combobox(row, textvariable=self.restore_var, width=15,
+                                values=available_restorers(), state="readonly")
+            rbox.pack(side="left", padx=2)
+            rbox.bind("<<ComboboxSelected>>", lambda e: self._apply_restorer())
         if engines is not None and sensors and role in ("contacts", "bending"):
             from sats.inference.run_dashboard import available_runs
             self._available_runs = available_runs
@@ -100,6 +122,14 @@ class PanelUI(ttk.Frame):
                                         values=[], state="readonly")
             self.run_box.pack(side="left", padx=2)
             self.run_box.bind("<<ComboboxSelected>>", lambda e: self._apply_run())
+            if role == "bending":
+                from sats.inference.run_dashboard import available_restorers
+                ttk.Label(row, text="restore").pack(side="left", padx=(6, 0))
+                self.restore_var = tk.StringVar(value="")
+                rbox = ttk.Combobox(row, textvariable=self.restore_var, width=15,
+                                    values=available_restorers(), state="readonly")
+                rbox.pack(side="left", padx=2)
+                rbox.bind("<<ComboboxSelected>>", lambda e: self._apply_restorer())
         self.btn_conn = ttk.Button(row, text="연결", width=6, command=self._toggle_connect)
         self.btn_conn.pack(side="left", padx=2)
         reset_label = {"contacts": "리셋", "theta": "재영점", "bending": "재장착"}[role]
@@ -133,6 +163,19 @@ class PanelUI(ttk.Frame):
             self.banner.configure(fg="#c22")
         else:
             self.btn_conn.configure(text="끊기")
+
+    def _apply_estimator(self) -> None:
+        err = self.channel.apply_estimator(self.est_var.get())
+        print(f"[dashboard] {self.channel.role}: estimator {self.est_var.get()}"
+              + (f" — {err}" if err else " 적용"))
+
+    def _apply_restorer(self) -> None:
+        err = self.channel.apply_restorer(self.restore_var.get())
+        if err:
+            print(f"[dashboard] {self.channel.role}: {err}")
+        if self.btn_restore is not None:
+            self.btn_restore.configure(state="normal" if self.channel.restorer else "disabled")
+            self._sync_restore_label()
 
     def _on_sensor_selected(self) -> None:
         """v* 선택 → 그 센서의 추론 run 목록을 채운다(첫 항목 자동 선택)."""
