@@ -107,3 +107,17 @@ def test_drift_pct_property():
                       t=np.arange(5) / FS,
                       baseline_head=np.full(16, 100.0), baseline_tail=np.full(16, 101.0))
     assert abs(s.drift_pct - 1.0) < 1e-6    # +1%
+
+
+def test_pre_start_frames_are_trimmed(tmp_path):
+    """★로거가 시작 전 잔여 프레임을 기록해 시간축이 역행한 세션을 살린다."""
+    d = _session(tmp_path, dur_s=60.0)
+    bin_p = next(d.glob("due_v2_*.bin"))
+    raw_bytes = bin_p.read_bytes()
+    head, body = raw_bytes.split(b"\n", 1)
+    rec = 8 + 16 * 10 * 4
+    bogus = struct.pack("<Q", int(3.7 * 86400 * 1e9)) + body[8:rec]   # 부팅기준 거대 타임스탬프
+    bin_p.write_bytes(head + b"\n" + bogus + body)
+    s = load_deform_session(d)                       # 이전에는 음수 길이로 실패
+    assert float(s.t[-1]) > 50.0
+    assert np.all(np.diff(s.t) >= 0)

@@ -79,9 +79,26 @@ def _read_due(session_dir: Path) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(d.time_s, float), np.asarray(d.sensors, float)
 
 
+def _trim_to_monotonic_tail(t: np.ndarray, raw: np.ndarray, name: str
+                            ) -> tuple[np.ndarray, np.ndarray]:
+    """시간이 뒤로 점프하는 지점 이전을 버린다.
+
+    로거가 시작 전 큐에 남아 있던 프레임을 함께 기록하면 맨 앞에 부팅 기준의 거대한
+    타임스탬프가 섞여 세션 길이가 음수가 된다. 그 프레임 몇 개만 버리면 세션을 살릴 수 있다.
+    """
+    back = np.flatnonzero(np.diff(t) < 0)
+    if not len(back):
+        return t, raw
+    cut = int(back[-1]) + 1
+    print(f"  [{name}] ★시간축 역행 {len(back)}곳 — 앞 {cut}프레임 폐기(시작 전 잔여 프레임)")
+    return t[cut:], raw[cut:]
+
+
 def read_due_raw(session_dir: str | Path) -> tuple[np.ndarray, np.ndarray]:
     """세션 폴더 → (t[N], raw[N,16]). 드리프트 보정 전 원신호(채널 건강도 진단용)."""
-    return _read_due(Path(session_dir))
+    d = Path(session_dir)
+    t, raw = _read_due(d)
+    return _trim_to_monotonic_tail(t, raw, d.name)
 
 
 def stage_bounds(session: DeformSession, baseline_sec: float = _BASELINE_SEC
@@ -108,7 +125,7 @@ def load_deform_session(session_dir: str | Path, *, baseline_sec: float = _BASEL
     주입하므로, 마스킹은 pct 계산 직후에 적용해 그 램프까지 함께 지운다.
     """
     session_dir = Path(session_dir)
-    t, raw = _read_due(session_dir)
+    t, raw = _trim_to_monotonic_tail(*_read_due(session_dir), session_dir.name)
     t = t - t[0]
     dur = float(t[-1])
     if dur < 2 * baseline_sec + 5.0:

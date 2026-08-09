@@ -411,6 +411,11 @@ if HAS_GUI:
             if self.stage != "IDLE":
                 return
             log_start_ns = time.perf_counter_ns()
+            while True:                              # ★시작 전 큐에 쌓인 프레임 폐기
+                try:                                 # (log_start_ns 이전 기준의 타임스탬프라
+                    due_queue.get_nowait()           #  기록되면 세션 시간축이 깨진다)
+                except Empty:
+                    break
             self._enter("BASE_HEAD")
             self.start_btn.setText("다음 단계 (Enter)")
 
