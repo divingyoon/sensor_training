@@ -173,6 +173,15 @@ class SensorChannel:
         self.armed = False
         self.theta_fixed = 0.0
         self.bent_ref = np.zeros(16, np.float32)
+        # ★무접촉 자동 재영점: 접촉 후 히스테리시스 잔류·열/기압 드리프트가 쌓이면
+        #   fz 가 fz_on(0.30N)을 넘어 유령 접촉이 뜬다(무접촉 노이즈 자체는 0.003N 이지만
+        #   눌렀다 뗀 뒤 잔류는 훨씬 크다 — 실기 관측). 접촉이 없다고 판정된 상태가
+        #   1초 이상 지속되면 창 평균을 느린 EMA 로 흡수해 0 기준을 되돌린다.
+        #   한계: fz_on 미만의 아주 약한 지속 접촉도 서서히 흡수된다(자동 영점의 고전적
+        #   트레이드오프). 접촉이 잡히는 동안에는 절대 갱신하지 않는다.
+        self.drift_ref = np.zeros(16, np.float32)
+        self._quiet_t0: float | None = None
+        self._last_win_mean: np.ndarray | None = None
         # 접촉 필터(히스테리시스·디바운스·무접촉 리셋·스무딩) — heatmap 역할만
         self.cfilter = ContactFilter(FilterConfig(
             fz_on=args.fz_on, fz_off=args.fz_off, on_frames=args.on_frames,
@@ -209,6 +218,8 @@ class SensorChannel:
         self.armed, self.theta_fixed = False, 0.0
         self.theta0 = 0.0
         self.hist.clear()
+        self.drift_ref = np.zeros(16, np.float32)
+        self._quiet_t0 = None
         if self.cfilter is not None:
             self.cfilter.reset()
 
@@ -297,6 +308,10 @@ class SensorChannel:
         if self.role == "contacts":
             if self.cfilter is not None:
                 self.cfilter.reset()
+            if self._last_win_mean is not None:      # 즉시 재영점(잔류를 한 번에 흡수)
+                self.drift_ref = self._last_win_mean.copy()
+                print(f"[dashboard] {self.role} 재영점 — 잔류 "
+                      f"{float(np.abs(self._last_win_mean).max()):.2f}% 흡수")
         elif self.role == "theta":
             self.busy = "re-zero..."
             try:
@@ -395,12 +410,29 @@ class SensorChannel:
             return self._poll_heatmap(win, theta_deg=theta, bent=self.armed)
         return self._poll_theta(win)
 
+    _QUIET_SEC = 1.0          # 이 시간 무접촉이 지속돼야 재영점 시작
+    _DRIFT_ALPHA = 0.02       # 느린 EMA(틱 ~20Hz → 시정수 약 2.5s)
+
+    def _update_drift_ref(self, has_contacts: bool, raw_mean: np.ndarray) -> None:
+        if has_contacts:
+            self._quiet_t0 = None
+            return
+        now = time.perf_counter()
+        if self._quiet_t0 is None:
+            self._quiet_t0 = now
+        elif now - self._quiet_t0 > self._QUIET_SEC:
+            self.drift_ref = ((1.0 - self._DRIFT_ALPHA) * self.drift_ref
+                              + self._DRIFT_ALPHA * raw_mean).astype(np.float32)
+
     def _poll_heatmap(self, win, *, theta_deg, bent: bool) -> dict:
         a = self.args
         if win is None:
             banner = state_banner([], theta_deg=theta_deg, theta_band_deg=a.theta_deadband)
             return {"kind": "heatmap", "banner": banner, "pred_map": None,
                     "contacts": [], "theta": theta_deg, "units": None}
+        raw_mean = np.asarray(win, np.float32).mean(0)
+        self._last_win_mean = raw_mean
+        win = (np.asarray(win, np.float32) - self.drift_ref[None, :])   # 드리프트 보정
         # ★복원기 우선: 창마다 변형 오프셋을 추정해 뺀다(고정 스냅숏 방식보다 적응적).
         restored = None
         if self.role == "bending" and self.restorer is not None:
@@ -418,6 +450,7 @@ class SensorChannel:
             position_gain=getattr(a, "position_gain", 1.0), z_calib=self.z_calib)
         # 히스테리시스·디바운스·무접촉 리셋·스무딩(released 시 빈 리스트 → blank)
         contacts = self.cfilter.update(raw)[0] if self.cfilter is not None else raw
+        self._update_drift_ref(bool(contacts), raw_mean)
         banner = state_banner(contacts, theta_deg=theta_deg, theta_band_deg=a.theta_deadband)
         return {"kind": "heatmap", "banner": banner, "pred_map": pmap,
                 "contacts": contacts, "theta": theta_deg,
