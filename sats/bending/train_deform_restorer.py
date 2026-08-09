@@ -105,6 +105,15 @@ def evaluate(model: BaselineRestorer, val_win: np.ndarray, contact_pool: np.ndar
     }
 
 
+def _rel(path: Path) -> str:
+    """저장소 기준 상대경로로 표기(저장소 밖이면 절대경로 그대로)."""
+    path = Path(path)
+    try:
+        return str(path.relative_to(_REPO))
+    except ValueError:
+        return str(path)
+
+
 def _contact_search_roots(sensor: str) -> list[Path]:
     """접촉 trial 이 있을 수 있는 두 레이아웃 — PC 마다 어느 쪽만 있을 수 있다."""
     return [_REPO / f"learning_data/sensor_raw_bin/ecomesh_{sensor}_xy1",   # 정리된 학습 데이터
@@ -221,8 +230,7 @@ def main() -> None:
             lines.append("  ★다른 센서의 접촉 trial 로 대체하면 캘리브레이션이 어긋나므로 금지.")
             raise SystemExit("\n".join(lines))
         args.contact_trial = found
-        print(f"[센서 {sensor}] 접촉 trial 자동 선택: "
-              f"{found.relative_to(_REPO / 'learning_data/sensor_raw_bin')}")
+        print(f"[센서 {sensor}] 접촉 trial 자동 선택: {_rel(found)}")
     if args.sats_run is None:
         cand = [_REPO / f"sats/training/runs/ecomesh_{sensor}_deploy_g025",
                 _REPO / f"sats/training/runs/ecomesh_{sensor}_deploy_all4",
@@ -232,8 +240,7 @@ def main() -> None:
         if not Path(path).exists():
             raise SystemExit(f"[{sensor}] {label} 없음: {path}\n"
                              f"  → 해당 센서의 xy 취득/학습이 되어 있는지 확인하거나 직접 지정")
-    print(f"[센서 {sensor}] contact={args.contact_trial.parent.parent.parent.name}/"
-          f"{args.contact_trial.name}  sats={args.sats_run.name}")
+    print(f"[센서 {sensor}] contact={_rel(args.contact_trial)}  sats={args.sats_run.name}")
 
     cfg0 = BendingConfig()
     W = cfg0.window_size
