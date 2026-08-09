@@ -97,7 +97,9 @@ def test_stage_times_absent_falls_back(tmp_path):
     """메타 없으면 고정 baseline_sec 폴백(구 데이터 호환)."""
     from sats.bending.deform_data import stage_bounds
     s = load_deform_session(_session(tmp_path, dur_s=60.0))
-    assert stage_bounds(s) == (10.0, 50.0)
+    lo, hi = stage_bounds(s)
+    assert lo == 10.0
+    assert abs(hi - (float(s.t[-1]) - 10.0)) < 1e-6   # 마지막 샘플 기준(dur−10s)
 
 
 def test_drift_pct_property():
