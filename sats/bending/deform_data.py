@@ -3,10 +3,12 @@
 기존 `prepare_bending_data.py` 는 ethermotion δ → 원호 기하 → 각도 라벨에 의존한다.
 변형 복원(latent restorer)은 각도를 쓰지 않으므로 **due 16채널만** 있으면 된다.
 
-취득 프로토콜(세션 1개):
-    [앞 baseline] 무접촉·무하중 ~10초
-    [변형 구간]   손으로 순수 변형 3~5분 (연속 + 정지 섞어서)
-    [뒤 baseline] 무접촉·무하중 ~10초
+취득 프로토콜(세션 1개, Enter 로 진행):
+    [앞 baseline] 무접촉·무하중 ~10초        → Enter
+    [변형 구간]   손으로 순수 변형(가변 길이)  → Enter
+    [뒤 baseline] 무접촉·무하중 10초          → 자동 종료
+★단계 길이가 가변이므로 실제 경계는 session_meta.json 의 `stage_times_s` 를 신뢰한다
+(없으면 baseline_sec 고정값으로 폴백 — 구 데이터 호환).
 
 이 로더가 하는 일:
   1. due bin(V1 `due_raw_burst_*` / V2 `due_v2_*`) 자동 감지·로드
@@ -76,6 +78,18 @@ def _read_due(session_dir: Path) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(d.time_s, float), np.asarray(d.sensors, float)
 
 
+def stage_bounds(session: DeformSession, baseline_sec: float = _BASELINE_SEC
+                 ) -> tuple[float, float]:
+    """(변형 시작, 변형 끝) 초. stage_times_s 우선, 없으면 고정 baseline_sec 폴백."""
+    dur = float(session.t[-1])
+    st = session.stage_times or {}
+    lo = float(st.get("DEFORM", baseline_sec))
+    hi = float(st.get("BASE_TAIL", dur - baseline_sec))
+    if not (0 <= lo < hi <= dur):                    # 메타 이상 시 안전 폴백
+        lo, hi = baseline_sec, dur - baseline_sec
+    return lo, hi
+
+
 def load_deform_session(session_dir: str | Path, *, baseline_sec: float = _BASELINE_SEC,
                         trim_sec: float = _EDGE_TRIM_SEC) -> DeformSession:
     """변형 세션 → 드리프트 보정된 pct. 앞뒤 baseline 은 프로토콜 길이로 잘라 쓴다."""
@@ -85,8 +99,21 @@ def load_deform_session(session_dir: str | Path, *, baseline_sec: float = _BASEL
     dur = float(t[-1])
     if dur < 2 * baseline_sec + 5.0:
         raise ValueError(f"세션이 너무 짧음({dur:.0f}s): baseline {baseline_sec}s×2 + 변형 필요")
-    head_m = (t >= trim_sec) & (t <= baseline_sec - trim_sec)
-    tail_m = (t >= dur - baseline_sec + trim_sec) & (t <= dur - trim_sec)
+    # 메타의 실제 단계 경계 우선(가변 길이 프로토콜) — 없으면 고정 baseline_sec
+    meta_pre = session_dir / "session_meta.json"
+    st_pre: dict = {}
+    if meta_pre.exists():
+        try:
+            import json as _json
+            st_pre = _json.loads(meta_pre.read_text(encoding="utf-8")).get("stage_times_s") or {}
+        except Exception:
+            st_pre = {}
+    head_end = float(st_pre.get("DEFORM", baseline_sec))
+    tail_start = float(st_pre.get("BASE_TAIL", dur - baseline_sec))
+    if not (0 < head_end < tail_start <= dur):
+        head_end, tail_start = baseline_sec, dur - baseline_sec
+    head_m = (t >= trim_sec) & (t <= head_end - trim_sec)
+    tail_m = (t >= tail_start + trim_sec) & (t <= dur - trim_sec)
     if head_m.sum() < 50 or tail_m.sum() < 50:
         raise ValueError(f"baseline 구간 프레임 부족(head {head_m.sum()}, tail {tail_m.sum()})")
     b_head, b_tail = raw[head_m].mean(0), raw[tail_m].mean(0)
@@ -122,10 +149,11 @@ def deform_windows(session: DeformSession, window_size: int, *,
     """
     t, pct = session.t, session.sensor_pct
     dur = float(t[-1])
+    lo, hi = stage_bounds(session, baseline_sec)      # ★실제 단계 경계(메타 우선)
     if include_baseline:
-        m = (t <= baseline_sec) | (t >= dur - baseline_sec)
+        m = (t <= lo) | (t >= hi)
     else:
-        m = (t > baseline_sec) & (t < dur - baseline_sec)
+        m = (t > lo) & (t < hi)
     idx = np.where(m)[0]
     if len(idx) < window_size:
         return np.zeros((0, window_size, pct.shape[1]), np.float32)
@@ -150,8 +178,7 @@ def segment_windows(session: DeformSession, window_size: int, *,
     마커 이전(변형 시작~첫 마커)은 "(unlabeled)" 로 묶는다.
     """
     t = session.t
-    dur = float(t[-1])
-    lo, hi = baseline_sec, dur - baseline_sec
+    lo, hi = stage_bounds(session, baseline_sec)
     marks = [(float(g["t_s"]), str(g.get("label") or "(unlabeled)"))
              for g in session.segments if lo <= float(g["t_s"]) <= hi]
     marks.sort()

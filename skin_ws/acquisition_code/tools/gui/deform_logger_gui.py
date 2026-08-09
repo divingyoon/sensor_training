@@ -3,11 +3,13 @@
 `final_logger_gui.py` 기반이나 **DUE 16채널만** 기록한다(모터·loadcell·AFD 불필요).
 각도 라벨을 쓰지 않으므로 지그·스테이지 없이 손으로 센서를 변형시키며 취득한다.
 
-프로토콜(자동 진행 · 상태머신):
-    [1] BASE_HEAD  무접촉·무하중 평평 유지          (기본 10초)
-    [2] DEFORM     손으로 순수 변형 — 연속+정지 섞어  (기본 240초)
-    [3] BASE_TAIL  다시 무접촉·무하중 평평 유지       (기본 10초)
-    → 저장 완료. 앞뒤 baseline 두 점으로 **선형 드리프트 보정**이 가능해진다.
+프로토콜(Enter 로 진행 · 상태머신):
+    [1] BASE_HEAD  무접촉·무하중 평평 (~10초)   → **빈 Enter** 로 다음 단계
+    [2] DEFORM     손으로 순수 변형 (시간 표시)  → **빈 Enter** 로 다음 단계
+                   (숫자 1~8 / 텍스트 + Enter = 구간 라벨 마커, 단계는 계속)
+    [3] BASE_TAIL  다시 무접촉·무하중 (10초)     → **자동 종료·저장**
+    앞뒤 baseline 두 점으로 **선형 드리프트 보정**이 가능해진다. 실제 단계 전환 시각은
+    session_meta.json(stage_times_s)에 기록되어 분석 로더가 그대로 사용한다.
 
 저장 경로(분석 스크립트가 바로 읽는 규약):
     skin_ws/raw_data/deform/<version>/<sNN_YYYYmmdd_HHMMSS>/due_v2_*.bin + session_meta.json
@@ -52,14 +54,14 @@ FIFO_FRAMES = 10
 PAYLOAD_SIZE = NUM_SENSORS * FIFO_FRAMES * 4        # 640 bytes
 
 # ── 프로토콜 기본값(초) ─────────────────────────────────────────────────────
-BASE_SEC = 10.0
-DEFORM_SEC = 240.0
+BASE_SEC = 10.0          # BASE_TAIL 자동 종료 길이 · BASE_HEAD 권장 길이
+MIN_BASE_SEC = 5.0       # BASE_HEAD 최소 확보(너무 빨리 Enter 치는 것 방지)
 
 _STAGES = ("BASE_HEAD", "DEFORM", "BASE_TAIL", "DONE")
 _STAGE_MSG = {
-    "BASE_HEAD": "① 손 떼고 평평하게 — 무접촉·무하중 유지",
-    "DEFORM":    "② 손으로 변형! 방향·크기·속도 다양하게 (정지도 섞어서)",
-    "BASE_TAIL": "③ 다시 손 떼고 평평하게 — 무접촉·무하중 유지",
+    "BASE_HEAD": "① 손 떼고 평평하게 — 무접촉·무하중  [Enter=다음]",
+    "DEFORM":    "② 손으로 변형! 다양하게 (정지도 섞어서)  [Enter=종료]",
+    "BASE_TAIL": "③ 다시 손 떼고 평평하게 — 10초 후 자동 종료",
     "DONE":      "완료 — 저장됨",
 }
 _STAGE_COLOR = {"BASE_HEAD": "#c8a200", "DEFORM": "#c22", "BASE_TAIL": "#c8a200", "DONE": "#0a7a4f"}
@@ -123,8 +125,9 @@ def stdin_flag_listener() -> None:
       텍스트 + Enter : 자유 라벨(예: twist_hold)
       빈 Enter    : 라벨 없는 경계(구간만 나눔)
     """
-    print("[segment] 입력 규약: 1=상하휨 2=좌우휨 3=비틀림 4=한쪽끝 5=정지유지 "
-          "6=느린연속 7=빠름 8=극단 · 텍스트=자유라벨 · 빈 Enter=경계만")
+    print("[입력] ★빈 Enter = 다음 단계 진행")
+    print("[입력] 변형 중 구간 라벨: 1=상하휨 2=좌우휨 3=비틀림 4=한쪽끝 5=정지유지 "
+          "6=느린연속 7=빠름 8=극단 · 텍스트=자유라벨")
     while is_running:
         try:
             line = sys.stdin.readline()
@@ -133,10 +136,13 @@ def stdin_flag_listener() -> None:
         if not line:                     # EOF(파이프 등)
             return
         key = line.strip()
-        label = _SEGMENT_PRESETS.get(key, key)      # 숫자→프리셋, 그 외=입력 그대로(빈 문자열 허용)
         t_s = elapsed_ns() / 1e9
+        if key == "":                                # ★빈 Enter = 다음 단계로
+            flag_queue.put((t_s, None))
+            continue
+        label = _SEGMENT_PRESETS.get(key, key)       # 숫자→프리셋, 그 외=자유 라벨
         flag_queue.put((t_s, label))
-        print(f"[segment] {t_s:7.1f}s → '{label or '(무라벨)'}' 구간 시작")
+        print(f"[segment] {t_s:7.1f}s → '{label}' 구간 시작")
 
 
 def mock_reader() -> None:
@@ -267,16 +273,24 @@ if HAS_GUI:
             v.addWidget(self.stat_lbl)
 
             row = QtWidgets.QHBoxLayout()
-            self.start_btn = QtWidgets.QPushButton("시작 (Space)")
-            self.start_btn.setFixedHeight(46); self.start_btn.clicked.connect(self.start)
+            self.start_btn = QtWidgets.QPushButton("시작 (Space / Enter)")
+            self.start_btn.setFixedHeight(46); self.start_btn.clicked.connect(self.start_or_advance)
             self.abort_btn = QtWidgets.QPushButton("중단·저장")
             self.abort_btn.setFixedHeight(46); self.abort_btn.clicked.connect(self.finish)
             row.addWidget(self.start_btn); row.addWidget(self.abort_btn)
             v.addLayout(row)
 
         def keyPressEvent(self, e) -> None:
-            if e.key() == QtCore.Qt.Key.Key_Space and self.stage == "IDLE":
+            if e.key() in (QtCore.Qt.Key.Key_Space, QtCore.Qt.Key.Key_Return,
+                           QtCore.Qt.Key.Key_Enter):
+                self.start_or_advance()
+
+        def start_or_advance(self) -> None:
+            """창에서도 시작·다음단계 가능(터미널 빈 Enter 와 동일)."""
+            if self.stage == "IDLE":
                 self.start()
+            else:
+                self.advance()
 
         # ── 상태머신 ─────────────────────────────────────────────────────────
         def start(self) -> None:
@@ -285,7 +299,7 @@ if HAS_GUI:
                 return
             log_start_ns = time.perf_counter_ns()
             self._enter("BASE_HEAD")
-            self.start_btn.setEnabled(False)
+            self.start_btn.setText("다음 단계 (Enter)")
 
         def _enter(self, stage: str) -> None:
             self.stage = stage
@@ -296,12 +310,26 @@ if HAS_GUI:
                 f"font-weight:bold; font-size:21px; color:{_STAGE_COLOR[stage]};")
             if stage != "DEFORM":
                 self.tip_lbl.setText("")
+            if stage == "BASE_TAIL":
+                self.start_btn.setEnabled(False)     # 이후 자동 종료
             if stage == "DONE":
                 self.finish()
 
-        def _stage_len(self) -> float:
-            return {"BASE_HEAD": self.args.base_sec, "DEFORM": self.args.deform_sec,
-                    "BASE_TAIL": self.args.base_sec}.get(self.stage, 0.0)
+        def advance(self) -> None:
+            """빈 Enter(또는 버튼) → 다음 단계. BASE_TAIL 은 자동 종료라 수동 전환 없음."""
+            el = time.perf_counter() - self.stage_t0
+            if self.stage == "BASE_HEAD":
+                if el < MIN_BASE_SEC:
+                    print(f"[안내] baseline 최소 {MIN_BASE_SEC:.0f}초 필요 "
+                          f"(현재 {el:.1f}s) — 조금 더 기다렸다 Enter")
+                    return
+                self._enter("DEFORM")
+            elif self.stage == "DEFORM":
+                self._enter("BASE_TAIL")
+
+        def _stage_len(self) -> float | None:
+            """자동 종료 길이. BASE_TAIL 만 자동, 앞 두 단계는 Enter 대기(None)."""
+            return self.args.base_sec if self.stage == "BASE_TAIL" else None
 
         # ── 루프 ────────────────────────────────────────────────────────────
         def tick(self) -> None:
@@ -310,12 +338,13 @@ if HAS_GUI:
                 self.stage_lbl.setText(f"{who} 오류: {msg}")
                 self.stage_lbl.setStyleSheet("color:#c22; font-weight:bold; font-size:18px;")
                 return
-            while not flag_queue.empty():            # 터미널 구간 마커 수집
+            while not flag_queue.empty():            # 터미널 입력 처리
                 t_s, label = flag_queue.get()
-                if self.stage in ("BASE_HEAD", "DEFORM", "BASE_TAIL"):
+                if label is None:                    # 빈 Enter = 다음 단계
+                    self.advance()
+                elif self.stage in ("BASE_HEAD", "DEFORM", "BASE_TAIL"):
                     self.segments.append({"t_s": round(t_s, 3), "label": label})
-                    self.seg_lbl.setText(f"현재 구간: {label or '(무라벨)'}  "
-                                         f"(총 {len(self.segments)}개)")
+                    self.seg_lbl.setText(f"현재 구간: {label}  (총 {len(self.segments)}개)")
             latest = None
             while True:                              # 큐 비우며 기록
                 try:
@@ -345,12 +374,18 @@ if HAS_GUI:
             if self.stage in ("BASE_HEAD", "DEFORM", "BASE_TAIL"):
                 el = time.perf_counter() - self.stage_t0
                 total = self._stage_len()
-                self.bar.setMaximum(int(total)); self.bar.setValue(int(min(el, total)))
-                self.bar.setFormat(f"{self.stage}  {el:.0f}/{total:.0f}s")
+                if total is None:                    # Enter 대기 단계 — 경과시간만
+                    self.bar.setMaximum(0)           # busy indicator
+                    hint = ("Enter 로 다음" if el >= MIN_BASE_SEC or self.stage == "DEFORM"
+                            else f"최소 {MIN_BASE_SEC:.0f}s")
+                    self.bar.setFormat(f"{self.stage}  {el:5.1f}s   ({hint})")
+                else:
+                    self.bar.setMaximum(int(total)); self.bar.setValue(int(min(el, total)))
+                    self.bar.setFormat(f"{self.stage}  {el:.0f}/{total:.0f}s  (자동 종료)")
+                    if el >= total:
+                        self._enter(_STAGES[_STAGES.index(self.stage) + 1])
                 if self.stage == "DEFORM":
                     self.tip_lbl.setText("▶ " + _TIPS[int(el // 20) % len(_TIPS)])
-                if el >= total:
-                    self._enter(_STAGES[_STAGES.index(self.stage) + 1])
 
             now = time.perf_counter()
             if now - self.last_flush >= 1.0:

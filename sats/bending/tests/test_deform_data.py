@@ -78,6 +78,28 @@ def test_no_due_bin_raises(tmp_path):
         load_deform_session(tmp_path / "empty")
 
 
+def test_stage_times_override_fixed_baseline(tmp_path):
+    """★가변 단계 프로토콜: session_meta 의 stage_times_s 가 고정 10초보다 우선."""
+    import json
+    from sats.bending.deform_data import stage_bounds
+    d = _session(tmp_path, dur_s=55.0)
+    (d / "session_meta.json").write_text(json.dumps(
+        {"stage_times_s": {"BASE_HEAD": 0.0, "DEFORM": 7.0, "BASE_TAIL": 45.0}}))
+    s = load_deform_session(d)
+    assert stage_bounds(s) == (7.0, 45.0)            # 고정값(10.0, 45.0) 아님
+    w = deform_windows(s, 10)
+    b = deform_windows(s, 10, include_baseline=True)
+    assert len(w) > 0 and len(b) > 0
+    assert np.abs(w).mean() > 10 * np.abs(b).mean()  # 경계가 맞아야 성립
+
+
+def test_stage_times_absent_falls_back(tmp_path):
+    """메타 없으면 고정 baseline_sec 폴백(구 데이터 호환)."""
+    from sats.bending.deform_data import stage_bounds
+    s = load_deform_session(_session(tmp_path, dur_s=60.0))
+    assert stage_bounds(s) == (10.0, 50.0)
+
+
 def test_drift_pct_property():
     s = DeformSession(name="t", sensor_pct=np.zeros((5, 16), np.float32),
                       t=np.arange(5) / FS,
