@@ -55,14 +55,18 @@ class PanelUI(ttk.Frame):
         self.fig = Figure(figsize=(4.6, 4.8), dpi=90, facecolor=_BG)
         role = channel.role
         if role == "theta":
-            # ★S2 = theta 게이지(위) + 복원맵 [변형 raw | 복원 결과](아래).
-            #   "변형을 인식해 baseline 을 되돌린다"가 각도와 함께 직접 보인다.
-            gs = self.fig.add_gridspec(2, 2, height_ratios=[2.0, 1.3], hspace=0.45, wspace=0.15)
+            # ★S2 = theta 게이지(위) + [변형 raw %(4×4) | 복원 후 SATS 맵](아래).
+            #   복원 결과는 taxel 값이 아니라 SATS 압력맵(run_demo 2d 와 동일 형태)으로 —
+            #   "복원하면 SATS 가 flat 을 본다(유령 없음)"가 그대로 보인다.
+            gs = self.fig.add_gridspec(2, 2, height_ratios=[1.6, 1.5], hspace=0.45, wspace=0.2)
             self.p_theta = ThetaGaugePanel(self.fig.add_subplot(gs[0, :]), title)
             self.p_units = UnitsInset(self.fig.add_subplot(gs[1, 0]),
-                                      title="raw (deformed)", flip_x=flip_x, flip_y=flip_y)
-            self.p_units_restored = UnitsInset(self.fig.add_subplot(gs[1, 1]),
-                                               title="restored", flip_x=flip_x, flip_y=flip_y)
+                                      title="raw (deformed) %", flip_x=flip_x, flip_y=flip_y)
+            self.p_restored_map = HeatmapPanel(self.fig.add_subplot(gs[1, 1]),
+                                               grid_min, grid_max, "restored -> SATS",
+                                               draw_without_contacts=True,
+                                               flip_x=flip_x, flip_y=flip_y)
+            self.p_units_restored = None
             self.p_heat = None
         else:
             # S1(FLAT)·S3(DEFORMED) = SATS 맵 전체 크기
@@ -70,6 +74,7 @@ class PanelUI(ttk.Frame):
                                        flip_x=flip_x, flip_y=flip_y)
             self.p_units = self.p_theta = None
             self.p_units_restored = None
+            self.p_restored_map = None
         self.fig.tight_layout()
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -95,8 +100,7 @@ class PanelUI(ttk.Frame):
             sbox = ttk.Combobox(sel, textvariable=self.sensor_var, width=3,
                                 values=list(sensors), state="readonly")
             sbox.pack(side="left", padx=2)
-            sbox.bind("<<ComboboxSelected>>",
-                      lambda e: setattr(self.channel, "sensor", self.sensor_var.get()))
+            sbox.bind("<<ComboboxSelected>>", lambda e: self._set_theta_sensor())
             ttk.Label(sel, text="est").pack(side="left", padx=(6, 0))
             self.est_var = tk.StringVar(value="")
             ebox = ttk.Combobox(sel, textvariable=self.est_var, width=13,
@@ -166,6 +170,11 @@ class PanelUI(ttk.Frame):
         else:
             self.btn_conn.configure(text="끊기")
 
+    def _set_theta_sensor(self) -> None:
+        err = self.channel.apply_theta_sensor(self.sensor_var.get(), self.engines)
+        print(f"[dashboard] theta 센서 {self.sensor_var.get()}"
+              + (f" — {err}" if err else " (복원 SATS 맵 활성)"))
+
     def _apply_estimator(self) -> None:
         err = self.channel.apply_estimator(self.est_var.get())
         print(f"[dashboard] {self.channel.role}: estimator {self.est_var.get()}"
@@ -227,16 +236,9 @@ class PanelUI(ttk.Frame):
         if role == "theta":
             self.p_theta.update(payload.get("theta"), payload.get("noise"), b)
             if self.p_units is not None:
-                u = payload.get("units")
-                shared = (max(float(abs(__import__("numpy").asarray(u, float)).max()), 1e-6)
-                          if u is not None else None)
-                self.p_units.update(u, vmax=shared)
-                ur = payload.get("units_restored")
-                self.p_units_restored.update(ur, vmax=shared)
-                if ur is not None:
-                    import numpy as _np
-                    self.p_units_restored.ax.set_title(
-                        f"restored (res {float(_np.abs(ur).max()):.2f}%)", fontsize=8)
+                self.p_units.update(payload.get("units"))          # 센서 % 그대로(자체 스케일)
+            if getattr(self, "p_restored_map", None) is not None:
+                self.p_restored_map.update(payload.get("restored_map"), [], b)
             self.info_var.set(f"smooth={args.theta_smooth}  deadband={args.theta_deadband:g}°"
                               f"  (valid 20–150°)")
         else:

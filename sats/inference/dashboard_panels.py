@@ -42,9 +42,11 @@ class HeatmapPanel:
     """
 
     def __init__(self, ax, grid_min_mm: float, grid_max_mm: float, prefix: str = "SATS",
+                 draw_without_contacts: bool = False,
                  flip_x: bool = False, flip_y: bool = True) -> None:
         self.ax = ax
         self.prefix = prefix
+        self.draw_without_contacts = draw_without_contacts
         self.gmin, self.gmax = grid_min_mm, grid_max_mm
         self.ext = [grid_min_mm, grid_max_mm, grid_min_mm, grid_max_mm]
         self.cmap = _green_cmap()
@@ -73,13 +75,16 @@ class HeatmapPanel:
         prefix = self.prefix if theta_deg is None else f"{self.prefix}   θ={theta_deg:+.0f}°"
         if note:
             prefix = f"{prefix}   {note}"
-        if banner.state is ContactState.OFFLINE or pred_map is None or not contacts:
+        blank = (banner.state is ContactState.OFFLINE or pred_map is None
+                 or (not contacts and not self.draw_without_contacts))
+        if blank:
             self.im.set_data(np.zeros((2, 2)))     # OFFLINE·무접촉 → blank(연한 초록)
         else:
             pm = np.clip(pred_map, 0, None)
             denom = max(float(pm.max()), 1e-6)     # 프레임 peak 상대 정규화(약접촉도 또렷)
             self.im.set_data(np.clip(pm / denom, 0, 1))
-            self._draw_contacts(contacts)
+            if contacts:
+                self._draw_contacts(contacts)
         _banner_title(self.ax, banner, prefix)
 
 
@@ -89,6 +94,7 @@ class ThetaGaugePanel:
     def __init__(self, ax, prefix: str = "bending θ (live)") -> None:
         self.ax = ax
         self.prefix = prefix
+        self.draw_without_contacts = draw_without_contacts
         ax.set_xlim(*_THETA_FULL); ax.set_ylim(0, 1)
         ax.set_yticks([])
         ax.set_xlabel("theta (deg)")
@@ -141,5 +147,5 @@ class UnitsInset:
         self.im.set_data(taxel_grid(dp)); self.im.set_clim(-vmax, vmax)
         for i in range(16):
             x, y = TAXEL_XY_MM[i + 1]
-            self.ax.text(x, y, f"{dp[i]:+.0f}", ha="center", va="center", fontsize=6,
+            self.ax.text(x, y, f"{dp[i]:+.1f}", ha="center", va="center", fontsize=6,
                          color="k" if abs(dp[i]) < vmax * 0.6 else "w")

@@ -205,6 +205,15 @@ class SensorChannel:
         if self.cfilter is not None:
             self.cfilter.reset()
 
+    def apply_theta_sensor(self, sensor: str, engines: "EngineCache") -> str | None:
+        """S2: 센서 지정 + 그 센서의 SATS 엔진 로드(복원 결과를 SATS 맵으로 보이기 위함)."""
+        self.sensor = sensor
+        try:
+            self.engine = engines.get(sensor)
+        except SystemExit as e:
+            return str(e).splitlines()[0] + " — 복원 SATS 맵 없이 진행"
+        return None
+
     def apply_estimator(self, name: str) -> str | None:
         """S2: theta estimator 교체(패널별 — 다른 센서의 각도 추정)."""
         from sats.bending.config import BendingConfig
@@ -413,11 +422,14 @@ class SensorChannel:
         noise = float(np.std(recent))
         display = 0.0 if abs(smoothed) < a.theta_deadband else smoothed   # 관측 하한 dead-band
         banner = state_banner([], theta_deg=display, theta_band_deg=a.theta_deadband)
-        # ★S2 복원맵: 같은 창의 [변형 raw | 복원 결과] — theta 와 함께 표시
+        # ★S2 복원맵: 복원된 입력을 SATS 에 통과시킨 압력맵 — run_demo 2d 와 같은 형태.
+        #   (4×4 taxel 값이 아니라 "복원 후 SATS 가 보는 세계"를 보여준다)
         restored = (self.restorer.restore(np.asarray(win, np.float32))
                     if self.restorer is not None else None)
+        restored_map = (self.engine.predict(restored.astype(np.float32))
+                        if restored is not None and self.engine is not None else None)
         return {"kind": "theta", "banner": banner, "theta": display, "noise": noise,
-                "units": win, "units_restored": restored}
+                "units": win, "units_restored": restored, "restored_map": restored_map}
 
 
 def _build_reader(port: str, args, window_size: int):
