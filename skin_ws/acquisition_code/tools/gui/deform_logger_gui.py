@@ -133,22 +133,62 @@ def _has_due_frame(data: bytes) -> bool:
                for i in range(len(data) - PAYLOAD_SIZE - 1))
 
 
+class _RawPort:
+    """list_ports 가 놓친 /dev 장치를 같은 인터페이스로 감싸는 최소 표현."""
+
+    def __init__(self, device: str) -> None:
+        self.device = device
+        self.description = "(glob)"
+        self.manufacturer = self.product = None
+        self.vid = None
+
+
+def _candidate_ports() -> list:
+    """list_ports + /dev glob 을 합쳐 중복 없이 점수순으로 정렬."""
+    ports: list = []
+    try:
+        from serial.tools import list_ports
+        ports = list(list_ports.comports())
+    except ImportError:
+        pass
+    seen = {p.device for p in ports}
+    if sys.platform != "win32":                      # list_ports 가 비어도 장치는 있을 수 있다
+        import glob as _glob
+        for dev in sorted(_glob.glob("/dev/ttyACM*") + _glob.glob("/dev/ttyUSB*")):
+            if dev not in seen:
+                ports.append(_RawPort(dev))
+    return sorted(ports, key=_port_score, reverse=True)
+
+
+def _diagnose(failures: list[tuple[str, Exception]]) -> None:
+    """열기 실패 원인을 사용자가 바로 고칠 수 있는 조치로 번역."""
+    joined = " ".join(str(e).lower() for _, e in failures)
+    if "permission" in joined or "denied" in joined:
+        print("  → ★권한 문제입니다. 다음 실행 후 **재로그인**하세요:")
+        print("      sudo usermod -aG dialout $USER")
+        print("    (임시 조치: sudo chmod a+rw /dev/ttyACM0)")
+    if "busy" in joined or "resource temporarily unavailable" in joined:
+        print("  → 다른 프로그램이 포트를 점유 중입니다(로거·시리얼 모니터 중복 실행?).")
+        print("      확인: sudo fuser -v /dev/ttyACM0")
+
+
 def autodetect_port(baud: int, probe_sec: float = 2.0) -> str | None:
     """후보 포트를 점수순으로 열어 **DUE 프레임이 오는 포트**를 고른다.
 
     포트 이름만 보고 고르면 다른 USB 시리얼 장치를 잡을 수 있으므로, 실제로 프레이밍이
-    맞는 데이터가 흐르는지까지 확인한다. 실패 시 None.
+    맞는 데이터가 흐르는지까지 확인한다. 실패 시 원인을 진단해 출력하고 None.
     """
     try:
         import serial
-        from serial.tools import list_ports
     except ImportError:
         print("Error: pyserial 없음 — pip install pyserial")
         return None
-    cands = sorted(list_ports.comports(), key=_port_score, reverse=True)
+    cands = _candidate_ports()
     if not cands:
-        print("[port] 시리얼 포트가 하나도 보이지 않습니다.")
+        print("[port] 시리얼 포트가 하나도 보이지 않습니다 — USB 연결·전원을 확인하세요.")
+        print("      확인: ls -l /dev/ttyACM*   ·   dmesg | tail")
         return None
+    failures: list[tuple[str, Exception]] = []
     for p in cands:
         print(f"[port] 탐색 {p.device} ({p.description}) ...", flush=True)
         try:
@@ -160,9 +200,14 @@ def autodetect_port(baud: int, probe_sec: float = 2.0) -> str | None:
                     if _has_due_frame(buf):
                         print(f"[port] ★DUE 발견 → {p.device}")
                         return p.device
-                print(f"[port]   DUE 프레임 없음({len(buf)}B 수신)")
+                print(f"[port]   DUE 프레임 없음({len(buf)}B 수신)"
+                      + ("  ← 데이터는 오는데 프레이밍 불일치(펌웨어/보드레이트 확인)"
+                         if buf else "  ← 수신 자체가 없음"))
         except Exception as e:                       # 권한·점유 등은 다음 후보로
             print(f"[port]   열기 실패: {e}")
+            failures.append((p.device, e))
+    print(f"[port] 후보 {len(cands)}개 모두 실패.")
+    _diagnose(failures)
     return None
 
 
