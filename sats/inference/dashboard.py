@@ -62,7 +62,8 @@ class Dashboard:
     def _hint_str(self) -> str:
         """현재 설정 + 키 안내(동적). D10=단일 정밀, D5=다중접촉(2·3) 권장."""
         return (f"contacts={self.args.contacts}  indenter=D{int(self.args.diameter)}   |   "
-                f"[c] contacts 1>2>3   [d] d5/d10   [b] arm bending   [z] re-zero   [q] quit")
+                f"[c] contacts 1>2>3   [d] d5/d10   [r] 복원 ON/OFF   [b] arm bending   "
+                f"[z] re-zero   [q] quit")
 
     # ── 키 이벤트 ──────────────────────────────────────────────────────────────
     def _on_key(self, event) -> None:
@@ -76,6 +77,14 @@ class Dashboard:
             self.args.contacts = nxt
             print(f"[dashboard] max contacts = {nxt}"
                   + ("   (다중접촉은 [d]로 D5 권장)" if nxt > 1 and self.args.diameter >= 7.5 else ""))
+        elif k == "r":
+            ch = self.channels["bending"]
+            if ch.restorer is None:
+                print("[dashboard] 변형 복원기 없음 — train_deform_restorer 로 학습 필요")
+            else:
+                on = ch.toggle_restore()
+                print(f"[dashboard] 변형 복원 {'ON' if on else 'OFF'}"
+                      + ("  (유령이 사라져야 함)" if on else "  (유령이 보여야 함)"))
         elif k == "d":
             self.args.diameter = 5.0 if self.args.diameter >= 7.5 else 10.0
             self.args.min_distance_mm = self.args.diameter
@@ -106,7 +115,7 @@ class Dashboard:
         pb = self._payloads.get("bending")
         if pb is not None:
             self.p_bending.update(pb["pred_map"], pb["contacts"], pb["banner"],
-                                  theta_deg=pb.get("theta"))
+                                  theta_deg=pb.get("theta"), note=pb.get("note", ""))
             self.p_units.update(pb.get("units"))
         self._hint.set_text(self._hint_str())          # 현재 contacts/d 설정 반영
         if self.show:

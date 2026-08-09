@@ -83,6 +83,12 @@ class PanelUI(ttk.Frame):
         reset_label = {"contacts": "리셋", "theta": "재영점", "bending": "재장착"}[role]
         self.btn_reset = ttk.Button(row, text=reset_label, width=7, command=self._reset_async)
         self.btn_reset.pack(side="left", padx=2)
+        # ★S3 변형 복원 토글 — 데모의 '변형 → 정지 → 복원' 구분 동작
+        self.btn_restore = None
+        if role == "bending" and getattr(channel, "restorer", None) is not None:
+            self.btn_restore = ttk.Button(row, width=9, command=self._toggle_restore)
+            self.btn_restore.pack(side="left", padx=2)
+            self._sync_restore_label()
 
         # 설정 요약(파트별 세팅 정리)
         self.info_var = tk.StringVar(value="")
@@ -102,6 +108,15 @@ class PanelUI(ttk.Frame):
         else:
             self.btn_conn.configure(text="끊기")
 
+    def _sync_restore_label(self) -> None:
+        if self.btn_restore is not None:
+            self.btn_restore.configure(
+                text="복원 ON" if self.channel.restore_on else "복원 OFF")
+
+    def _toggle_restore(self) -> None:
+        self.channel.toggle_restore()
+        self._sync_restore_label()
+
     def _reset_async(self) -> None:
         if not self.channel.connected or self.channel.busy:
             return
@@ -120,11 +135,11 @@ class PanelUI(ttk.Frame):
         else:
             theta = payload.get("theta") if role == "bending" else None
             self.p_heat.update(payload.get("pred_map"), payload.get("contacts", []), b,
-                               theta_deg=theta)
+                               theta_deg=theta, note=payload.get("note", ""))
             if self.p_units is not None:
                 self.p_units.update(payload.get("units"))
             extra = (f"  armed θ={self.channel.theta_fixed:+.1f}°" if role == "bending"
-                     and self.channel.armed else "")
+                     and self.channel.armed and self.channel.restorer is None else "")
             self.info_var.set(f"contacts≤{args.contacts}  D{int(args.diameter)}"
                               f"  fz_on={args.fz_on:g}N{extra}")
         if self.channel.connected:

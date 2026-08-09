@@ -68,9 +68,11 @@ class HeatmapPanel:
                              xytext=(3, 3), textcoords="offset points")
 
     def update(self, pred_map, contacts: list[Contact], banner: StateBanner,
-               theta_deg: float | None = None) -> None:
+               theta_deg: float | None = None, note: str = "") -> None:
         _clear_dynamic(self.ax)
         prefix = self.prefix if theta_deg is None else f"{self.prefix}   θ={theta_deg:+.0f}°"
+        if note:
+            prefix = f"{prefix}   {note}"
         if banner.state is ContactState.OFFLINE or pred_map is None or not contacts:
             self.im.set_data(np.zeros((2, 2)))     # OFFLINE·무접촉 → blank(연한 초록)
         else:

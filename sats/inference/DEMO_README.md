@@ -85,3 +85,38 @@ sudo chmod 666 /dev/ttyUSB0      # 또는 임시
 
 ## 신규 모듈
 `z_calibration.py`(z LUT) · `demo_contacts.py`(추출·터미널·latch) · `bending_infer.py`(theta·복원) · `demo_viz.py`(2D/3D) · `run_demo.py`(엔트리). 테스트 `tests/test_demo_contacts.py`·`test_demo_viz.py`.
+
+
+## S3 패널 — 변형 복원(각도-프리)
+
+각도 추정 없이 **변형된 상태의 baseline 을 되돌려** SATS 입력을 학습 분포로 복구한다.
+
+```
+restored_pct = pct - offset(z(pct))
+```
+
+- 체크포인트: `sats/bending/runs/deform_restorer/best.pt` (`--deform-restorer` 로 변경)
+- 있으면 **재장착([b]) 불필요** — 창마다 변형 오프셋을 다시 추정한다
+- **파손 taxel 마스킹은 체크포인트에 저장된 목록을 따른다**(학습과 동일해야 함)
+
+### 데모 진행 — 구분 동작
+
+| 순서 | 조작 | 화면 |
+|---|---|---|
+| ① | 평평한 상태 | 맵 비어 있음 |
+| ② | 손으로 변형 후 **정지** | `RESTORE OFF` 로 두면 유령이 뜬다 |
+| ③ | **[r]** 또는 `복원` 버튼 | `RESTORE ON` — 유령이 사라진다 |
+| ④ | 변형 유지한 채 터치 | 접촉만 표시 |
+
+②↔③ 를 번갈아 눌러 before/after 를 보여주는 것이 가장 명확하다.
+
+### 실측 (v7, 13채널 — S07·S11·S15 파손)
+
+| 지표 | 값 |
+|---|---|
+| 유령 억제율 | **89.8%** (leave-one-session-out, 4세션) |
+| 접촉 회복 | 65.5% (준-합성) |
+| 변형이 더한 위치오차 | 약 1.4mm (기준선 2.13mm → 3.77mm) |
+
+억제율은 온전한 16채널 v6(87%)과 동등하다. 남은 위치오차는 대부분 파손된 taxel 때문이며
+변형 데이터를 더 모아도 개선되지 않는다.

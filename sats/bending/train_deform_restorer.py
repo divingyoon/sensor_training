@@ -407,7 +407,11 @@ def main() -> None:
                                       None if args.no_contact_loss else pool,
                                       cfg, device=args.device, epochs=args.epochs)
         torch.save({"model": model.state_dict(), "latent_dim": k,
-                    "restorer_mode": "latent"}, args.out / "best.pt")
+                    "restorer_mode": "latent",
+                    # ★추론에서 동일하게 마스킹해야 한다 — 체크포인트에 함께 저장해
+                    #   데모가 학습과 다른 채널 구성으로 도는 사고를 막는다.
+                    "dead_channels_1based": [c + 1 for c in dead],
+                    "sensor": sensor}, args.out / "best.pt")
         print(f"\n배포 모델 저장: {args.out/'best.pt'} (latent_dim={k}, 전 세션 학습)")
     print(f"결과: {args.out/'loso_results.json'}")
 

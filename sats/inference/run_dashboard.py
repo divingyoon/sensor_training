@@ -59,7 +59,7 @@ class SensorChannel:
     role: contacts | theta | bending. reader None 이면 OFFLINE.
     """
 
-    def __init__(self, role: str, reader, engine, bi, z_calib, args) -> None:
+    def __init__(self, role: str, reader, engine, bi, z_calib, args, restorer=None) -> None:
         self.role = role
         self.reader = reader
         self.engine = engine
@@ -71,7 +71,9 @@ class SensorChannel:
         # theta 상태
         self.theta0 = 0.0
         self.hist: collections.deque = collections.deque(maxlen=max(20, args.theta_smooth))
-        # bending 상태
+        # bending 상태 — ★변형 복원기(각도-프리). 있으면 재장착 없이 매 창 보정한다.
+        self.restorer = restorer if role == "bending" else None
+        self.restore_on = self.restorer is not None
         self.armed = False
         self.theta_fixed = 0.0
         self.bent_ref = np.zeros(16, np.float32)
@@ -109,6 +111,15 @@ class SensorChannel:
         if self.cfilter is not None:
             self.cfilter.reset()
 
+    def toggle_restore(self) -> bool:
+        """변형 복원 ON/OFF. 데모의 '변형 → 정지 → 복원' 구분 동작에 쓴다."""
+        if self.restorer is None:
+            return False
+        self.restore_on = not self.restore_on
+        if self.cfilter is not None:
+            self.cfilter.reset()                  # 전환 시 접촉 트랙 초기화
+        return self.restore_on
+
     def reset(self) -> None:
         """역할별 리셋: contacts=필터, theta=재영점, bending=재장착(무접촉 유지)."""
         if self.role == "contacts":
@@ -121,6 +132,11 @@ class SensorChannel:
             finally:
                 self.busy = ""
         else:
+            if self.restorer is not None:        # 복원기가 있으면 재장착 자체가 불필요
+                self.restore_on = True
+                if self.cfilter is not None:
+                    self.cfilter.reset()
+                return
             self.busy = "arming..."
             try:
                 self.arm_bending()
@@ -199,8 +215,9 @@ class SensorChannel:
         if self.role == "contacts":
             return self._poll_heatmap(win, theta_deg=None, bent=False)
         if self.role == "bending":
-            return self._poll_heatmap(win, theta_deg=self.theta_fixed if self.armed else None,
-                                      bent=self.armed)
+            theta = None if self.restorer is not None else (
+                self.theta_fixed if self.armed else None)
+            return self._poll_heatmap(win, theta_deg=theta, bent=self.armed)
         return self._poll_theta(win)
 
     def _poll_heatmap(self, win, *, theta_deg, bent: bool) -> dict:
@@ -209,7 +226,11 @@ class SensorChannel:
             banner = state_banner([], theta_deg=theta_deg, theta_band_deg=a.theta_deadband)
             return {"kind": "heatmap", "banner": banner, "pred_map": None,
                     "contacts": [], "theta": theta_deg, "units": None}
-        frame = (win - self.bent_ref[None, :]).astype(np.float32) if bent else win
+        # ★복원기 우선: 창마다 변형 오프셋을 추정해 뺀다(고정 스냅숏 방식보다 적응적).
+        if self.role == "bending" and self.restore_on and self.restorer is not None:
+            frame = self.restorer.restore(np.asarray(win, np.float32))
+        else:
+            frame = (win - self.bent_ref[None, :]).astype(np.float32) if bent else win
         pmap = self.engine.predict(frame)
         raw = extract_contacts(
             pmap, grid_min_mm=self.engine.grid_min_mm, grid_step_mm=self.engine.grid_step_mm,
@@ -222,7 +243,9 @@ class SensorChannel:
         banner = state_banner(contacts, theta_deg=theta_deg, theta_band_deg=a.theta_deadband)
         return {"kind": "heatmap", "banner": banner, "pred_map": pmap,
                 "contacts": contacts, "theta": theta_deg,
-                "units": win if self.role == "bending" else None}
+                "units": win if self.role == "bending" else None,
+                "note": ("RESTORE ON" if self.restore_on else "RESTORE OFF")
+                        if self.restorer is not None else ""}
 
     def _poll_theta(self, win) -> dict:
         a = self.args
@@ -296,6 +319,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--contacts", type=int, default=1,
                    help="최대 접촉 수(기본 1, 창에서 [c]로 1→2→3 토글)")
     p.add_argument("--z-calib", default=None)
+    p.add_argument("--deform-restorer",
+                   default=str(_ROOT / "sats/bending/runs/deform_restorer/best.pt"),
+                   help="각도-프리 변형 복원기 체크포인트. 있으면 S3 가 재장착 없이 "
+                        "매 창 baseline 을 복원한다([r] 로 ON/OFF 토글)")
     p.add_argument("--min-distance-mm", type=float, default=None)
     p.add_argument("--rel-threshold", type=float, default=0.3)
     p.add_argument("--min-fz", type=float, default=0.1)
@@ -347,9 +374,15 @@ def main() -> None:
         print(f"[2/3] bending estimator 로드: {est.parent.name if est.name=='best.pt' else est.name}")
         bi = BendingInference(est, device=engine.device, restorer=None, cfg=BendingConfig())
 
+    # ★변형 복원기(각도-프리) — 있으면 S3 패널이 재장착 없이 매 창 baseline 을 되돌린다.
+    from sats.inference.deform_restore import try_load as _load_restorer
+    restorer, msg = _load_restorer(args.deform_restorer, device=engine.device)
+    print(f"[2/3] {msg}")
+
     if args.ui == "tk":
         # UI에서 패널별 연결 — CLI 포트 지정이 있으면 초기 연결로 반영
-        channels = [SensorChannel(role, None, engine, bi, z_calib, args) for role in _ROLES]
+        channels = [SensorChannel(role, None, engine, bi, z_calib, args, restorer)
+                    for role in _ROLES]
         for c in channels:
             if ports[c.role] != "none" and not args.no_autoconnect:
                 err = c.connect(ports[c.role]) if ports[c.role] != "auto" or c.role == "contacts" \
@@ -371,7 +404,7 @@ def main() -> None:
         print("[dashboard] 포트 미지정 → contacts=auto 로 진행")
     print("[3/3] 리더 시작")
     channels = [SensorChannel(role, _build_reader(ports[role], args, engine.window_size),
-                              engine, bi, z_calib, args) for role in _ROLES]
+                              engine, bi, z_calib, args, restorer) for role in _ROLES]
     _wait_baselines(channels)
     from sats.inference.dashboard import Dashboard
     dash = Dashboard(channels, engine, args)
