@@ -74,13 +74,16 @@ skin_ws/raw_data/deform/<version>/        ← 예: v7 입력 시 deform/v7/
 ## 4. 바로 분석
 
 ```bash
-# 학습 PC(Linux). 취득 폴더를 그대로 가리키면 끝.
+# 학습 PC. ★반드시 repo 루트(sensor_training/)에서, .venv/bin/python 으로.
+cd ~/sensor_training
 .venv/bin/python -m sats.bending.train_deform_restorer \
-  --deform-root skin_ws/raw_data/deform/v7 \
-  --contact-trial learning_data/sensor_raw_bin/ecomesh_v6_xy1/d5/z_2.5mm/test1 \
-  --sats-run sats/training/runs/ecomesh_v6_deploy_g025 \
-  --latent-dims 2 4 8
+  --deform-root skin_ws/raw_data/deform/v7 --latent-dims 2 4 8
 ```
+
+**센서별 자산은 자동 매칭된다** — `deform/v7` 경로의 `v7`(또는 `--sensor v7`)에서
+`ecomesh_v7_xy1` 접촉 trial과 `ecomesh_v7_deploy_g025` SATS를 자동으로 잡는다.
+변형 데이터와 **다른 센서의 접촉/SATS를 섞으면 캘리브레이션이 어긋나므로**, 해당 센서
+자산이 없으면 실행을 멈추고 안내한다(그 센서의 xy 취득·학습이 선행되어야 함).
 
 로드 즉시 세션별 품질 요약(프레임 수·드리프트·|pct|max)이 출력되므로 **취득 직후 점검**에도 쓴다:
 

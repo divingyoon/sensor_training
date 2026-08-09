@@ -11,11 +11,15 @@ L_contact 의 접촉은 **기존 flat xy 취득 데이터**의 pct 를 재사용
 
 leave-one-session-out 으로 미학습 변형에서의 억제율·접촉보존을 평가한다.
 
-예:
+실행(★repo 루트 `sensor_training/` 에서, `.venv/bin/python` 으로):
   .venv/bin/python -m sats.bending.train_deform_restorer \\
-    --deform-root skin_ws/raw_data/deform_v1 \\
-    --contact-trial learning_data/sensor_raw_bin/ecomesh_v6_xy1/d5/z_2.5mm/test1 \\
-    --sats-run sats/training/runs/ecomesh_v6_deploy_g025 --latent-dims 2 4 8
+    --deform-root skin_ws/raw_data/deform/v7 --latent-dims 2 4 8
+
+★센서별 자산 자동 매칭: --deform-root 경로의 vN(또는 --sensor v7)에서
+  contact-trial = learning_data/sensor_raw_bin/ecomesh_vN_xy1/d5/z_2.5mm/test1
+  sats-run      = sats/training/runs/ecomesh_vN_deploy_g025 (없으면 all4/g01)
+을 자동 지정한다. **변형 데이터와 다른 센서의 접촉/SATS를 섞으면 안 되므로**
+(캘리브레이션 불일치) 없으면 실행을 중단하고 안내한다. 필요하면 직접 지정도 가능.
 """
 from __future__ import annotations
 
@@ -104,11 +108,13 @@ def evaluate(model: BaselineRestorer, val_win: np.ndarray, contact_pool: np.ndar
 def main() -> None:
     p = argparse.ArgumentParser(description="각도-프리 변형 복원기 학습(due 데이터만)")
     p.add_argument("--deform-root", required=True, help="변형 세션 루트(due bin 폴더들)")
-    p.add_argument("--contact-trial", type=Path,
-                   default=_REPO / "learning_data/sensor_raw_bin/ecomesh_v6_xy1/d5/z_2.5mm/test1",
-                   help="L_contact·평가용 flat 접촉 trial")
-    p.add_argument("--sats-run", type=Path,
-                   default=_REPO / "sats/training/runs/ecomesh_v6_deploy_g025")
+    p.add_argument("--sensor", default=None,
+                   help="★센서 버전(예: v7) — contact-trial·sats-run 을 그 센서 것으로 자동 지정. "
+                        "미지정 시 --deform-root 경로에서 vN 추출 시도")
+    p.add_argument("--contact-trial", type=Path, default=None,
+                   help="L_contact·평가용 flat 접촉 trial(미지정=--sensor 로 자동)")
+    p.add_argument("--sats-run", type=Path, default=None,
+                   help="동결 SATS run(미지정=--sensor 로 자동)")
     p.add_argument("--latent-dims", type=int, nargs="+", default=[2, 4, 8],
                    help="잠재 차원 스윕(억제율 vs 접촉보존 트레이드오프)")
     p.add_argument("--epochs", type=int, default=120)
@@ -118,6 +124,29 @@ def main() -> None:
     p.add_argument("--out", type=Path, default=_REPO / "sats/bending/runs/deform_restorer")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = p.parse_args()
+
+    # ── 센서 버전 해석: --sensor > deform-root 경로의 vN > 오류 ──────────────
+    sensor = args.sensor
+    if sensor is None:
+        import re
+        m = re.search(r"\bv(\d+)\b", str(args.deform_root))
+        sensor = f"v{m.group(1)}" if m else None
+    if sensor is None and (args.contact_trial is None or args.sats_run is None):
+        raise SystemExit("센서 버전을 알 수 없습니다 — --sensor v7 처럼 지정하거나 "
+                         "--contact-trial/--sats-run 을 직접 주세요")
+    if args.contact_trial is None:
+        args.contact_trial = _REPO / f"learning_data/sensor_raw_bin/ecomesh_{sensor}_xy1/d5/z_2.5mm/test1"
+    if args.sats_run is None:
+        cand = [_REPO / f"sats/training/runs/ecomesh_{sensor}_deploy_g025",
+                _REPO / f"sats/training/runs/ecomesh_{sensor}_deploy_all4",
+                _REPO / f"sats/training/runs/ecomesh_{sensor}_deploy_g01"]
+        args.sats_run = next((c for c in cand if (c / "best_model.pt").exists()), cand[0])
+    for label, path in (("contact-trial", args.contact_trial), ("sats-run", args.sats_run)):
+        if not Path(path).exists():
+            raise SystemExit(f"[{sensor}] {label} 없음: {path}\n"
+                             f"  → 해당 센서의 xy 취득/학습이 되어 있는지 확인하거나 직접 지정")
+    print(f"[센서 {sensor}] contact={args.contact_trial.parent.parent.parent.name}/"
+          f"{args.contact_trial.name}  sats={args.sats_run.name}")
 
     cfg0 = BendingConfig()
     W = cfg0.window_size
