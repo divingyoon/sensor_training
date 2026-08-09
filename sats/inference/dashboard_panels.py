@@ -94,7 +94,6 @@ class ThetaGaugePanel:
     def __init__(self, ax, prefix: str = "bending θ (live)") -> None:
         self.ax = ax
         self.prefix = prefix
-        self.draw_without_contacts = draw_without_contacts
         ax.set_xlim(*_THETA_FULL); ax.set_ylim(0, 1)
         ax.set_yticks([])
         ax.set_xlabel("theta (deg)")
