@@ -61,3 +61,6 @@ figure_set.html
 
 # 재생성 가능한 진단 per-sample 덤프(대용량) — pngs/csv/README만 추적
 samples_*.npz
+
+# 밴딩 실험 산출물(가중치·history) — 재생성 가능, 저장소에 두지 않음
+sats/bending/runs/*
