@@ -143,6 +143,29 @@ def evaluate_by_magnitude(model: BaselineRestorer, val_win: np.ndarray, pool: np
     return out
 
 
+_DROPOUT_PCT = 90.0          # |pct| 가 이보다 크면 raw≈0 = 전송 드롭아웃
+
+
+def drop_dropout_windows(win: np.ndarray, *, quiet: bool = False) -> np.ndarray:
+    """드롭아웃(raw=0 → pct −100%) 프레임이 섞인 윈도우 제거.
+
+    ★파손이 진행 중인 채널은 간헐적으로 raw=0 을 낸다. 그 프레임의 pct 는 −100% 로,
+    실제 변형(수 %)의 20배가 넘는다. L_suppress 는 "이걸 0 으로 만들라"고 가르치므로
+    모델이 변형이 아니라 드롭아웃을 지우는 데 용량을 쓴다. 프레임 수는 적어도
+    윈도우 단위로는 크게 번진다(실측 test3: 183프레임 → 윈도우 약 6.6%).
+
+    채널을 통째로 마스킹하지 않는 이유: 그 채널이 변형 신호의 최대 기여자인 경우가 있어
+    (실측 S14: 4세션 모두 채널 p99 1위) 빼면 관측력이 크게 준다.
+    """
+    if len(win) == 0:
+        return win
+    keep = ~(np.abs(win) > _DROPOUT_PCT).any(axis=(1, 2))
+    n_drop = int((~keep).sum())
+    if n_drop and not quiet:
+        print(f"    드롭아웃 윈도우 {n_drop}개 제외({n_drop / len(win) * 100:.1f}%)")
+    return win[keep]
+
+
 def _drop_contact_contaminated(win: np.ndarray, max_mag: float, *, quiet: bool = False
                                ) -> np.ndarray:
     """크기가 max_mag 를 넘는 윈도우 제거 — 손가락 압박(접촉) 오염 방지.
@@ -336,10 +359,10 @@ def main() -> None:
         per_session = []
         for i, held in enumerate(sessions):
             tr = [s for j, s in enumerate(sessions) if j != i]
-            train_win = _drop_contact_contaminated(
-                np.concatenate([deform_windows(s, W) for s in tr]), args.max_magnitude)
+            train_win = _drop_contact_contaminated(drop_dropout_windows(
+                np.concatenate([deform_windows(s, W) for s in tr])), args.max_magnitude)
             base_win = np.concatenate([deform_windows(s, W, include_baseline=True) for s in tr])
-            val_win = deform_windows(held, W)
+            val_win = drop_dropout_windows(deform_windows(held, W), quiet=True)
             if len(val_win) == 0:
                 continue
             model = train_deform_restorer(
@@ -377,8 +400,8 @@ def main() -> None:
         best_k = max(results, key=lambda kk: np.mean([r["suppression"] for r in results[kk]]))
         k = int(best_k.split(":")[1])
         cfg = replace(cfg0, restorer_mode="latent", latent_dim=k)
-        all_win = _drop_contact_contaminated(
-            np.concatenate([deform_windows(s, W) for s in sessions]), args.max_magnitude)
+        all_win = _drop_contact_contaminated(drop_dropout_windows(
+            np.concatenate([deform_windows(s, W) for s in sessions])), args.max_magnitude)
         all_base = np.concatenate([deform_windows(s, W, include_baseline=True) for s in sessions])
         model = train_deform_restorer(all_win, all_base,
                                       None if args.no_contact_loss else pool,

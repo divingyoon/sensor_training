@@ -81,3 +81,18 @@ def test_threshold_zero_keeps_everything():
     from sats.bending.train_deform_restorer import _drop_contact_contaminated
     win = _windows([1.0] * 10 + [14.0] * 5)
     assert len(_drop_contact_contaminated(win, 0.0, quiet=True)) == 15
+
+
+def test_dropout_windows_are_removed():
+    """★raw=0 드롭아웃(−100%)이 든 윈도우는 학습에서 빠져야 한다."""
+    from sats.bending.train_deform_restorer import drop_dropout_windows
+    win = _windows([3.0] * 20)
+    win[5, 4, 13] = -100.0                    # S14 한 프레임만 드롭아웃
+    kept = drop_dropout_windows(win, quiet=True)
+    assert len(kept) == 19
+
+
+def test_normal_deformation_survives():
+    from sats.bending.train_deform_restorer import drop_dropout_windows
+    win = _windows([9.5] * 20)                # 강하지만 정상 범위
+    assert len(drop_dropout_windows(win, quiet=True)) == 20
