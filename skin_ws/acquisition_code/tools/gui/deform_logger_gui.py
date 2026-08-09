@@ -104,6 +104,25 @@ _SEGMENT_PRESETS = {
 }
 
 
+_VALID_LO, _VALID_HI = 0.5, 1.5      # 채널 중앙값 대비 유효 raw 밴드
+
+
+def live_channels(row: list[int]) -> list[int]:
+    """유효 밴드 안에 있는 채널 인덱스.
+
+    ★파손 taxel 은 raw=0 을 내보내 pct 가 −100% 로 고정된다. |pct|max 를 16채널
+    전체에서 구하면 **변형을 하지 않아도 매 프레임 100%** 가 찍혀, 화면의 변형 크기와
+    커버리지가 통째로 무의미해진다(실측: 파손 3개 상태에서 50%+ 구간 100%).
+    그래서 통계는 살아 있는 채널로만 낸다. 기록되는 bin 은 16채널 그대로다.
+    """
+    alive = [v for v in row if v > 0]
+    if not alive:
+        return list(range(NUM_SENSORS))
+    med = sorted(alive)[len(alive) // 2]
+    return [i for i, v in enumerate(row)
+            if _VALID_LO * med < v < _VALID_HI * med] or list(range(NUM_SENSORS))
+
+
 def magnitude_coverage(hist: list[float]) -> list[float]:
     """|pct|max 이력 → 구간별 시간 비중[4]. 합이 1(빈 이력이면 전부 0)."""
     if not hist:
@@ -364,6 +383,7 @@ if HAS_GUI:
             self.stage_times: dict[str, float] = {}  # 단계 전환 시각(초) — 프로토콜 경계 명시
             self.deform_max = 0.0                    # 변형 중 도달한 |pct| 최대(다양성 지표)
             self.deform_hist: list[float] = []
+            self.dead_ch: list[int] = []             # 통계에서 제외한 파손 채널
             self.last_flush = time.perf_counter()
             self._init_ui()
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -511,21 +531,27 @@ if HAS_GUI:
                     # ★프레임 단위로 집계한다. 틱당 1개만 쌓으면 표본이 지나치게 성기고
                     # 짧게 스쳐간 강한 변형이 통계에서 사라진다.
                     for r in rows:
+                        live = live_channels(r)
                         self.deform_hist.append(max(
                             abs((r[i] - (self.baseline[i] or 1)) / (self.baseline[i] or 1) * 100.0)
-                            for i in range(NUM_SENSORS)))
+                            for i in live))
 
             if latest and self.baseline:
                 pct = [((latest[i] - (self.baseline[i] or 1)) / (self.baseline[i] or 1)) * 100.0
                        for i in range(NUM_SENSORS)]
                 self._paint(pct)
-                mx = max(abs(p) for p in pct)
+                live = live_channels(latest)
+                self.dead_ch = [i for i in range(NUM_SENSORS) if i not in live]
+                mx = max(abs(pct[i]) for i in live)      # 파손 채널 제외
                 if self.stage == "DEFORM":
                     self.deform_max = max(self.deform_max, mx)
                 self.stat_lbl.setText(
                     f"frames {self.count:7d} | |pct|max {mx:5.1f}% | "
                     f"deform peak {self.deform_max:5.1f}%\n"
-                    f"커버리지({self.stage})  {coverage_text(self.deform_hist)}   (★=부족)")
+                    f"커버리지({self.stage})  {coverage_text(self.deform_hist)}   (★=부족)"
+                    + (f"\n★파손 채널 제외: "
+                       f"{','.join(f'S{i + 1:02d}' for i in self.dead_ch)}"
+                       if self.dead_ch else ""))
 
             if self.stage in ("BASE_HEAD", "DEFORM", "BASE_TAIL"):
                 el = time.perf_counter() - self.stage_t0
@@ -574,6 +600,7 @@ if HAS_GUI:
                 "frames": self.count,
                 "deform_peak_pct": round(self.deform_max, 2),
                 "deform_median_pct": round(float(sorted(hist)[len(hist) // 2]), 2) if hist else 0.0,
+                "dead_channels_1based": [i + 1 for i in self.dead_ch],   # 통계 제외(기록은 16채널)
                 "magnitude_coverage": {                 # 구간별 시간 비중(학습 평가와 동일 경계)
                     n: round(c, 4) for n, c in
                     zip(("0-10", "10-25", "25-50", "50+"), magnitude_coverage(hist))},
