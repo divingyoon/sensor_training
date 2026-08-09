@@ -68,6 +68,11 @@ class SensorSerialReader:
         self.protocol         = protocol
 
         self._window: collections.deque[np.ndarray] = collections.deque(maxlen=window_size)
+        # ★스트림 연속성 감시: 버스트가 유실되면(프레이밍 오류·버퍼 밀림) 창이 시간을
+        #   건너뛴 채 이어 붙는다. LSTM 은 연속 5ms 간격만 학습했으므로 구멍 난 창은
+        #   OOD → 순간 오추론. 간극이 감지되면 창을 비워 불연속 창을 모델에 주지 않는다.
+        self._last_burst_t: float | None = None
+        self.gap_count = 0
 
         self._baseline: Optional[np.ndarray] = None
         self._baseline_buf: list[np.ndarray] = []
@@ -266,6 +271,14 @@ class SensorSerialReader:
             self._collect_baseline(frames)
             return
 
+        now = time.monotonic()
+        if self._last_burst_t is not None and now - self._last_burst_t > 0.08:
+            self._window.clear()                     # ≥1 버스트 유실 — 불연속 창 방지
+            self.gap_count += 1
+            if self.gap_count <= 5 or self.gap_count % 50 == 0:
+                print(f"\n[SerialReader] 스트림 간극 #{self.gap_count} "
+                      f"({(now - self._last_burst_t) * 1000:.0f}ms) — 창 리셋")
+        self._last_burst_t = now
         # s_norm = (raw - baseline) / baseline * 100  (파손 채널은 0 고정)
         s_norm = ((frames - self._baseline) / self._baseline * 100.0).astype(np.float32)
         if len(self.dead_channels):
