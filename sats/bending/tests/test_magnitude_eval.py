@@ -65,3 +65,19 @@ def test_bins_cover_all_magnitudes():
     assert MAG_BINS[0][0] == 0.0 and np.isinf(MAG_BINS[-1][1])
     for (_, hi), (lo, _) in zip(MAG_BINS[:-1], MAG_BINS[1:]):
         assert hi == lo                                # 경계에 빈틈 없음
+
+
+def test_contact_contaminated_windows_are_dropped():
+    """★10% 초과(손가락 압박)는 학습에서 빠져야 한다 — L_suppress 에 들어가면
+    모델이 '접촉은 지워라'를 배운다."""
+    from sats.bending.train_deform_restorer import _drop_contact_contaminated
+    win = _windows([1.0] * 50 + [14.0] * 7)
+    kept = _drop_contact_contaminated(win, 10.0, quiet=True)
+    assert len(kept) == 50
+    assert window_magnitude(kept).max() <= 10.0
+
+
+def test_threshold_zero_keeps_everything():
+    from sats.bending.train_deform_restorer import _drop_contact_contaminated
+    win = _windows([1.0] * 10 + [14.0] * 5)
+    assert len(_drop_contact_contaminated(win, 0.0, quiet=True)) == 15

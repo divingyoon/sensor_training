@@ -143,6 +143,26 @@ def evaluate_by_magnitude(model: BaselineRestorer, val_win: np.ndarray, pool: np
     return out
 
 
+def _drop_contact_contaminated(win: np.ndarray, max_mag: float, *, quiet: bool = False
+                               ) -> np.ndarray:
+    """크기가 max_mag 를 넘는 윈도우 제거 — 손가락 압박(접촉) 오염 방지.
+
+    ★현장 관찰: 손으로 변형만 시키면 채널 평균 |pct| 가 10% 를 넘지 않는다. 넘는 경우는
+    활성면을 손가락으로 **누른** 것이고, 그건 변형이 아니라 접촉이다. 이런 윈도우가
+    L_suppress(=출력 0) 에 들어가면 모델은 "손가락 접촉은 지워라"를 학습하고,
+    데모에서 관람객의 실제 터치까지 지워버린다. L_contact 로도 못 막는다 —
+    상반된 두 라벨을 같은 신호에 주는 셈이기 때문이다.
+    """
+    if max_mag <= 0 or len(win) == 0:
+        return win
+    keep = window_magnitude(win) <= max_mag
+    n_drop = int((~keep).sum())
+    if n_drop and not quiet:
+        print(f"    접촉 오염 의심 윈도우 {n_drop}개 제외(크기 > {max_mag:.0f}%, "
+              f"{n_drop / len(win) * 100:.1f}%)")
+    return win[keep]
+
+
 def _rel(path: Path) -> str:
     """저장소 기준 상대경로로 표기(저장소 밖이면 절대경로 그대로)."""
     path = Path(path)
@@ -232,6 +252,10 @@ def main() -> None:
     p.add_argument("--n-contact", type=int, default=300)
     p.add_argument("--fz-min", type=float, default=0.5)
     p.add_argument("--no-contact-loss", action="store_true", help="L_contact 제거(ablation)")
+    p.add_argument("--max-magnitude", type=float, default=10.0,
+                   help="★이 크기(채널 평균 |pct| %%)를 넘는 변형 윈도우는 학습에서 제외. "
+                        "그 영역은 손가락 압박(=접촉)이 섞인 것이라, L_suppress 에 들어가면 "
+                        "모델이 '접촉은 지워야 할 것'으로 배운다. 0 이면 제외 안 함")
     p.add_argument("--dead-channels", default="auto",
                    help="파손 taxel(1-based, 예 '11,15'). 'auto'=채널 건강도 진단으로 "
                         "자동 검출(기본) · 'none'=마스킹 안 함")
@@ -312,7 +336,8 @@ def main() -> None:
         per_session = []
         for i, held in enumerate(sessions):
             tr = [s for j, s in enumerate(sessions) if j != i]
-            train_win = np.concatenate([deform_windows(s, W) for s in tr])
+            train_win = _drop_contact_contaminated(
+                np.concatenate([deform_windows(s, W) for s in tr]), args.max_magnitude)
             base_win = np.concatenate([deform_windows(s, W, include_baseline=True) for s in tr])
             val_win = deform_windows(held, W)
             if len(val_win) == 0:
@@ -352,7 +377,8 @@ def main() -> None:
         best_k = max(results, key=lambda kk: np.mean([r["suppression"] for r in results[kk]]))
         k = int(best_k.split(":")[1])
         cfg = replace(cfg0, restorer_mode="latent", latent_dim=k)
-        all_win = np.concatenate([deform_windows(s, W) for s in sessions])
+        all_win = _drop_contact_contaminated(
+            np.concatenate([deform_windows(s, W) for s in sessions]), args.max_magnitude)
         all_base = np.concatenate([deform_windows(s, W, include_baseline=True) for s in sessions])
         model = train_deform_restorer(all_win, all_base,
                                       None if args.no_contact_loss else pool,

@@ -558,6 +558,8 @@ if HAS_GUI:
                     f"frames {self.count:7d} | 변형 {mx:5.2f}% | "
                     f"deform peak {self.deform_max:5.1f}%\n"
                     f"커버리지({self.stage})  {coverage_text(self.deform_hist)}   (★=부족)"
+                    + ("\n⚠ 10% 초과 — 손가락으로 **누르고** 있습니다. 변형만 주세요"
+                       if self.stage == "DEFORM" and mx > 10.0 else "")
                     + (f"\n★파손 채널 제외: "
                        f"{','.join(f'S{i + 1:02d}' for i in self.dead_ch)}"
                        if self.dead_ch else ""))
@@ -627,6 +629,10 @@ if HAS_GUI:
                 json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
             self.stage = "FINISHED"
             print(f"[deform] 커버리지 {coverage_text(hist)}")
+            over = coverage_seconds(hist)[3]
+            if over > 3.0:
+                print(f"  ⚠ 10% 초과 {over:.0f}s — 손가락 압박(접촉)이 섞였을 가능성. "
+                      f"학습에서 자동 제외되지만, 활성면을 누르지 말고 끝단만 잡으세요.")
             short = [f"{n}%({t - sc:.0f}s 부족)" for n, sc, t in
                      zip(("0-2", "2-5", "5-10"), coverage_seconds(hist), _MAG_TARGET_SEC)
                      if sc < t]
