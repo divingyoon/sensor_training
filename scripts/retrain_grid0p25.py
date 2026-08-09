@@ -31,9 +31,28 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-TEMPLATE_CFG = _ROOT / "sats/training/runs/ecomesh_v6_deploy_all4/config.json"
-FALLBACK_WARM = _ROOT / "sats/training/runs/ecomesh_v6_deploy_all4/best_model.pt"
 DEPTH = {"d5": "2.5", "d10": "3.5"}
+
+
+def _find_run_file(run_tail: str, filename: str) -> Path | None:
+    """runs/ 에서 ecomesh_<tail> 과 <tail> 두 이름 모두 탐색.
+
+    ★사용자가 UI 콤보 폭 때문에 run 폴더의 ecomesh_ 접두사를 제거(rename)한 PC 가
+    있다 — 고정 경로는 그런 PC 에서 FileNotFoundError 로 죽는다.
+    """
+    for name in (f"ecomesh_{run_tail}", run_tail):
+        f = _ROOT / "sats/training/runs" / name / filename
+        if f.exists():
+            return f
+    return None
+
+
+def template_cfg() -> Path:
+    for tail in ("v6_deploy_all4", "v6_deploy_g025", "v5_deploy_all4"):
+        f = _find_run_file(tail, "config.json")
+        if f:
+            return f
+    raise FileNotFoundError("템플릿 config 없음 — runs/ 에 v6_deploy_all4(또는 g025) 필요")
 
 
 def preprocess_if_needed(ver: str) -> Path:
@@ -76,12 +95,13 @@ def build_index_if_needed(ver: str, raw_bin: Path) -> Path:
 
 
 def warm_ckpt(ver: str) -> Path:
-    own = _ROOT / f"sats/training/runs/ecomesh_{ver}_deploy_all4/best_model.pt"
-    if own.exists():
+    own = _find_run_file(f"{ver}_deploy_all4", "best_model.pt")
+    if own:
         return own
-    if not FALLBACK_WARM.exists():
-        raise FileNotFoundError(f"warm ckpt 없음: {own} / {FALLBACK_WARM}")
-    return FALLBACK_WARM
+    fb = _find_run_file("v6_deploy_all4", "best_model.pt")
+    if fb is None:
+        raise FileNotFoundError(f"warm ckpt 없음: {ver}_deploy_all4 / v6_deploy_all4")
+    return fb
 
 
 def _grid_params(step: float) -> tuple[int, int, str]:
@@ -97,7 +117,7 @@ def train_version(ver: str, idx_dir: Path, epochs: int, step: float,
     from sats.training.config import SATSConfig
     from sats.training.train_e2e import train
 
-    raw = json.loads(TEMPLATE_CFG.read_text())
+    raw = json.loads(template_cfg().read_text())
     valid = {f.name for f in fields(SATSConfig)}
     cfg_d = {k: v for k, v in raw.items() if k in valid}
     grid_size, local_map, tag = _grid_params(step)
