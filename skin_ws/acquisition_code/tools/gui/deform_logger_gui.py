@@ -70,6 +70,7 @@ PAYLOAD_SIZE = NUM_SENSORS * FIFO_FRAMES * 4        # 640 bytes
 # ── 프로토콜 기본값(초) ─────────────────────────────────────────────────────
 BASE_SEC = 10.0          # BASE_TAIL 자동 종료 길이 · BASE_HEAD 권장 길이
 MIN_BASE_SEC = 5.0       # BASE_HEAD 최소 확보(너무 빨리 Enter 치는 것 방지)
+_NO_DATA_SEC = 3.0       # 이만큼 프레임이 없으면 경고(포트는 열렸는데 데이터가 없는 경우)
 
 _STAGES = ("BASE_HEAD", "DEFORM", "BASE_TAIL", "DONE")
 _STAGE_MSG = {
@@ -394,6 +395,8 @@ if HAS_GUI:
             self.stage_times: dict[str, float] = {}  # 단계 전환 시각(초) — 프로토콜 경계 명시
             self.deform_max = 0.0                    # 변형 중 도달한 |pct| 최대(다양성 지표)
             self.deform_hist: list[float] = []
+            self.last_frame_t = time.perf_counter()  # 프레임 흐름 감시
+            self._no_data_warned = False
             self.dead_ch: list[int] = list(getattr(args, "dead", []))   # 통계 제외(기록은 16채널)
             self.live_ch = [i for i in range(NUM_SENSORS) if i not in self.dead_ch]
             self.last_flush = time.perf_counter()
@@ -512,13 +515,38 @@ if HAS_GUI:
             """자동 종료 길이. BASE_TAIL 만 자동, 앞 두 단계는 Enter 대기(None)."""
             return self.args.base_sec if self.stage == "BASE_TAIL" else None
 
+        def _check_data_flow(self) -> None:
+            """프레임이 끊기면 알린다.
+
+            ★포트가 열려도 프레임이 안 올 수 있다(Due 정지·프로그래밍 포트 연결·펌웨어
+            미동작). 이때 reader 는 예외를 내지 않으므로 오류 표시도 없고, 화면은 baseline
+            이 변하지 않은 채 조용히 멈춘 것처럼 보인다. 실제로 이 상태로 세션을 끝까지
+            진행해 빈 데이터를 얻은 사례가 있어 감시가 필요하다.
+            """
+            if self.stage not in ("BASE_HEAD", "DEFORM", "BASE_TAIL"):
+                return
+            gap = time.perf_counter() - self.last_frame_t
+            if gap < _NO_DATA_SEC:
+                self._no_data_warned = False
+                return
+            if not self._no_data_warned:
+                self._no_data_warned = True
+                print(f"[경고] {gap:.0f}초째 DUE 프레임 없음 — 센서/포트를 확인하세요.", flush=True)
+                print("  1) 다른 프로그램이 포트를 잡고 있는지: sudo fuser -v /dev/ttyACM0")
+                print("  2) Due 를 뽑았다 꽂거나 리셋 버튼")
+                print("  3) --port 를 빼고 실행하면 자동 탐지가 프레임 유무까지 확인합니다")
+            self.stage_lbl.setText(f"⚠ DUE 프레임 없음 {gap:.0f}s — 터미널 안내 참조")
+            self.stage_lbl.setStyleSheet("color:#c22; font-weight:bold; font-size:18px;")
+
         # ── 루프 ────────────────────────────────────────────────────────────
         def tick(self) -> None:
             if not reader_errors.empty():
                 who, msg = reader_errors.get()
+                print(f"[오류] {who}: {msg}", flush=True)       # ★터미널에도 — 창만 보면 놓친다
                 self.stage_lbl.setText(f"{who} 오류: {msg}")
                 self.stage_lbl.setStyleSheet("color:#c22; font-weight:bold; font-size:18px;")
                 return
+            self._check_data_flow()
             while not flag_queue.empty():            # 터미널 입력 처리
                 t_s, label = flag_queue.get()
                 if label is None:                    # 빈 Enter = 다음 단계
@@ -532,6 +560,7 @@ if HAS_GUI:
                     ns, payload = due_queue.get_nowait()
                 except Empty:
                     break
+                self.last_frame_t = time.perf_counter()
                 if self.stage in ("BASE_HEAD", "DEFORM", "BASE_TAIL"):
                     self.due_bin.write(ns, payload)
                     self.count += 1
