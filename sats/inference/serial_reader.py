@@ -81,6 +81,7 @@ class SensorSerialReader:
 
         # 진단용 카운터
         self.baseline_ready   = False
+        self.dead_channels    = np.empty(0, dtype=int)   # baseline≈0 인 파손 taxel
         self.bursts_received  = 0
         self.raw_bytes_in     = 0    # read_until 이 반환한 누적 바이트 수
         self.footer_errors    = 0    # footer 불일치 횟수
@@ -263,8 +264,10 @@ class SensorSerialReader:
             self._collect_baseline(frames)
             return
 
-        # s_norm = (raw - baseline) / baseline * 100
+        # s_norm = (raw - baseline) / baseline * 100  (파손 채널은 0 고정)
         s_norm = ((frames - self._baseline) / self._baseline * 100.0).astype(np.float32)
+        if len(self.dead_channels):
+            s_norm[:, self.dead_channels] = 0.0
 
         for t in range(FIFO_FRAMES):
             self._window.append(s_norm[t])
@@ -314,6 +317,16 @@ class SensorSerialReader:
         if n >= self._baseline_n_bursts:
             arr = np.stack(self._baseline_buf, axis=0)
             self._baseline = arr.mean(axis=0)
+            # ★파손 taxel 은 raw=0 → baseline=0. 그대로 나누면 NaN 이 창 전체에 퍼져
+            #   맵·복원기·미니맵이 모두 무너진다(0/0=NaN, x/0=inf). 해당 채널은 dead 로
+            #   기록하고 pct 를 0(=변화 없음)으로 고정한다.
+            med = float(np.median(self._baseline[self._baseline > 0])) \
+                if (self._baseline > 0).any() else 1.0
+            self.dead_channels = np.flatnonzero(self._baseline < 0.5 * med)
+            if len(self.dead_channels):
+                names = ",".join(f"S{i + 1:02d}" for i in self.dead_channels)
+                print(f"\n[SerialReader] ★파손 채널 감지: {names} — pct 0 고정")
+                self._baseline = np.where(self._baseline < 0.5 * med, 1.0, self._baseline)
             self.baseline_ready = True
-            print(f"\n[SerialReader] baseline 완료!")
+            print(f"[SerialReader] baseline 완료!")
             print(f"  raw ADC: min={self._baseline.min():.0f}  max={self._baseline.max():.0f}")

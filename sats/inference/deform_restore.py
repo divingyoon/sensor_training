@@ -80,3 +80,32 @@ def try_load(ckpt_path: str | Path = _DEFAULT_CKPT, device: str = "cpu"
     except Exception as e:
         return None, f"복원기 없음 — {e}"
     return r, r.describe()
+
+
+def _patch_cli() -> int:
+    """구 체크포인트에 마스킹 메타데이터 주입(재학습 불필요).
+
+    메타 저장 기능 이전에 학습된 best.pt 는 dead_channels/sensor 가 없어
+    추론에서 마스킹이 빠진다(sensor=? 마스킹=없음). 모델 가중치는 마스킹된
+    입력으로 학습되어 그대로 유효하므로 메타만 채우면 된다.
+
+    사용: python -m sats.inference.deform_restore <ckpt> --dead-channels 7,11,15 --sensor v7
+    """
+    import argparse
+    ap = argparse.ArgumentParser(description="deform 복원기 체크포인트 메타 보정")
+    ap.add_argument("ckpt")
+    ap.add_argument("--dead-channels", required=True, help="1-based, 예 '7,11,15'")
+    ap.add_argument("--sensor", required=True, help="예 v7")
+    a = ap.parse_args()
+    path = Path(a.ckpt)
+    ck = torch.load(path, map_location="cpu")
+    ck["dead_channels_1based"] = [int(x) for x in a.dead_channels.split(",") if x]
+    ck["sensor"] = a.sensor
+    torch.save(ck, path)
+    print(f"보정 완료: {path}")
+    print(f"  sensor={ck['sensor']}  마스킹={ck['dead_channels_1based']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_patch_cli())
