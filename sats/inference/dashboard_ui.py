@@ -74,9 +74,11 @@ class PanelUI(ttk.Frame):
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
 
-        # ★컨트롤 행: port ▾ → sensor(v*) ▾ → run(추론 파일) ▾ → 연결.
-        #   한 창에서 패널마다 서로 다른 센서·추론 파일을 배정한다.
+        # ★컨트롤 2행 구성 — 한 줄에 다 넣으면 패널 폭을 넘겨 뒤쪽 버튼이 잘린다.
+        #   1행(row): port · 연결 · 리셋 (동작)
+        #   2행(sel): v* · run/est · restore (모델 선택)
         row = ttk.Frame(self); row.pack(fill="x", pady=(6, 0))
+        sel = ttk.Frame(self); sel.pack(fill="x", pady=(3, 0))
         self.sensor_var = self.run_var = None
         self.run_box = None
         ttk.Label(row, text="port").pack(side="left")
@@ -88,45 +90,45 @@ class PanelUI(ttk.Frame):
         if engines is not None and sensors and role == "theta":
             # ★S2: 다른 센서의 theta + deform 복원기 선택
             from sats.inference.run_dashboard import available_estimators, available_restorers
-            ttk.Label(row, text="v*").pack(side="left", padx=(6, 0))
+            ttk.Label(sel, text="v*").pack(side="left")
             self.sensor_var = tk.StringVar(value="")
-            sbox = ttk.Combobox(row, textvariable=self.sensor_var, width=3,
+            sbox = ttk.Combobox(sel, textvariable=self.sensor_var, width=3,
                                 values=list(sensors), state="readonly")
             sbox.pack(side="left", padx=2)
             sbox.bind("<<ComboboxSelected>>",
                       lambda e: setattr(self.channel, "sensor", self.sensor_var.get()))
-            ttk.Label(row, text="est").pack(side="left", padx=(6, 0))
+            ttk.Label(sel, text="est").pack(side="left", padx=(6, 0))
             self.est_var = tk.StringVar(value="")
-            ebox = ttk.Combobox(row, textvariable=self.est_var, width=14,
+            ebox = ttk.Combobox(sel, textvariable=self.est_var, width=13,
                                 values=available_estimators(), state="readonly")
             ebox.pack(side="left", padx=2)
             ebox.bind("<<ComboboxSelected>>", lambda e: self._apply_estimator())
-            ttk.Label(row, text="restore").pack(side="left", padx=(6, 0))
+            ttk.Label(sel, text="restore").pack(side="left", padx=(6, 0))
             self.restore_var = tk.StringVar(value="")
-            rbox = ttk.Combobox(row, textvariable=self.restore_var, width=15,
+            rbox = ttk.Combobox(sel, textvariable=self.restore_var, width=14,
                                 values=available_restorers(), state="readonly")
             rbox.pack(side="left", padx=2)
             rbox.bind("<<ComboboxSelected>>", lambda e: self._apply_restorer())
         if engines is not None and sensors and role in ("contacts", "bending"):
             from sats.inference.run_dashboard import available_runs
             self._available_runs = available_runs
-            ttk.Label(row, text="v*").pack(side="left", padx=(6, 0))
+            ttk.Label(sel, text="v*").pack(side="left")
             self.sensor_var = tk.StringVar(value="")
-            sbox = ttk.Combobox(row, textvariable=self.sensor_var, width=3,
+            sbox = ttk.Combobox(sel, textvariable=self.sensor_var, width=3,
                                 values=list(sensors), state="readonly")
             sbox.pack(side="left", padx=2)
             sbox.bind("<<ComboboxSelected>>", lambda e: self._on_sensor_selected())
-            ttk.Label(row, text="run").pack(side="left", padx=(6, 0))
+            ttk.Label(sel, text="run").pack(side="left", padx=(6, 0))
             self.run_var = tk.StringVar(value="")
-            self.run_box = ttk.Combobox(row, textvariable=self.run_var, width=20,
+            self.run_box = ttk.Combobox(sel, textvariable=self.run_var, width=18,
                                         values=[], state="readonly")
             self.run_box.pack(side="left", padx=2)
             self.run_box.bind("<<ComboboxSelected>>", lambda e: self._apply_run())
             if role == "bending":
                 from sats.inference.run_dashboard import available_restorers
-                ttk.Label(row, text="restore").pack(side="left", padx=(6, 0))
+                ttk.Label(sel, text="restore").pack(side="left", padx=(6, 0))
                 self.restore_var = tk.StringVar(value="")
-                rbox = ttk.Combobox(row, textvariable=self.restore_var, width=15,
+                rbox = ttk.Combobox(sel, textvariable=self.restore_var, width=14,
                                     values=available_restorers(), state="readonly")
                 rbox.pack(side="left", padx=2)
                 rbox.bind("<<ComboboxSelected>>", lambda e: self._apply_restorer())
