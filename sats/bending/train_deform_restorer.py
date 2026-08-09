@@ -105,6 +105,30 @@ def evaluate(model: BaselineRestorer, val_win: np.ndarray, contact_pool: np.ndar
     }
 
 
+_MAG_BINS = ((0.0, 10.0), (10.0, 25.0), (25.0, 50.0), (50.0, np.inf))
+
+
+def evaluate_by_magnitude(model: BaselineRestorer, val_win: np.ndarray, pool: np.ndarray,
+                          sats, device: str, bins=_MAG_BINS) -> list[dict]:
+    """변형 **크기 구간별** 성능 — 평균 하나로는 답할 수 없는 질문에 답한다.
+
+    "복원이 안 되는가"와 "특정 크기 이상에서만 안 되는가"는 완전히 다른 결론으로 이어진다.
+    전자면 방법을 바꿔야 하고, 후자면 **데모에서 쓸 변형 범위를 정하면** 되기 때문이다.
+    구간 기준은 윈도우의 |pct|max(그 변형이 얼마나 센가).
+    """
+    mag = np.abs(val_win).max(axis=(1, 2))
+    out = []
+    for lo, hi in bins:
+        sel = (mag >= lo) & (mag < hi)
+        if sel.sum() < 8:                       # 표본이 너무 적으면 수치가 의미 없다
+            continue
+        r = evaluate(model, val_win[sel], pool, sats, device)
+        r.update({"mag_lo": lo, "mag_hi": None if np.isinf(hi) else hi,
+                  "n_windows": int(sel.sum())})
+        out.append(r)
+    return out
+
+
 def _rel(path: Path) -> str:
     """저장소 기준 상대경로로 표기(저장소 밖이면 절대경로 그대로)."""
     path = Path(path)
@@ -280,10 +304,16 @@ def main() -> None:
                 cfg, device=args.device, epochs=args.epochs)
             r = evaluate(model, val_win, pool, sats, args.device)
             r["held_out"] = held.name
+            r["by_magnitude"] = evaluate_by_magnitude(model, val_win, pool, sats, args.device)
             per_session.append(r)
             print(f"  z={k} held={held.name:12s} 억제 {r['suppression']*100:5.1f}%  "
                   f"접촉회복 {r['contact_recovery']*100:5.1f}%  "
                   f"loc {r['loc_uncorrected_mm']:.2f}→{r['loc_corrected_mm']:.2f}mm")
+            for b in r["by_magnitude"]:          # ★크기별 — 데모 범위 결정의 근거
+                rng = f"|pct| {b['mag_lo']:.0f}~" + (f"{b['mag_hi']:.0f}%" if b["mag_hi"]
+                                                    else "그 이상")
+                print(f"      {rng:16s} n={b['n_windows']:5d}  억제 {b['suppression']*100:5.1f}%"
+                      f"  loc {b['loc_uncorrected_mm']:5.2f}→{b['loc_corrected_mm']:5.2f}mm")
         if per_session:
             results[f"latent:{k}"] = per_session
             sup = np.mean([r["suppression"] for r in per_session])
