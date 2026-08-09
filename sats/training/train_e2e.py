@@ -121,6 +121,14 @@ def init_from_staged_ckpt(ckpt_path: Union[str, Path], model: SATSCNNStage) -> N
     모든 파라미터는 requires_grad=True 상태를 유지한다 (E2E 학습).
     """
     ckpt = torch.load(ckpt_path, map_location="cpu")
+    # ★대상 모델에 없는 키(예: size-ON ckpt 의 size_film.*)는 버린다 — size 조건을
+    #   끄고 재학습할 때 size-ON 배포 가중치를 warm-start 로 쓰기 위함.
+    target_keys = set(model.state_dict().keys())
+    dropped = [k for k in ckpt["model"] if k not in target_keys]
+    if dropped:
+        log.info("init-ckpt 여분 키 %d개 제거(대상 모델에 없음): %s",
+                 len(dropped), sorted({k.split('.')[0] for k in dropped}))
+        ckpt = {"model": {k: v for k, v in ckpt["model"].items() if k in target_keys}}
     try:
         model.load_state_dict(ckpt["model"], strict=True)
         log.info("staged 체크포인트로 초기화 완료: %s", ckpt_path)

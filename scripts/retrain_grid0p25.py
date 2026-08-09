@@ -93,7 +93,7 @@ def _grid_params(step: float) -> tuple[int, int, str]:
 
 
 def train_version(ver: str, idx_dir: Path, epochs: int, step: float,
-                  batch_size: int | None = None) -> None:
+                  batch_size: int | None = None, size_input: bool = True) -> None:
     from sats.training.config import SATSConfig
     from sats.training.train_e2e import train
 
@@ -101,6 +101,10 @@ def train_version(ver: str, idx_dir: Path, epochs: int, step: float,
     valid = {f.name for f in fields(SATSConfig)}
     cfg_d = {k: v for k, v in raw.items() if k in valid}
     grid_size, local_map, tag = _grid_params(step)
+    if not size_input:
+        # ★size 조건 제거 실험: 원 논문에는 없는 d5/d10 명시 조건이 zero-shot 형상
+        #   일반화(임의 인덴터)를 막는다는 가설 검증용. run 이름으로 구분(…ns).
+        tag += "ns"
     run_name = f"ecomesh_{ver}_deploy_{tag}"
     cfg_d.update(
         grid_step_mm=step, grid_size=grid_size, local_map_size=local_map,  # ±3.5mm 유지
@@ -108,6 +112,7 @@ def train_version(ver: str, idx_dir: Path, epochs: int, step: float,
         dataset_index_path=str(idx_dir / "dataset_index.json"),
         run_name=run_name, out_dir=str(_ROOT / "sats/training/runs"),
         epochs=epochs,
+        use_indenter_size_input=size_input,
     )
     if batch_size:                       # 0.1mm(201²)는 VRAM 24GB서 2048 OOM → 축소 필요
         cfg_d["batch_size"] = batch_size
@@ -129,12 +134,15 @@ def main() -> None:
     ap.add_argument("--batch-size", type=int, default=None,
                     help="미지정=템플릿(2048). 0.1mm는 VRAM 24GB서 OOM → 1024 권장")
     ap.add_argument("--skip-train", action="store_true", help="전처리·인덱스만")
+    ap.add_argument("--no-size-input", action="store_true",
+                    help="indenter 크기 조건(FiLM) 제거 — 형상 일반화 실험(run 접미사 ns)")
     args = ap.parse_args()
     for ver in args.versions:
         raw_bin = preprocess_if_needed(ver)
         idx_dir = build_index_if_needed(ver, raw_bin)
         if not args.skip_train:
-            train_version(ver, idx_dir, args.epochs, args.grid_step, args.batch_size)
+            train_version(ver, idx_dir, args.epochs, args.grid_step, args.batch_size,
+                          size_input=not args.no_size_input)
     print("전체 완료:", ", ".join(args.versions))
 
 
