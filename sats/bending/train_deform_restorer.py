@@ -105,6 +105,21 @@ def evaluate(model: BaselineRestorer, val_win: np.ndarray, contact_pool: np.ndar
     }
 
 
+def _find_contact_trial(sensor: str) -> Path | None:
+    """센서의 xy 접촉 trial 을 **실제로 존재하는 것 중에서** 고른다.
+
+    d5/z_2.5mm/test1 처럼 조합을 하드코딩하면 PC 마다 취득 조합이 달라 실패한다.
+    d5(작은 인덴터)를 우선 — 접촉이 국소적이라 L_contact 의 보존 판정이 더 엄격하다.
+    """
+    root = _REPO / f"learning_data/sensor_raw_bin/ecomesh_{sensor}_xy1"
+    if not root.exists():
+        return None
+    trials = sorted({b.parent for b in root.rglob("*_merged.bin")})
+    if not trials:
+        return None
+    return min(trials, key=lambda p: (0 if "/d5/" in f"{p}/" else 1, str(p)))
+
+
 def _resolve_dead_channels(spec: str, deform_root) -> tuple[int, ...]:
     """'auto'|'none'|'11,15'(1-based) → 마스킹할 0-based 채널.
 
@@ -177,7 +192,18 @@ def main() -> None:
         raise SystemExit("센서 버전을 알 수 없습니다 — --sensor v7 처럼 지정하거나 "
                          "--contact-trial/--sats-run 을 직접 주세요")
     if args.contact_trial is None:
-        args.contact_trial = _REPO / f"learning_data/sensor_raw_bin/ecomesh_{sensor}_xy1/d5/z_2.5mm/test1"
+        found = _find_contact_trial(sensor)
+        if found is None:
+            root = _REPO / f"learning_data/sensor_raw_bin/ecomesh_{sensor}_xy1"
+            have = sorted(p.name for p in root.glob("*")) if root.exists() else []
+            raise SystemExit(
+                f"[{sensor}] xy 접촉 trial 을 찾지 못했습니다: {root}\n"
+                f"  이 PC 에 있는 것: {have or '(폴더 자체가 없음)'}\n"
+                f"  → --contact-trial 로 직접 지정하거나 해당 센서 xy 데이터를 가져오세요.\n"
+                f"  ★다른 센서의 접촉 trial 로 대체하면 캘리브레이션이 어긋나므로 금지.")
+        args.contact_trial = found
+        print(f"[센서 {sensor}] 접촉 trial 자동 선택: "
+              f"{found.relative_to(_REPO / 'learning_data/sensor_raw_bin')}")
     if args.sats_run is None:
         cand = [_REPO / f"sats/training/runs/ecomesh_{sensor}_deploy_g025",
                 _REPO / f"sats/training/runs/ecomesh_{sensor}_deploy_all4",
