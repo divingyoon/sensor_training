@@ -131,7 +131,10 @@ class UnitsInset:
         보여 복원이 안 된 것으로 오독된다."""
         _clear_dynamic(self.ax)
         if pct_window is None:
+            # ★빈 흰 판은 "복원이 잘 됨"과 구분되지 않는다 — 미장착임을 명시.
             self.im.set_data(np.zeros((4, 4)))
+            self.ax.text(0, 0, "select restore", ha="center", va="center",
+                         fontsize=7, color="#999999")
             return
         dp = np.asarray(pct_window, float).mean(0)      # [16] 윈도우 평균 Δp%
         vmax = vmax if vmax else max(float(np.abs(dp).max()), 1e-6)

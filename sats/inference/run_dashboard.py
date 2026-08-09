@@ -545,6 +545,13 @@ def main() -> None:
     # ★변형 복원기(각도-프리) — 있으면 S3 패널이 재장착 없이 매 창 baseline 을 되돌린다.
     from sats.inference.deform_restore import try_load as _load_restorer
     restorer, msg = _load_restorer(args.deform_restorer, device=args.device)
+    if restorer is None:
+        # 기본 경로가 비어도(예: 폴더가 deform_restorer_v7 로 rename) 있는 것을 찾아 장착.
+        for name in available_restorers():
+            restorer, msg = _load_restorer(
+                _ROOT / "sats/bending/runs" / name / "best.pt", device=args.device)
+            if restorer is not None:
+                break
     print(f"[2/3] {msg}")
 
     if args.ui == "tk":

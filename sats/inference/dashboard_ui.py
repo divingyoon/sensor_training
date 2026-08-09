@@ -231,7 +231,12 @@ class PanelUI(ttk.Frame):
                 shared = (max(float(abs(__import__("numpy").asarray(u, float)).max()), 1e-6)
                           if u is not None else None)
                 self.p_units.update(u, vmax=shared)
-                self.p_units_restored.update(payload.get("units_restored"), vmax=shared)
+                ur = payload.get("units_restored")
+                self.p_units_restored.update(ur, vmax=shared)
+                if ur is not None:
+                    import numpy as _np
+                    self.p_units_restored.ax.set_title(
+                        f"restored (res {float(_np.abs(ur).max()):.2f}%)", fontsize=8)
             self.info_var.set(f"smooth={args.theta_smooth}  deadband={args.theta_deadband:g}°"
                               f"  (valid 20–150°)")
         else:
@@ -244,7 +249,12 @@ class PanelUI(ttk.Frame):
                           if u is not None else None)   # raw 기준 공유 스케일
                 self.p_units.update(u, vmax=shared)
                 if getattr(self, "p_units_restored", None) is not None:
-                    self.p_units_restored.update(payload.get("units_restored"), vmax=shared)
+                    ur = payload.get("units_restored")
+                    self.p_units_restored.update(ur, vmax=shared)
+                    if ur is not None:
+                        import numpy as _np
+                        self.p_units_restored.ax.set_title(
+                            f"restored (res {float(_np.abs(ur).max()):.2f}%)", fontsize=8)
             extra = (f"  armed θ={self.channel.theta_fixed:+.1f}°" if role == "bending"
                      and self.channel.armed and self.channel.restorer is None else "")
             self.info_var.set(f"contacts≤{args.contacts}  D{int(args.diameter)}"
