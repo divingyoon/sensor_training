@@ -90,11 +90,34 @@ _TIPS = [
     "빠르게 변형",
     "★극단 변형 — 데모에서 쓸 최대보다 조금 더 강하게",
 ]
+# ★변형 크기 커버리지 구간 — 학습 평가(train_deform_restorer._MAG_BINS)와 동일 경계.
+# 실측(v7 3세션): 0~10% 에 표본 81% 가 몰려 10~25% 는 17%, 25~50% 는 1.8% 뿐이었고,
+# 그 결과 25% 초과에서 억제율이 음수까지 떨어졌다. 취득 중에 이 분포를 보고
+# **부족한 구간을 채우는 것**이 다음 세션의 목적이다.
+_MAG_BINS = ((0.0, 10.0), (10.0, 25.0), (25.0, 50.0), (50.0, float("inf")))
+_MAG_TARGET = (0.40, 0.35, 0.25, 0.0)      # 세션당 권장 시간 비중(합 1.0)
+
 # 터미널 숫자 입력 → 구간 라벨 프리셋(위 가이드와 1:1)
 _SEGMENT_PRESETS = {
     "1": "bend_up_down", "2": "bend_left_right", "3": "twist", "4": "bend_one_end",
     "5": "hold_static", "6": "slow_continuous", "7": "fast", "8": "extreme",
 }
+
+
+def magnitude_coverage(hist: list[float]) -> list[float]:
+    """|pct|max 이력 → 구간별 시간 비중[4]. 합이 1(빈 이력이면 전부 0)."""
+    if not hist:
+        return [0.0] * len(_MAG_BINS)
+    counts = [sum(1 for m in hist if lo <= m < hi) for lo, hi in _MAG_BINS]
+    return [c / len(hist) for c in counts]
+
+
+def coverage_text(cov: list[float]) -> str:
+    """부족한 구간에 ★를 붙여 한 줄로 — 취득 중 무엇을 더 해야 하는지 바로 보이게."""
+    names = ("0-10", "10-25", "25-50", "50+")
+    return " · ".join(
+        f"{'★' if c < t else ''}{n}%: {c * 100:3.0f}%"
+        for n, c, t in zip(names, cov, _MAG_TARGET))
 
 is_running = True
 due_queue: Queue = Queue()
@@ -487,7 +510,9 @@ if HAS_GUI:
                     self.deform_hist.append(mx)
                 self.stat_lbl.setText(
                     f"frames {self.count:7d} | |pct|max {mx:5.1f}% | "
-                    f"deform peak {self.deform_max:5.1f}% | segments {len(self.segments)}")
+                    f"deform peak {self.deform_max:5.1f}%\n"
+                    f"커버리지  {coverage_text(magnitude_coverage(self.deform_hist))}"
+                    f"   (★=부족)")
 
             if self.stage in ("BASE_HEAD", "DEFORM", "BASE_TAIL"):
                 el = time.perf_counter() - self.stage_t0
@@ -536,6 +561,9 @@ if HAS_GUI:
                 "frames": self.count,
                 "deform_peak_pct": round(self.deform_max, 2),
                 "deform_median_pct": round(float(sorted(hist)[len(hist) // 2]), 2) if hist else 0.0,
+                "magnitude_coverage": {                 # 구간별 시간 비중(학습 평가와 동일 경계)
+                    n: round(c, 4) for n, c in
+                    zip(("0-10", "10-25", "25-50", "50+"), magnitude_coverage(hist))},
                 "stage_times_s": self.stage_times,   # 프로토콜 단계 전환 시각(초)
                 "segments": self.segments,           # [{t_s,label}] 변형 구간 마커(터미널 입력)
                 "flags_s": [g["t_s"] for g in self.segments],   # 하위호환(시각만)
@@ -546,6 +574,11 @@ if HAS_GUI:
             (self.session_dir / "session_meta.json").write_text(
                 json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
             self.stage = "FINISHED"
+            cov = magnitude_coverage(hist)
+            print(f"[deform] 커버리지 {coverage_text(cov)}")
+            if cov[1] + cov[2] < 0.3:
+                print("  ★강한 변형(10~50%) 비중이 낮습니다 — 다음 세션에서 더 세게, "
+                      "그리고 그 상태로 더 오래 유지하세요.")
             self.stage_lbl.setText(
                 f"저장 완료 — frames {self.count}, deform peak {self.deform_max:.1f}%")
             self.stage_lbl.setStyleSheet("color:#0a7a4f; font-weight:bold; font-size:20px;")
