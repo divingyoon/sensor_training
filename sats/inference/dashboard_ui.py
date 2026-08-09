@@ -55,22 +55,17 @@ class PanelUI(ttk.Frame):
         self.fig = Figure(figsize=(4.6, 4.8), dpi=90, facecolor=_BG)
         role = channel.role
         if role == "theta":
-            self.p_theta = ThetaGaugePanel(self.fig.add_subplot(111), title)
-            self.p_heat = self.p_units = None
-            self.p_units_restored = None
-        elif role == "bending":
-            # ★복원 데모의 핵심 뷰: 아래에 [변형된 raw | 복원 결과] 를 나란히.
-            #   SATS 맵의 유령 소멸은 간접 증거라, 16채널이 실제로 되돌아가는 것을
-            #   직접 보여줘야 "baseline 복원"이 전달된다.
-            gs = self.fig.add_gridspec(2, 2, height_ratios=[3.2, 1.15], hspace=0.3, wspace=0.15)
-            self.p_heat = HeatmapPanel(self.fig.add_subplot(gs[0, :]), grid_min, grid_max, title,
-                                       flip_x=flip_x, flip_y=flip_y)
+            # ★S2 = theta 게이지(위) + 복원맵 [변형 raw | 복원 결과](아래).
+            #   "변형을 인식해 baseline 을 되돌린다"가 각도와 함께 직접 보인다.
+            gs = self.fig.add_gridspec(2, 2, height_ratios=[2.0, 1.3], hspace=0.45, wspace=0.15)
+            self.p_theta = ThetaGaugePanel(self.fig.add_subplot(gs[0, :]), title)
             self.p_units = UnitsInset(self.fig.add_subplot(gs[1, 0]),
                                       title="raw (deformed)", flip_x=flip_x, flip_y=flip_y)
             self.p_units_restored = UnitsInset(self.fig.add_subplot(gs[1, 1]),
                                                title="restored", flip_x=flip_x, flip_y=flip_y)
-            self.p_theta = None
+            self.p_heat = None
         else:
+            # S1(FLAT)·S3(DEFORMED) = SATS 맵 전체 크기
             self.p_heat = HeatmapPanel(self.fig.add_subplot(111), grid_min, grid_max, title,
                                        flip_x=flip_x, flip_y=flip_y)
             self.p_units = self.p_theta = None
@@ -186,6 +181,12 @@ class PanelUI(ttk.Frame):
         role = self.channel.role
         if role == "theta":
             self.p_theta.update(payload.get("theta"), payload.get("noise"), b)
+            if self.p_units is not None:
+                u = payload.get("units")
+                shared = (max(float(abs(__import__("numpy").asarray(u, float)).max()), 1e-6)
+                          if u is not None else None)
+                self.p_units.update(u, vmax=shared)
+                self.p_units_restored.update(payload.get("units_restored"), vmax=shared)
             self.info_var.set(f"smooth={args.theta_smooth}  deadband={args.theta_deadband:g}°"
                               f"  (valid 20–150°)")
         else:
@@ -254,8 +255,8 @@ class DashboardApp:
         gmin, gmax = ((engine.grid_min_mm, engine.grid_max_mm) if engine is not None
                       else (-10.0, 10.0))          # 물리 범위는 모든 run 동일
         fx, fy = getattr(args, "flip_x", False), getattr(args, "flip_y", True)
-        titles = {"contacts": "S1  SATS contacts", "theta": "S2  bending theta (live)",
-                  "bending": "S3  bending(jig) + SATS"}
+        titles = {"contacts": "S1  FLAT SATS", "theta": "S2  theta (deg) + restore",
+                  "bending": "S3  DEFORMED SATS"}
         self.panels: dict[str, PanelUI] = {}
         for i, role in enumerate(("contacts", "theta", "bending")):
             p = PanelUI(mid, self.channels[role], titles[role], fx, fy, gmin, gmax,

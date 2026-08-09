@@ -2,7 +2,7 @@
 """통합 데모 대시보드 — 3센서(각각 contacts·theta·bending) 1창 동시 시연.
 
 레이아웃(1 figure, GridSpec 2x3):
-  [ contacts heatmap ] [ theta gauge ] [ bending→SATS heatmap ]
+  [ S1 FLAT SATS ] [ S2 theta(deg) + restore map ] [ S3 DEFORMED SATS ]
   [ ------ spec footer (D10) ------- ] [ 16-taxel raw inset   ]
 
 설계:
@@ -141,8 +141,8 @@ class SensorChannel:
         # theta 상태
         self.theta0 = 0.0
         self.hist: collections.deque = collections.deque(maxlen=max(20, args.theta_smooth))
-        # bending 상태 — ★변형 복원기(각도-프리). 있으면 재장착 없이 매 창 보정한다.
-        self._restorer_all = restorer if role == "bending" else None
+        # 변형 복원기(각도-프리) — bending: SATS 입력 보정 / theta: 복원맵 표시(S2)용.
+        self._restorer_all = restorer if role in ("bending", "theta") else None
         self.restorer = self._restorer_all
         if self.restorer is not None and sensor is not None \
                 and getattr(self.restorer, "sensor", None) not in (None, sensor):
@@ -356,7 +356,8 @@ class SensorChannel:
         a = self.args
         if win is None or self.bi is None or self.baseline is None:
             banner = state_banner([], connected=self.connected)
-            return {"kind": "theta", "banner": banner, "theta": None, "noise": None}
+            return {"kind": "theta", "banner": banner, "theta": None, "noise": None,
+                    "units": None, "units_restored": None}
         theta_abs = self.bi.theta_from_pct(win, demo_baseline=self.baseline)
         self.hist.append(theta_abs - self.theta0)
         sm = max(1, int(a.theta_smooth))
@@ -365,7 +366,11 @@ class SensorChannel:
         noise = float(np.std(recent))
         display = 0.0 if abs(smoothed) < a.theta_deadband else smoothed   # 관측 하한 dead-band
         banner = state_banner([], theta_deg=display, theta_band_deg=a.theta_deadband)
-        return {"kind": "theta", "banner": banner, "theta": display, "noise": noise}
+        # ★S2 복원맵: 같은 창의 [변형 raw | 복원 결과] — theta 와 함께 표시
+        restored = (self.restorer.restore(np.asarray(win, np.float32))
+                    if self.restorer is not None else None)
+        return {"kind": "theta", "banner": banner, "theta": display, "noise": noise,
+                "units": win, "units_restored": restored}
 
 
 def _build_reader(port: str, args, window_size: int):
