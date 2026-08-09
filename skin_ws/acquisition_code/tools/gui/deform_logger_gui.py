@@ -95,7 +95,10 @@ _TIPS = [
 # 그 결과 25% 초과에서 억제율이 음수까지 떨어졌다. 취득 중에 이 분포를 보고
 # **부족한 구간을 채우는 것**이 다음 세션의 목적이다.
 _MAG_BINS = ((0.0, 10.0), (10.0, 25.0), (25.0, 50.0), (50.0, float("inf")))
-_MAG_TARGET = (0.40, 0.35, 0.25, 0.0)      # 세션당 권장 시간 비중(합 1.0)
+# 세션당 **목표 시간(초)**. 비율은 세션이 길어질수록 희석되어 "언제 끊을지"의 기준이
+# 될 수 없다. 학습에 필요한 것은 각 구간의 절대 윈도우 수이므로 초로 관리한다.
+_MAG_TARGET_SEC = (60.0, 60.0, 45.0, 0.0)
+_FS = 200.0
 
 # 터미널 숫자 입력 → 구간 라벨 프리셋(위 가이드와 1:1)
 _SEGMENT_PRESETS = {
@@ -104,23 +107,21 @@ _SEGMENT_PRESETS = {
 }
 
 
-_VALID_LO, _VALID_HI = 0.5, 1.5      # 채널 중앙값 대비 유효 raw 밴드
+def parse_dead_channels(spec: str) -> list[int]:
+    """'7,11,15'(1-based) → 0-based 인덱스. 빈 문자열이면 빈 목록.
 
-
-def live_channels(row: list[int]) -> list[int]:
-    """유효 밴드 안에 있는 채널 인덱스.
-
-    ★파손 taxel 은 raw=0 을 내보내 pct 가 −100% 로 고정된다. |pct|max 를 16채널
-    전체에서 구하면 **변형을 하지 않아도 매 프레임 100%** 가 찍혀, 화면의 변형 크기와
-    커버리지가 통째로 무의미해진다(실측: 파손 3개 상태에서 50%+ 구간 100%).
-    그래서 통계는 살아 있는 채널로만 낸다. 기록되는 bin 은 16채널 그대로다.
+    ★자동 탐지는 쓰지 않는다. 파손 taxel 은 raw=0 → 시작 시 baseline 이 0 으로 잡히고,
+    이후 값이 정상 범위로 돌아오면 pct 가 수억 % 로 튀어(실측 6600606060%) 어떤 밴드
+    기준으로도 안정적으로 걸러지지 않는다. 사람이 지정하는 편이 확실하다.
     """
-    alive = [v for v in row if v > 0]
-    if not alive:
-        return list(range(NUM_SENSORS))
-    med = sorted(alive)[len(alive) // 2]
-    return [i for i, v in enumerate(row)
-            if _VALID_LO * med < v < _VALID_HI * med] or list(range(NUM_SENSORS))
+    out = []
+    for tok in spec.replace(" ", "").split(","):
+        if not tok:
+            continue
+        if not tok.isdigit() or not 1 <= int(tok) <= NUM_SENSORS:
+            raise SystemExit(f"--dead-channels 는 1~{NUM_SENSORS} 의 쉼표 목록이어야 함: {spec!r}")
+        out.append(int(tok) - 1)
+    return sorted(set(out))
 
 
 def magnitude_coverage(hist: list[float]) -> list[float]:
@@ -131,19 +132,26 @@ def magnitude_coverage(hist: list[float]) -> list[float]:
     return [c / len(hist) for c in counts]
 
 
-def coverage_text(hist: list[float]) -> str:
-    """부족한 구간에 ★를 붙여 한 줄로 — 취득 중 무엇을 더 해야 하는지 바로 보이게.
+def coverage_seconds(hist: list[float]) -> list[float]:
+    """|pct|max 이력 → 구간별 **누적 초**. 200Hz 프레임 단위 집계 기준."""
+    return [sum(1 for m in hist if lo <= m < hi) / _FS for lo, hi in _MAG_BINS]
 
-    ★이력이 비어 있을 때 0% 를 나열하면 "변형 단계가 아직 아님"과 "그 구간을 안 했음"이
+
+def coverage_text(hist: list[float]) -> str:
+    """구간별 누적 초(비율)를 한 줄로. 목표 미달 구간에 ★.
+
+    ★이력이 비어 있을 때 0 을 나열하면 "변형 단계가 아직 아님"과 "그 구간을 안 했음"이
     구분되지 않는다. 그래서 비어 있으면 그 사실을 그대로 알린다.
     """
     if not hist:
         return "(변형 단계 ②부터 집계됩니다)"
     names = ("0-10", "10-25", "25-50", "50+")
-    return " · ".join(
-        f"{'★' if c < t else ''}{n}%: {c * 100:3.0f}%"
-        for n, c, t in zip(names, magnitude_coverage(hist), _MAG_TARGET)
-    ) + f"   n={len(hist)}"
+    secs, cov = coverage_seconds(hist), magnitude_coverage(hist)
+    done = all(sc >= t for sc, t in zip(secs, _MAG_TARGET_SEC))
+    body = " · ".join(
+        f"{'★' if sc < t else ''}{n}%: {sc:3.0f}s({c * 100:2.0f}%)"
+        for n, sc, c, t in zip(names, secs, cov, _MAG_TARGET_SEC))
+    return body + ("   ✔목표 달성 — 종료해도 좋습니다" if done else "")
 
 is_running = True
 due_queue: Queue = Queue()
@@ -383,7 +391,8 @@ if HAS_GUI:
             self.stage_times: dict[str, float] = {}  # 단계 전환 시각(초) — 프로토콜 경계 명시
             self.deform_max = 0.0                    # 변형 중 도달한 |pct| 최대(다양성 지표)
             self.deform_hist: list[float] = []
-            self.dead_ch: list[int] = []             # 통계에서 제외한 파손 채널
+            self.dead_ch: list[int] = list(getattr(args, "dead", []))   # 통계 제외(기록은 16채널)
+            self.live_ch = [i for i in range(NUM_SENSORS) if i not in self.dead_ch]
             self.last_flush = time.perf_counter()
             self._init_ui()
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -531,18 +540,15 @@ if HAS_GUI:
                     # ★프레임 단위로 집계한다. 틱당 1개만 쌓으면 표본이 지나치게 성기고
                     # 짧게 스쳐간 강한 변형이 통계에서 사라진다.
                     for r in rows:
-                        live = live_channels(r)
                         self.deform_hist.append(max(
                             abs((r[i] - (self.baseline[i] or 1)) / (self.baseline[i] or 1) * 100.0)
-                            for i in live))
+                            for i in self.live_ch))
 
             if latest and self.baseline:
                 pct = [((latest[i] - (self.baseline[i] or 1)) / (self.baseline[i] or 1)) * 100.0
                        for i in range(NUM_SENSORS)]
                 self._paint(pct)
-                live = live_channels(latest)
-                self.dead_ch = [i for i in range(NUM_SENSORS) if i not in live]
-                mx = max(abs(pct[i]) for i in live)      # 파손 채널 제외
+                mx = max(abs(pct[i]) for i in self.live_ch)      # 지정한 파손 채널 제외
                 if self.stage == "DEFORM":
                     self.deform_max = max(self.deform_max, mx)
                 self.stat_lbl.setText(
@@ -604,6 +610,9 @@ if HAS_GUI:
                 "magnitude_coverage": {                 # 구간별 시간 비중(학습 평가와 동일 경계)
                     n: round(c, 4) for n, c in
                     zip(("0-10", "10-25", "25-50", "50+"), magnitude_coverage(hist))},
+                "magnitude_seconds": {                  # 구간별 누적 초(취득량 판단 기준)
+                    n: round(sc, 1) for n, sc in
+                    zip(("0-10", "10-25", "25-50", "50+"), coverage_seconds(hist))},
                 "stage_times_s": self.stage_times,   # 프로토콜 단계 전환 시각(초)
                 "segments": self.segments,           # [{t_s,label}] 변형 구간 마커(터미널 입력)
                 "flags_s": [g["t_s"] for g in self.segments],   # 하위호환(시각만)
@@ -614,11 +623,13 @@ if HAS_GUI:
             (self.session_dir / "session_meta.json").write_text(
                 json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
             self.stage = "FINISHED"
-            cov = magnitude_coverage(hist)
             print(f"[deform] 커버리지 {coverage_text(hist)}")
-            if cov[1] + cov[2] < 0.3:
-                print("  ★강한 변형(10~50%) 비중이 낮습니다 — 다음 세션에서 더 세게, "
-                      "그리고 그 상태로 더 오래 유지하세요.")
+            short = [f"{n}%({t - sc:.0f}s 부족)" for n, sc, t in
+                     zip(("0-10", "10-25", "25-50"), coverage_seconds(hist), _MAG_TARGET_SEC)
+                     if sc < t]
+            if short:
+                print(f"  ★목표 미달: {' · '.join(short)} — 다음 세션에서 그 강도로 "
+                      f"**더 오래 유지**하세요(순간적으로 찍는 것보다 유지가 표본을 만듭니다).")
             self.stage_lbl.setText(
                 f"저장 완료 — frames {self.count}, deform peak {self.deform_max:.1f}%")
             self.stage_lbl.setStyleSheet("color:#0a7a4f; font-weight:bold; font-size:20px;")
@@ -644,9 +655,16 @@ def main() -> None:
                    help="'auto'(기본)=DUE 프레임이 흐르는 포트를 자동 탐지 · 또는 직접 지정")
     p.add_argument("--baud", type=int, default=DUE_BAUD_RATE)
     p.add_argument("--base-sec", type=float, default=BASE_SEC, help="뒤 baseline 자동 종료 길이(초)")
+    p.add_argument("--dead-channels", default="",
+                   help="파손 taxel(1-based, 예 '7,11,15'). 변형 크기 통계에서 제외한다. "
+                        "기록되는 bin 은 항상 16채널 그대로다(마스킹은 학습 시점).")
     p.add_argument("--mock", action="store_true", help="하드웨어 없이 UI·경로 점검")
     args = p.parse_args()
 
+    args.dead = parse_dead_channels(args.dead_channels)
+    if args.dead:
+        print(f"[deform] 통계 제외 채널: "
+              f"{','.join(f'S{i + 1:02d}' for i in args.dead)} (기록은 16채널 그대로)")
     if not args.mock and args.port == "auto":        # ★포트 자동 탐지
         found = autodetect_port(args.baud)
         if not found:
