@@ -173,6 +173,16 @@ def payload_to_rows(payload: bytes) -> list[list[int]]:
     return [[v[s * FIFO_FRAMES + f] for s in range(NUM_SENSORS)] for f in range(FIFO_FRAMES)]
 
 
+def _is_legacy_uart(device: str) -> bool:
+    """/dev/ttyS0~31 = 메인보드 레거시 UART. Due 가 여기 붙는 일은 없다.
+
+    ★후보에 남겨두면 33개까지 불어나고, 이들의 권한 오류가 진단을 오염시켜
+    실제 원인(ACM 포트에서 프레임이 안 옴)을 가린다.
+    """
+    import re as _re
+    return bool(_re.fullmatch(r"/dev/ttyS\d+", device))
+
+
 def _port_score(p) -> int:
     """Arduino Due 로 보이는 포트에 높은 점수(정렬 우선순위)."""
     text = " ".join(str(x or "") for x in (p.description, p.manufacturer, p.product)).lower()
@@ -244,7 +254,7 @@ def autodetect_port(baud: int, probe_sec: float = 2.0) -> str | None:
     except ImportError:
         print("Error: pyserial 없음 — pip install pyserial")
         return None
-    cands = _candidate_ports()
+    cands = [p for p in _candidate_ports() if not _is_legacy_uart(p.device)]
     if not cands:
         print("[port] 시리얼 포트가 하나도 보이지 않습니다 — USB 연결·전원을 확인하세요.")
         print("      확인: ls -l /dev/ttyACM*   ·   dmesg | tail")
@@ -268,7 +278,15 @@ def autodetect_port(baud: int, probe_sec: float = 2.0) -> str | None:
             print(f"[port]   열기 실패: {e}")
             failures.append((p.device, e))
     print(f"[port] 후보 {len(cands)}개 모두 실패.")
-    _diagnose(failures)
+    if failures:
+        _diagnose(failures)
+    else:
+        # 열리기는 했는데 DUE 프레임이 없었던 경우 — 권한이 아니라 장치 문제다
+        print("  → 포트는 정상적으로 열렸으나 **DUE 프레임이 오지 않습니다**. 권한 문제가 아닙니다.")
+        print("     1) Due 전원·USB 케이블(데이터용인지) 확인")
+        print("     2) Due 리셋 버튼 · USB 재연결 후 5초 대기")
+        print("     3) 다른 프로그램이 이전에 포트를 잡고 있었다면 종료: pgrep -af logger")
+        print("     4) 펌웨어가 올라가 있는지(다른 스케치로 덮이지 않았는지) 확인")
     return None
 
 
