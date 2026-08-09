@@ -26,8 +26,11 @@ barometric taxel 은 과도한 변형·압박으로 파손된다. 이를 모르�
   - **변동량은 이상치에 강해야 한다.** 글리치 몇 개가 표준편차를 부풀리므로,
     유효 샘플만 골라 사분위 범위로 잰다.
   - **마스킹은 영구 고장에만 의미가 있다.** 중간에 수십 초 끊겼다가 회복한 채널을
-    빼버리면 멀쩡한 taxel 을 버리는 것이다. 그래서 **세션 끝 상태**로 영구/일시를
-    가르고, 일시적인 것은 `glitchy` 로 보고만 한다(마스킹 대상 아님).
+    빼버리면 멀쩡한 taxel 을 버리는 것이다. 그래서 일시적인 것은 `glitchy` 로
+    보고만 한다(마스킹 대상 아님).
+  - **단, 끝에서 회복했다고 정상은 아니다.** 세션의 63% 가 무효인데 마지막 창만
+    멀쩡한 채널을 "일시적"으로 넘기면 고장을 놓친다(실측 사례). 그래서 영구 판정은
+    **세션 끝 상태 또는 나쁜 구간 비율**(`_PERSIST_BAD_FRAC`) 중 하나만 걸려도 성립.
 
 그리고 "고장인가"뿐 아니라 **언제부터 고장인가**(`bad_from_t_s`)를 보고한다 —
 세션 앞부분을 살려 쓰기 위해서다.
@@ -53,6 +56,7 @@ _VALID_LO, _VALID_HI = 0.5, 1.5   # 전채널 median 대비 유효 raw 밴드
 _WIN_VALID_MIN = 0.5      # 창의 절반 이상이 무효면 그 창은 고장
 _REPORT_INVALID = 0.02    # 보고에 무효 비율을 덧붙이는 기준(정상은 ~0.6%)
 _MIN_BAD_RUN = 3          # ★연속 이만큼 나빠야 고장 — 단발 글리치와 구분
+_PERSIST_BAD_FRAC = 0.25  # 세션의 이 비율 이상이 나쁘면, 끝에서 회복해도 영구 고장
 _MIN_FRAMES = 200
 _SHORT_SESSION_SEC = 30.0
 
@@ -168,8 +172,8 @@ def analyze_channels(raw: np.ndarray, *, fs: float = 200.0, win_sec: float = _WI
             label = "weak" if overall[i] < weak_ratio else "ok"
             out.append(ChannelStatus(i, label, float(overall[i]), float(invalid_frac[i])))
             continue
-        # ★세션 끝에도 나쁘면 영구 고장, 회복했으면 일시적 드롭아웃
-        if bi[-1]:
+        # ★끝까지 나쁘거나, 세션의 상당 부분이 나쁘면 영구 고장
+        if bi[-1] or float(bi.mean()) > _PERSIST_BAD_FRAC:
             label = "faulty" if float(np.median(valid_w[bi, i])) < _WIN_VALID_MIN else "dead"
         else:
             label = "glitchy"

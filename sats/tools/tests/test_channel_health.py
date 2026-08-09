@@ -127,8 +127,8 @@ def test_summary_lists_bad_channels():
 
 def test_transient_dropout_is_glitchy_not_masked():
     """★수십 초 끊겼다 회복한 채널을 마스킹하면 멀쩡한 taxel 을 버리는 것."""
-    x = _raw(n=12000)                    # 60초
-    x[2000:6000, 9] = 0.0                # 10~30초 드롭아웃 후 회복
+    x = _raw(n=48000)                    # 240초
+    x[4000:8000, 9] = 0.0                # 20~40초 드롭아웃 후 회복(세션의 8%)
     r = analyze_channels(x, fs=FS)
     assert r.channels[9].label == "glitchy"
     assert bad_indices(r) == []
@@ -139,6 +139,15 @@ def test_failure_that_persists_to_end_is_masked():
     """같은 크기의 이상이라도 끝까지 지속되면 영구 고장."""
     x = _raw(n=12000)
     x[6000:, 9] = 0.0
+    r = analyze_channels(x, fs=FS)
+    assert r.channels[9].label == "faulty"
+    assert bad_indices(r) == [9]
+
+
+def test_mostly_bad_channel_is_faulty_even_if_it_recovers_at_end():
+    """★세션 대부분이 무효인데 마지막만 멀쩡한 채널을 '일시적'으로 넘기면 안 된다."""
+    x = _raw(n=12000)
+    x[:9000, 9] = 0.0                    # 75% 무효, 끝에서만 회복
     r = analyze_channels(x, fs=FS)
     assert r.channels[9].label == "faulty"
     assert bad_indices(r) == [9]

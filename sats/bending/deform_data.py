@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -96,8 +97,16 @@ def stage_bounds(session: DeformSession, baseline_sec: float = _BASELINE_SEC
 
 
 def load_deform_session(session_dir: str | Path, *, baseline_sec: float = _BASELINE_SEC,
-                        trim_sec: float = _EDGE_TRIM_SEC) -> DeformSession:
-    """변형 세션 → 드리프트 보정된 pct. 앞뒤 baseline 은 프로토콜 길이로 잘라 쓴다."""
+                        trim_sec: float = _EDGE_TRIM_SEC,
+                        dead_channels: Sequence[int] = ()) -> DeformSession:
+    """변형 세션 → 드리프트 보정된 pct. 앞뒤 baseline 은 프로토콜 길이로 잘라 쓴다.
+
+    dead_channels(0-based): 파손된 taxel. **pct 를 0 으로 고정**한다 — 제거가 아니라
+    0 고정인 이유는 SATS 가 16채널 입력을 요구하기 때문이고, 0 = "baseline 대비 변화 없음"
+    이라 복원기·SATS 모두에게 "이 taxel 에는 아무 일도 없다"로 일관되게 읽힌다.
+    ★고장 채널을 그대로 두면 앞/뒤 baseline 차이로 선형 드리프트 보정이 가짜 램프를
+    주입하므로, 마스킹은 pct 계산 직후에 적용해 그 램프까지 함께 지운다.
+    """
     session_dir = Path(session_dir)
     t, raw = _read_due(session_dir)
     t = t - t[0]
@@ -139,6 +148,10 @@ def load_deform_session(session_dir: str | Path, *, baseline_sec: float = _BASEL
     w = np.clip((t - t0) / max(t1 - t0, 1e-9), 0.0, 1.0)[:, None]
     base_t = b_head[None, :] * (1 - w) + b_tail[None, :] * w        # [N,16]
     pct = ((raw / np.where(np.abs(base_t) < 1e-9, 1e-9, base_t) - 1.0) * 100.0).astype(np.float32)
+    for ch in dead_channels:                          # 파손 taxel → 변화 없음으로 고정
+        if not 0 <= int(ch) < pct.shape[1]:
+            raise ValueError(f"dead_channels 범위 밖: {ch} (0~{pct.shape[1] - 1})")
+        pct[:, int(ch)] = 0.0
     return DeformSession(name=session_dir.name, sensor_pct=pct, t=t,
                          baseline_head=b_head, baseline_tail=b_tail, flags_s=flags,
                          segments=segments, stage_times=stage_times)
@@ -214,7 +227,7 @@ def discover_sessions(root: str | Path) -> list[Path]:
 
 
 def load_all(root: str | Path, **kw) -> list[DeformSession]:
-    """root 아래 모든 변형 세션 로드(품질 요약 출력)."""
+    """root 아래 모든 변형 세션 로드(품질 요약 출력). kw 는 load_deform_session 으로 전달."""
     sessions = []
     for d in discover_sessions(root):
         try:

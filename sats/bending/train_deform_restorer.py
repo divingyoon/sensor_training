@@ -105,6 +105,45 @@ def evaluate(model: BaselineRestorer, val_win: np.ndarray, contact_pool: np.ndar
     }
 
 
+def _resolve_dead_channels(spec: str, deform_root) -> tuple[int, ...]:
+    """'auto'|'none'|'11,15'(1-based) → 마스킹할 0-based 채널.
+
+    auto 는 세션들을 진단해 **영구 고장(dead/faulty)의 합집합**만 마스킹한다. 회복한
+    일시적 드롭아웃(glitchy)은 멀쩡한 taxel 이므로 제외한다.
+    """
+    spec = (spec or "auto").strip().lower()
+    if spec in ("none", ""):
+        return ()
+    if spec != "auto":
+        try:
+            ch = tuple(sorted({int(x) - 1 for x in spec.replace(" ", "").split(",") if x}))
+        except ValueError:
+            raise SystemExit(f"--dead-channels 형식 오류: {spec!r} (예: '11,15')")
+        if any(c < 0 or c > 15 for c in ch):
+            raise SystemExit(f"--dead-channels 는 1~16 범위여야 함: {spec!r}")
+        print(f"[채널] 수동 마스킹: {','.join(f'S{c + 1:02d}' for c in ch)}")
+        return ch
+
+    from sats.tools.channel_health import analyze_channels, bad_indices
+    from .deform_data import discover_sessions, read_due_raw
+    found: set[int] = set()
+    for d in discover_sessions(deform_root):
+        t, raw = read_due_raw(d)
+        span = float(t[-1] - t[0])
+        try:
+            rep = analyze_channels(raw, fs=(len(t) / span if span > 1e-6 else 200.0))
+        except ValueError as e:
+            print(f"  [{d.name}] 진단 건너뜀 — {e}")
+            continue
+        found |= set(bad_indices(rep))
+    if found:
+        print(f"[채널] ★자동 마스킹: {','.join(f'S{c + 1:02d}' for c in sorted(found))} "
+              f"(영구 고장 — 학습·추론 양쪽에 동일 적용할 것)")
+    else:
+        print("[채널] 전 세션 16채널 정상 — 마스킹 없음")
+    return tuple(sorted(found))
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="각도-프리 변형 복원기 학습(due 데이터만)")
     p.add_argument("--deform-root", required=True, help="변형 세션 루트(due bin 폴더들)")
@@ -121,6 +160,9 @@ def main() -> None:
     p.add_argument("--n-contact", type=int, default=300)
     p.add_argument("--fz-min", type=float, default=0.5)
     p.add_argument("--no-contact-loss", action="store_true", help="L_contact 제거(ablation)")
+    p.add_argument("--dead-channels", default="auto",
+                   help="파손 taxel(1-based, 예 '11,15'). 'auto'=채널 건강도 진단으로 "
+                        "자동 검출(기본) · 'none'=마스킹 안 함")
     p.add_argument("--out", type=Path, default=_REPO / "sats/bending/runs/deform_restorer")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = p.parse_args()
@@ -150,14 +192,21 @@ def main() -> None:
 
     cfg0 = BendingConfig()
     W = cfg0.window_size
+    dead = _resolve_dead_channels(args.dead_channels, args.deform_root)
     print(f"[1/3] 변형 세션 로드: {args.deform_root}")
-    sessions = load_all(args.deform_root)
+    sessions = load_all(args.deform_root, dead_channels=dead)
     if len(sessions) < 2:
         raise SystemExit("leave-one-session-out 평가에 최소 2세션 필요")
 
     print(f"[2/3] 접촉 pool 로드: {args.contact_trial.name}")
     pool = _contact_pool(args.contact_trial, W, args.n_contact, args.fz_min)
-    print(f"  접촉 윈도우 {len(pool)}개")
+    if dead:
+        # ★접촉 pool 은 파손 전 xy 데이터라 해당 채널이 살아있다. 그대로 쓰면 변형 입력에서는
+        # 항상 0 인 채널에 접촉 신호가 실려, 모델이 존재하지 않는 taxel 을 근거로 학습한다.
+        pool = pool.copy()
+        pool[:, :, list(dead)] = 0.0
+    print(f"  접촉 윈도우 {len(pool)}개" + (f" (S{'/S'.join(f'{c + 1:02d}' for c in dead)} 마스킹)"
+                                          if dead else ""))
 
     from .pipeline import load_frozen_sats
     sats = load_frozen_sats(args.sats_run, args.device)
