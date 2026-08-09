@@ -121,3 +121,20 @@ def test_pre_start_frames_are_trimmed(tmp_path):
     s = load_deform_session(d)                       # 이전에는 음수 길이로 실패
     assert float(s.t[-1]) > 50.0
     assert np.all(np.diff(s.t) >= 0)
+
+
+def test_burst_overlap_jitter_preserves_session(tmp_path):
+    """★버스트가 45ms 보다 빠르게 오면 수 ms 역행이 생긴다 — 정상 지터이므로 버리면 안 된다."""
+    d = _session(tmp_path, dur_s=60.0)
+    bin_p = next(d.glob("due_v2_*.bin"))
+    head, body = bin_p.read_bytes().split(b"\n", 1)
+    rec = 8 + 16 * 10 * 4
+    out = bytearray()
+    for i in range(len(body) // rec):                 # 버스트 간격을 40ms 로 압축
+        r = bytearray(body[i * rec:(i + 1) * rec])
+        r[:8] = struct.pack("<Q", int(i * 0.040 * 1e9))
+        out += r
+    bin_p.write_bytes(head + b"\n" + bytes(out))
+    s = load_deform_session(d)
+    assert len(s.sensor_pct) > 10000                  # 세션이 살아남아야 한다
+    assert np.all(np.diff(s.t) >= 0)                  # 단조화는 되어야 한다

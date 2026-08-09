@@ -87,19 +87,32 @@ def _read_due(session_dir: Path) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(d.time_s, float), np.asarray(d.sensors, float)
 
 
+_BIG_BACKSTEP_S = 1.0        # 이보다 큰 역행만 '손상'으로 본다
+
+
 def _trim_to_monotonic_tail(t: np.ndarray, raw: np.ndarray, name: str
                             ) -> tuple[np.ndarray, np.ndarray]:
-    """시간이 뒤로 점프하는 지점 이전을 버린다.
+    """시간축 이상을 두 종류로 나눠 처리한다.
 
-    로거가 시작 전 큐에 남아 있던 프레임을 함께 기록하면 맨 앞에 부팅 기준의 거대한
-    타임스탬프가 섞여 세션 길이가 음수가 된다. 그 프레임 몇 개만 버리면 세션을 살릴 수 있다.
+    1. **큰 역행(>1s)** — 로거가 시작 전 큐의 잔여 프레임을 함께 기록한 경우.
+       맨 앞에 부팅 기준의 거대한 타임스탬프가 섞이므로 그 지점 이전을 버린다.
+    2. **작은 역행(수 ms)** — 정상 지터다. 버스트 타임스탬프를 10프레임×5ms 로 펼치는데,
+       시리얼 버퍼가 밀렸다 몰아서 오면 버스트 간격이 45ms 미만이 되어 다음 버스트와
+       겹친다. ★이걸 손상으로 처리하면 멀쩡한 세션이 통째로 날아간다(실측: 역행 63곳
+       → 21100프레임 폐기 → 7초만 남아 세션 폐기). 단조화만 하고 데이터는 보존한다.
     """
-    back = np.flatnonzero(np.diff(t) < 0)
-    if not len(back):
-        return t, raw
-    cut = int(back[-1]) + 1
-    print(f"  [{name}] ★시간축 역행 {len(back)}곳 — 앞 {cut}프레임 폐기(시작 전 잔여 프레임)")
-    return t[cut:], raw[cut:]
+    d = np.diff(t)
+    big = np.flatnonzero(d < -_BIG_BACKSTEP_S)
+    if len(big):
+        cut = int(big[-1]) + 1
+        print(f"  [{name}] ★큰 시간축 역행 {len(big)}곳 — 앞 {cut}프레임 폐기(시작 전 잔여)")
+        t, raw = t[cut:], raw[cut:]
+        d = np.diff(t)
+    n_small = int((d < 0).sum())
+    if n_small:
+        print(f"  [{name}] 버스트 겹침 {n_small}곳 — 단조화(정상 지터, 데이터 보존)")
+        t = np.maximum.accumulate(t)
+    return t, raw
 
 
 def read_due_raw(session_dir: str | Path) -> tuple[np.ndarray, np.ndarray]:
