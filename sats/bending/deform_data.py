@@ -26,6 +26,14 @@ from pathlib import Path
 
 import numpy as np
 
+# ★변형 크기 정의와 구간 경계 — 로거(deform_logger_gui)와 반드시 동일하게 유지할 것.
+# 실측·현장 관찰: 손으로 파손 직전까지 변형해도 **센서 전체 평균 |pct| 는 10% 를 넘지
+# 않는다**(그 이상은 파손 영역). 접촉과 달리 변형은 넓게 퍼지므로 한 채널의 최댓값이
+# 아니라 채널 평균이 "얼마나 휘었는가"를 나타낸다. 최댓값을 쓰면 파손·드롭아웃 채널
+# 하나가 통계를 지배한다(실측: 파손 3개 상태에서 50%+ 구간 100%).
+MAG_BINS = ((0.0, 2.0), (2.0, 5.0), (5.0, 10.0), (10.0, float("inf")))
+MAG_NAMES = ("0-2", "2-5", "5-10", "10+")
+
 _BASELINE_SEC = 10.0          # 프로토콜상 앞뒤 무접촉 길이
 _EDGE_TRIM_SEC = 1.0          # baseline 구간 가장자리 트림(진입/이탈 과도 제거)
 
@@ -231,6 +239,33 @@ def segment_windows(session: DeformSession, window_size: int, *,
     return {k: np.concatenate(v) for k, v in out.items()}
 
 
+def window_magnitude(win: np.ndarray) -> np.ndarray:
+    """윈도우[K,W,C] → 변형 크기[K] (%). 채널 평균 |pct| — 전체가 얼마나 휘었는가.
+
+    최댓값이 아니라 평균인 이유는 모듈 상단 MAG_BINS 주석 참조.
+    """
+    return np.abs(win).mean(axis=(1, 2))
+
+
+def magnitude_profile(session: DeformSession, *, live: Sequence[int] | None = None
+                      ) -> dict:
+    """세션의 변형 크기 분포 + 채널별 기여 — 실변형인지 특정 채널 아티팩트인지 가른다."""
+    lo, hi = stage_bounds(session)
+    m = (session.t > lo) & (session.t < hi)
+    pct = session.sensor_pct[m]
+    if len(pct) == 0:
+        return {"frames": 0}
+    cols = list(live) if live is not None else list(range(pct.shape[1]))
+    mag = np.abs(pct[:, cols]).mean(axis=1)
+    secs = [float(((mag >= a) & (mag < b)).sum()) / 200.0 for a, b in MAG_BINS]
+    ch_p99 = np.percentile(np.abs(pct), 99, axis=0)
+    return {"frames": int(len(pct)), "seconds": secs,
+            "mag_p50": float(np.percentile(mag, 50)),
+            "mag_p99": float(np.percentile(mag, 99)),
+            "mag_max": float(mag.max()),
+            "channel_p99": ch_p99}
+
+
 def discover_sessions(root: str | Path) -> list[Path]:
     """root 아래에서 due bin 을 가진 세션 폴더를 찾는다(root 자신도 후보)."""
     root = Path(root)
@@ -241,6 +276,32 @@ def discover_sessions(root: str | Path) -> list[Path]:
         if any(d.glob("due_v2_*.bin")) or any(d.glob("due_raw_burst_*.bin")):
             found.append(d)
     return found
+
+
+def _cli() -> int:
+    """취득 직후 점검용: 세션별 변형 크기 분포와 채널별 기여를 출력."""
+    import argparse
+    ap = argparse.ArgumentParser(description="변형 세션 품질·크기 분포 점검")
+    ap.add_argument("root")
+    ap.add_argument("--dead-channels", default="", help="통계 제외(1-based, 예 '7,11,15')")
+    a = ap.parse_args()
+    dead = [int(x) - 1 for x in a.dead_channels.replace(" ", "").split(",") if x]
+    live = [i for i in range(16) if i not in dead]
+    total = [0.0] * len(MAG_BINS)
+    for s in load_all(a.root, dead_channels=dead):
+        pr = magnitude_profile(s, live=live)
+        if not pr.get("frames"):
+            print(f"  [{s.name}] 변형 구간 없음")
+            continue
+        cov = " · ".join(f"{n}%: {sec:4.0f}s" for n, sec in zip(MAG_NAMES, pr["seconds"]))
+        total = [t + sec for t, sec in zip(total, pr["seconds"])]
+        print(f"    변형크기 p50 {pr['mag_p50']:5.2f}%  p99 {pr['mag_p99']:5.2f}%  "
+              f"max {pr['mag_max']:5.2f}%   {cov}")
+        hot = np.argsort(pr["channel_p99"])[::-1][:3]
+        print(f"    채널 p99 상위: " + " · ".join(
+            f"S{i + 1:02d} {pr['channel_p99'][i]:.1f}%" for i in hot))
+    print("\n★합계  " + " · ".join(f"{n}%: {sec:5.0f}s" for n, sec in zip(MAG_NAMES, total)))
+    return 0
 
 
 def load_all(root: str | Path, **kw) -> list[DeformSession]:
@@ -259,3 +320,7 @@ def load_all(root: str | Path, **kw) -> list[DeformSession]:
     if not sessions:
         raise FileNotFoundError(f"유효한 변형 세션 없음: {root}")
     return sessions
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())

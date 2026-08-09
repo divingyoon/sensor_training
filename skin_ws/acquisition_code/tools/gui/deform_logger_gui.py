@@ -94,10 +94,13 @@ _TIPS = [
 # 실측(v7 3세션): 0~10% 에 표본 81% 가 몰려 10~25% 는 17%, 25~50% 는 1.8% 뿐이었고,
 # 그 결과 25% 초과에서 억제율이 음수까지 떨어졌다. 취득 중에 이 분포를 보고
 # **부족한 구간을 채우는 것**이 다음 세션의 목적이다.
-_MAG_BINS = ((0.0, 10.0), (10.0, 25.0), (25.0, 50.0), (50.0, float("inf")))
+# ★sats/bending/deform_data.py 의 MAG_BINS 와 동일하게 유지할 것(분석과 같은 눈금).
+# 손으로 파손 직전까지 변형해도 센서 전체 평균 |pct| 는 10% 를 넘지 않는다 — 그 이상은
+# 파손 영역이다. 변형은 접촉과 달리 넓게 퍼지므로 **채널 평균**이 실제 휨을 나타낸다.
+_MAG_BINS = ((0.0, 2.0), (2.0, 5.0), (5.0, 10.0), (10.0, float("inf")))
 # 세션당 **목표 시간(초)**. 비율은 세션이 길어질수록 희석되어 "언제 끊을지"의 기준이
 # 될 수 없다. 학습에 필요한 것은 각 구간의 절대 윈도우 수이므로 초로 관리한다.
-_MAG_TARGET_SEC = (60.0, 60.0, 45.0, 0.0)
+_MAG_TARGET_SEC = (45.0, 60.0, 60.0, 0.0)   # 강한 쪽(5-10%)을 더 두껍게
 _FS = 200.0
 
 # 터미널 숫자 입력 → 구간 라벨 프리셋(위 가이드와 1:1)
@@ -145,7 +148,7 @@ def coverage_text(hist: list[float]) -> str:
     """
     if not hist:
         return "(변형 단계 ②부터 집계됩니다)"
-    names = ("0-10", "10-25", "25-50", "50+")
+    names = ("0-2", "2-5", "5-10", "10+")
     secs, cov = coverage_seconds(hist), magnitude_coverage(hist)
     done = all(sc >= t for sc, t in zip(secs, _MAG_TARGET_SEC))
     body = " · ".join(
@@ -539,20 +542,20 @@ if HAS_GUI:
                 if self.stage == "DEFORM" and self.baseline:
                     # ★프레임 단위로 집계한다. 틱당 1개만 쌓으면 표본이 지나치게 성기고
                     # 짧게 스쳐간 강한 변형이 통계에서 사라진다.
-                    for r in rows:
-                        self.deform_hist.append(max(
+                    for r in rows:                    # ★채널 평균 = 센서 전체가 얼마나 휘었는가
+                        self.deform_hist.append(sum(
                             abs((r[i] - (self.baseline[i] or 1)) / (self.baseline[i] or 1) * 100.0)
-                            for i in self.live_ch))
+                            for i in self.live_ch) / len(self.live_ch))
 
             if latest and self.baseline:
                 pct = [((latest[i] - (self.baseline[i] or 1)) / (self.baseline[i] or 1)) * 100.0
                        for i in range(NUM_SENSORS)]
                 self._paint(pct)
-                mx = max(abs(pct[i]) for i in self.live_ch)      # 지정한 파손 채널 제외
+                mx = sum(abs(pct[i]) for i in self.live_ch) / len(self.live_ch)  # 채널 평균
                 if self.stage == "DEFORM":
                     self.deform_max = max(self.deform_max, mx)
                 self.stat_lbl.setText(
-                    f"frames {self.count:7d} | |pct|max {mx:5.1f}% | "
+                    f"frames {self.count:7d} | 변형 {mx:5.2f}% | "
                     f"deform peak {self.deform_max:5.1f}%\n"
                     f"커버리지({self.stage})  {coverage_text(self.deform_hist)}   (★=부족)"
                     + (f"\n★파손 채널 제외: "
@@ -609,10 +612,10 @@ if HAS_GUI:
                 "dead_channels_1based": [i + 1 for i in self.dead_ch],   # 통계 제외(기록은 16채널)
                 "magnitude_coverage": {                 # 구간별 시간 비중(학습 평가와 동일 경계)
                     n: round(c, 4) for n, c in
-                    zip(("0-10", "10-25", "25-50", "50+"), magnitude_coverage(hist))},
+                    zip(("0-2", "2-5", "5-10", "10+"), magnitude_coverage(hist))},
                 "magnitude_seconds": {                  # 구간별 누적 초(취득량 판단 기준)
                     n: round(sc, 1) for n, sc in
-                    zip(("0-10", "10-25", "25-50", "50+"), coverage_seconds(hist))},
+                    zip(("0-2", "2-5", "5-10", "10+"), coverage_seconds(hist))},
                 "stage_times_s": self.stage_times,   # 프로토콜 단계 전환 시각(초)
                 "segments": self.segments,           # [{t_s,label}] 변형 구간 마커(터미널 입력)
                 "flags_s": [g["t_s"] for g in self.segments],   # 하위호환(시각만)
@@ -625,7 +628,7 @@ if HAS_GUI:
             self.stage = "FINISHED"
             print(f"[deform] 커버리지 {coverage_text(hist)}")
             short = [f"{n}%({t - sc:.0f}s 부족)" for n, sc, t in
-                     zip(("0-10", "10-25", "25-50"), coverage_seconds(hist), _MAG_TARGET_SEC)
+                     zip(("0-2", "2-5", "5-10"), coverage_seconds(hist), _MAG_TARGET_SEC)
                      if sc < t]
             if short:
                 print(f"  ★목표 미달: {' · '.join(short)} — 다음 세션에서 그 강도로 "

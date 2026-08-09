@@ -34,7 +34,7 @@ import torch.nn as nn
 
 from .baseline_restorer import BaselineRestorer
 from .config import BendingConfig
-from .deform_data import deform_windows, load_all
+from .deform_data import MAG_BINS, MAG_NAMES, deform_windows, load_all, window_magnitude
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -121,18 +121,16 @@ def evaluate(model: BaselineRestorer, val_win: np.ndarray, contact_pool: np.ndar
     }
 
 
-_MAG_BINS = ((0.0, 10.0), (10.0, 25.0), (25.0, 50.0), (50.0, np.inf))
-
-
 def evaluate_by_magnitude(model: BaselineRestorer, val_win: np.ndarray, pool: np.ndarray,
-                          sats, device: str, bins=_MAG_BINS) -> list[dict]:
+                          sats, device: str, bins=MAG_BINS) -> list[dict]:
     """변형 **크기 구간별** 성능 — 평균 하나로는 답할 수 없는 질문에 답한다.
 
     "복원이 안 되는가"와 "특정 크기 이상에서만 안 되는가"는 완전히 다른 결론으로 이어진다.
     전자면 방법을 바꿔야 하고, 후자면 **데모에서 쓸 변형 범위를 정하면** 되기 때문이다.
-    구간 기준은 윈도우의 |pct|max(그 변형이 얼마나 센가).
+    구간 기준은 **채널 평균 |pct|**(센서 전체가 얼마나 휘었는가). 최댓값을 쓰면 파손
+    채널 하나가 통계를 지배하므로 쓰지 않는다 — deform_data.MAG_BINS 주석 참조.
     """
-    mag = np.abs(val_win).max(axis=(1, 2))
+    mag = window_magnitude(val_win)
     out = []
     for lo, hi in bins:
         sel = (mag >= lo) & (mag < hi)
@@ -330,8 +328,9 @@ def main() -> None:
                   f"접촉회복 {r['contact_recovery']*100:5.1f}%  "
                   f"loc {r['loc_uncorrected_mm']:.2f}→{r['loc_corrected_mm']:.2f}mm")
             for b in r["by_magnitude"]:          # ★크기별 — 데모 범위 결정의 근거
-                rng = f"|pct| {b['mag_lo']:.0f}~" + (f"{b['mag_hi']:.0f}%" if b["mag_hi"]
-                                                    else "그 이상")
+                name = next((n for n, (a, _) in zip(MAG_NAMES, MAG_BINS)
+                             if a == b["mag_lo"]), "?")
+                rng = f"변형 {name}%"
                 print(f"      {rng:16s} n={b['n_windows']:5d}  억제 {b['suppression']*100:5.1f}%"
                       f"  loc {b['loc_uncorrected_mm']:5.2f}→{b['loc_corrected_mm']:5.2f}mm")
         if per_session:
