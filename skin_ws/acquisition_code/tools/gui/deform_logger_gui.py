@@ -112,12 +112,19 @@ def magnitude_coverage(hist: list[float]) -> list[float]:
     return [c / len(hist) for c in counts]
 
 
-def coverage_text(cov: list[float]) -> str:
-    """부족한 구간에 ★를 붙여 한 줄로 — 취득 중 무엇을 더 해야 하는지 바로 보이게."""
+def coverage_text(hist: list[float]) -> str:
+    """부족한 구간에 ★를 붙여 한 줄로 — 취득 중 무엇을 더 해야 하는지 바로 보이게.
+
+    ★이력이 비어 있을 때 0% 를 나열하면 "변형 단계가 아직 아님"과 "그 구간을 안 했음"이
+    구분되지 않는다. 그래서 비어 있으면 그 사실을 그대로 알린다.
+    """
+    if not hist:
+        return "(변형 단계 ②부터 집계됩니다)"
     names = ("0-10", "10-25", "25-50", "50+")
     return " · ".join(
         f"{'★' if c < t else ''}{n}%: {c * 100:3.0f}%"
-        for n, c, t in zip(names, cov, _MAG_TARGET))
+        for n, c, t in zip(names, magnitude_coverage(hist), _MAG_TARGET)
+    ) + f"   n={len(hist)}"
 
 is_running = True
 due_queue: Queue = Queue()
@@ -406,6 +413,7 @@ if HAS_GUI:
 
             self.stat_lbl = QtWidgets.QLabel("frames 0 | |pct|max 0.0%")
             self.stat_lbl.setStyleSheet("font-family: monospace; font-size: 13px;")
+            self.stat_lbl.setWordWrap(True)          # 두 줄이 잘리지 않게
             v.addWidget(self.stat_lbl)
 
             row = QtWidgets.QHBoxLayout()
@@ -499,6 +507,13 @@ if HAS_GUI:
                 latest = rows[-1]
                 if self.baseline is None and self.count > 20:
                     self.baseline = [sum(col) / len(col) for col in zip(*rows)]
+                if self.stage == "DEFORM" and self.baseline:
+                    # ★프레임 단위로 집계한다. 틱당 1개만 쌓으면 표본이 지나치게 성기고
+                    # 짧게 스쳐간 강한 변형이 통계에서 사라진다.
+                    for r in rows:
+                        self.deform_hist.append(max(
+                            abs((r[i] - (self.baseline[i] or 1)) / (self.baseline[i] or 1) * 100.0)
+                            for i in range(NUM_SENSORS)))
 
             if latest and self.baseline:
                 pct = [((latest[i] - (self.baseline[i] or 1)) / (self.baseline[i] or 1)) * 100.0
@@ -507,12 +522,10 @@ if HAS_GUI:
                 mx = max(abs(p) for p in pct)
                 if self.stage == "DEFORM":
                     self.deform_max = max(self.deform_max, mx)
-                    self.deform_hist.append(mx)
                 self.stat_lbl.setText(
                     f"frames {self.count:7d} | |pct|max {mx:5.1f}% | "
                     f"deform peak {self.deform_max:5.1f}%\n"
-                    f"커버리지  {coverage_text(magnitude_coverage(self.deform_hist))}"
-                    f"   (★=부족)")
+                    f"커버리지({self.stage})  {coverage_text(self.deform_hist)}   (★=부족)")
 
             if self.stage in ("BASE_HEAD", "DEFORM", "BASE_TAIL"):
                 el = time.perf_counter() - self.stage_t0
@@ -575,7 +588,7 @@ if HAS_GUI:
                 json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
             self.stage = "FINISHED"
             cov = magnitude_coverage(hist)
-            print(f"[deform] 커버리지 {coverage_text(cov)}")
+            print(f"[deform] 커버리지 {coverage_text(hist)}")
             if cov[1] + cov[2] < 0.3:
                 print("  ★강한 변형(10~50%) 비중이 낮습니다 — 다음 세션에서 더 세게, "
                       "그리고 그 상태로 더 오래 유지하세요.")
