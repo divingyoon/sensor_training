@@ -31,7 +31,16 @@ from .eval_pipeline import _sats_map, _windows
 from .pipeline import load_frozen_sats
 
 SKIN = [f"s{i}" for i in range(1, 17)]
-GRID_MIN_MM, GRID_STEP_MM = -10.0, 0.5   # SATS 41x41 (ecomesh xy0p5)
+GRID_MIN_MM, GRID_MAX_MM = -10.0, 10.0   # 물리 범위는 모든 해상도에서 동일
+
+
+def _grid_step_mm(width: int) -> float:
+    """맵 한 변 크기 → 격자 간격. 41→0.5 · 81→0.25 · 201→0.1.
+
+    ★간격을 상수로 박으면 안 된다. 배포 run 이 g05/g025/g01 로 갈리는데 0.5 로 고정하면
+    81² 모델에서 좌표가 2배로 계산되어 위치오차가 통째로 부풀려진다(실제로 발생했다).
+    """
+    return (GRID_MAX_MM - GRID_MIN_MM) / max(width - 1, 1)
 
 
 def contact_windows(trial_dir: str | Path, window: int, n: int, fz_min: float
@@ -93,10 +102,12 @@ def train_restorer(cfg: BendingConfig, data_dir: Path, trials: list[str], device
 
 
 def _peak_xy(m: torch.Tensor) -> np.ndarray:
+    """맵 최대점의 물리 좌표[B,2] mm. 격자 간격은 맵 크기에서 유도한다."""
     B, _, Wd = m.shape
+    step = _grid_step_mm(Wd)
     fi = m.view(B, -1).argmax(1)
-    return np.stack([GRID_MIN_MM + (fi % Wd).cpu().numpy() * GRID_STEP_MM,
-                     GRID_MIN_MM + (fi // Wd).cpu().numpy() * GRID_STEP_MM], 1)
+    return np.stack([GRID_MIN_MM + (fi % Wd).cpu().numpy() * step,
+                     GRID_MIN_MM + (fi // Wd).cpu().numpy() * step], 1)
 
 
 def evaluate(

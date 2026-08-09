@@ -39,11 +39,27 @@ from .deform_data import deform_windows, load_all
 _REPO = Path(__file__).resolve().parents[2]
 
 
-def _contact_pool(trial_dir: Path, window: int, n: int, fz_min: float) -> np.ndarray:
-    """flat 접촉 trial → pct 윈도우[K,W,16] (L_contact 용). eval_contact_preservation 과 동일 규약."""
+def _contact_pool(trial_dir: Path, window: int, n: int, fz_min: float
+                  ) -> tuple[np.ndarray, np.ndarray]:
+    """flat 접촉 trial → (pct 윈도우[K,W,16], 실제 접촉 좌표[K,2] mm)."""
     from .eval_contact_preservation import contact_windows
-    win, _ = contact_windows(trial_dir, window, n, fz_min)
-    return win
+    return contact_windows(trial_dir, window, n, fz_min)
+
+
+@torch.no_grad()
+def contact_only_localization(pool: np.ndarray, xy_true: np.ndarray, sats, device: str) -> dict:
+    """★변형이 전혀 없을 때 SATS 가 접촉을 얼마나 잡는가 — 복원 성능의 상한선.
+
+    복원기가 아무리 잘해도 이 값보다 좋아질 수 없다. 이 값이 이미 크면 병목은
+    복원기가 아니라 센서 상태(파손 taxel)나 SATS 자체다.
+    """
+    from .eval_contact_preservation import _peak_xy
+    C = torch.from_numpy(pool).to(device)
+    from .eval_contact_preservation import _sats_map
+    xy = _peak_xy(_sats_map(sats, C))
+    err = np.linalg.norm(xy - xy_true[:len(xy)], axis=1)
+    return {"mean_mm": float(err.mean()), "median_mm": float(np.median(err)),
+            "p90_mm": float(np.percentile(err, 90)), "n": int(len(err))}
 
 
 def train_deform_restorer(
@@ -275,7 +291,7 @@ def main() -> None:
         raise SystemExit("leave-one-session-out 평가에 최소 2세션 필요")
 
     print(f"[2/3] 접촉 pool 로드: {args.contact_trial.name}")
-    pool = _contact_pool(args.contact_trial, W, args.n_contact, args.fz_min)
+    pool, pool_xy = _contact_pool(args.contact_trial, W, args.n_contact, args.fz_min)
     if dead:
         # ★접촉 pool 은 파손 전 xy 데이터라 해당 채널이 살아있다. 그대로 쓰면 변형 입력에서는
         # 항상 0 인 채널에 접촉 신호가 실려, 모델이 존재하지 않는 taxel 을 근거로 학습한다.
@@ -286,6 +302,10 @@ def main() -> None:
 
     from .pipeline import load_frozen_sats
     sats = load_frozen_sats(args.sats_run, args.device)
+    base_loc = contact_only_localization(pool, pool_xy, sats, args.device)
+    print(f"  ★기준선(변형 없음) 접촉 위치오차: 평균 {base_loc['mean_mm']:.2f}mm  "
+          f"중앙 {base_loc['median_mm']:.2f}mm  p90 {base_loc['p90_mm']:.2f}mm")
+    print("    → 복원기는 이 값보다 좋아질 수 없다. 크면 병목은 센서/SATS 쪽.")
 
     print(f"[3/3] leave-one-session-out × latent_dim {args.latent_dims}")
     results: dict[str, list] = {}
@@ -325,6 +345,8 @@ def main() -> None:
     (args.out / "loso_results.json").write_text(
         json.dumps({"sessions": [s.name for s in sessions],
                     "contact_loss": not args.no_contact_loss,
+                    "dead_channels_1based": [c + 1 for c in dead],
+                    "contact_only_localization": base_loc,
                     "results": results}, indent=2), encoding="utf-8")
     # 최종 배포 모델: 전 세션 학습(최고 z)
     if results:
