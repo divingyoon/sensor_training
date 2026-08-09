@@ -78,6 +78,11 @@ def _read_due(session_dir: Path) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(d.time_s, float), np.asarray(d.sensors, float)
 
 
+def read_due_raw(session_dir: str | Path) -> tuple[np.ndarray, np.ndarray]:
+    """세션 폴더 → (t[N], raw[N,16]). 드리프트 보정 전 원신호(채널 건강도 진단용)."""
+    return _read_due(Path(session_dir))
+
+
 def stage_bounds(session: DeformSession, baseline_sec: float = _BASELINE_SEC
                  ) -> tuple[float, float]:
     """(변형 시작, 변형 끝) 초. stage_times_s 우선, 없으면 고정 baseline_sec 폴백."""
@@ -148,7 +153,6 @@ def deform_windows(session: DeformSession, window_size: int, *,
     True: 앞뒤 baseline 구간만 — L_identity(변형 없으면 그대로) 용.
     """
     t, pct = session.t, session.sensor_pct
-    dur = float(t[-1])
     lo, hi = stage_bounds(session, baseline_sec)      # ★실제 단계 경계(메타 우선)
     if include_baseline:
         m = (t <= lo) | (t >= hi)
