@@ -39,15 +39,29 @@ from queue import Empty, Queue
 if sys.platform == "win32":
     os.system("")                                   # ANSI 활성화
 
-try:
-    from pyqtgraph.Qt import QtCore, QtWidgets
-    HAS_GUI = True
-except ImportError:
-    print("Error: pyqtgraph 또는 Qt(PyQt5/PyQt6) 없음 — pip install pyqtgraph PyQt5")
-    HAS_GUI = False
+# ── Qt 바인딩(플로팅을 안 쓰므로 pyqtgraph 불필요) ──────────────────────────
+QT_BINDING = None
+for _mod in ("PyQt5", "PyQt6", "PySide6", "PySide2"):
+    try:
+        QtCore = __import__(f"{_mod}.QtCore", fromlist=["QtCore"])
+        QtWidgets = __import__(f"{_mod}.QtWidgets", fromlist=["QtWidgets"])
+        QT_BINDING = _mod
+        break
+    except ImportError:
+        continue
+HAS_GUI = QT_BINDING is not None
+if not HAS_GUI:
+    print("Error: Qt 바인딩 없음 — pip install PyQt5 (또는 PyQt6/PySide6)")
+
+
+def _qt_enum(name: str, scope: str):
+    """평면 열거형(PyQt5/PySide2)과 중첩 열거형(PyQt6/PySide6) 모두 지원."""
+    return getattr(QtCore.Qt, name) if hasattr(QtCore.Qt, name) \
+        else getattr(getattr(QtCore.Qt, scope), name)
+
 
 # ── 하드웨어 상수(final_logger_gui.py 와 동일 규약) ──────────────────────────
-DEFAULT_PORT = "COM11" if sys.platform == "win32" else "/dev/ttyACM0"
+DEFAULT_PORT = "auto"                               # ★자동 탐지(실패 시 직접 지정)
 DUE_BAUD_RATE = 250000
 NUM_SENSORS = 16
 FIFO_FRAMES = 10
@@ -96,6 +110,60 @@ def elapsed_ns() -> int:
 def payload_to_rows(payload: bytes) -> list[list[int]]:
     v = struct.unpack("<" + ("I" * NUM_SENSORS * FIFO_FRAMES), payload)
     return [[v[s * FIFO_FRAMES + f] for s in range(NUM_SENSORS)] for f in range(FIFO_FRAMES)]
+
+
+def _port_score(p) -> int:
+    """Arduino Due 로 보이는 포트에 높은 점수(정렬 우선순위)."""
+    text = " ".join(str(x or "") for x in (p.description, p.manufacturer, p.product)).lower()
+    score = 0
+    if getattr(p, "vid", None) == 0x2341:            # Arduino VID
+        score += 100
+    if "arduino" in text or "due" in text:
+        score += 50
+    if "acm" in p.device.lower() or "usbmodem" in p.device.lower():
+        score += 10
+    if "bluetooth" in text or "/dev/ttys" in p.device.lower():
+        score -= 100                                 # 가상·내장 포트는 뒤로
+    return score
+
+
+def _has_due_frame(data: bytes) -> bool:
+    """0xAA + 640B + 0x55 프레임이 실제로 흐르는지 확인(오탐 방지)."""
+    return any(data[i] == 0xAA and data[i + 1 + PAYLOAD_SIZE] == 0x55
+               for i in range(len(data) - PAYLOAD_SIZE - 1))
+
+
+def autodetect_port(baud: int, probe_sec: float = 2.0) -> str | None:
+    """후보 포트를 점수순으로 열어 **DUE 프레임이 오는 포트**를 고른다.
+
+    포트 이름만 보고 고르면 다른 USB 시리얼 장치를 잡을 수 있으므로, 실제로 프레이밍이
+    맞는 데이터가 흐르는지까지 확인한다. 실패 시 None.
+    """
+    try:
+        import serial
+        from serial.tools import list_ports
+    except ImportError:
+        print("Error: pyserial 없음 — pip install pyserial")
+        return None
+    cands = sorted(list_ports.comports(), key=_port_score, reverse=True)
+    if not cands:
+        print("[port] 시리얼 포트가 하나도 보이지 않습니다.")
+        return None
+    for p in cands:
+        print(f"[port] 탐색 {p.device} ({p.description}) ...", flush=True)
+        try:
+            with serial.Serial(p.device, baud, timeout=0.2) as ser:
+                ser.reset_input_buffer()
+                buf, t0 = b"", time.perf_counter()
+                while time.perf_counter() - t0 < probe_sec:
+                    buf += ser.read(4096)
+                    if _has_due_frame(buf):
+                        print(f"[port] ★DUE 발견 → {p.device}")
+                        return p.device
+                print(f"[port]   DUE 프레임 없음({len(buf)}B 수신)")
+        except Exception as e:                       # 권한·점유 등은 다음 후보로
+            print(f"[port]   열기 실패: {e}")
+    return None
 
 
 def due_reader(port: str, baud: int) -> None:
@@ -240,12 +308,12 @@ if HAS_GUI:
 
             self.stage_lbl = QtWidgets.QLabel("시작 버튼을 누르세요")
             self.stage_lbl.setStyleSheet("font-weight: bold; font-size: 21px;")
-            self.stage_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            self.stage_lbl.setAlignment(_qt_enum("AlignCenter", "AlignmentFlag"))
             v.addWidget(self.stage_lbl)
 
             self.tip_lbl = QtWidgets.QLabel("")
             self.tip_lbl.setStyleSheet("font-size: 16px; color: #0033cc;")
-            self.tip_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            self.tip_lbl.setAlignment(_qt_enum("AlignCenter", "AlignmentFlag"))
             v.addWidget(self.tip_lbl)
 
             self.bar = QtWidgets.QProgressBar(); self.bar.setTextVisible(True)
@@ -257,7 +325,7 @@ if HAS_GUI:
                 for cc in range(4):
                     i = r * 4 + cc
                     b = QtWidgets.QLabel(f"S{i+1:02d}\n0.0%")
-                    b.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                    b.setAlignment(_qt_enum("AlignCenter", "AlignmentFlag"))
                     b.setStyleSheet("border:2px solid gray; font-size:18px; background:#f0f0f0;")
                     b.setMinimumSize(110, 80)
                     grid.addWidget(b, r, cc)
@@ -281,8 +349,8 @@ if HAS_GUI:
             v.addLayout(row)
 
         def keyPressEvent(self, e) -> None:
-            if e.key() in (QtCore.Qt.Key.Key_Space, QtCore.Qt.Key.Key_Return,
-                           QtCore.Qt.Key.Key_Enter):
+            if e.key() in (_qt_enum("Key_Space", "Key"), _qt_enum("Key_Return", "Key"),
+                           _qt_enum("Key_Enter", "Key")):
                 self.start_or_advance()
 
         def start_or_advance(self) -> None:
@@ -414,7 +482,7 @@ if HAS_GUI:
                 "version": self.args.version,
                 "session": self.session_dir.name,
                 "created": datetime.now().isoformat(timespec="seconds"),
-                "protocol": {"base_sec": self.args.base_sec, "deform_sec": self.args.deform_sec},
+                "protocol": {"base_sec": self.args.base_sec, "advance": "enter"},
                 "frames": self.count,
                 "deform_peak_pct": round(self.deform_max, 2),
                 "deform_median_pct": round(float(sorted(hist)[len(hist) // 2]), 2) if hist else 0.0,
@@ -449,12 +517,20 @@ def main() -> None:
     p = argparse.ArgumentParser(description="변형 취득 전용 로거(DUE only)")
     p.add_argument("--version", default=None,
                    help="버전 폴더명(예: v7). 미지정 시 시작할 때 터미널에서 입력받음")
-    p.add_argument("--port", default=DEFAULT_PORT)
+    p.add_argument("--port", default=DEFAULT_PORT,
+                   help="'auto'(기본)=DUE 프레임이 흐르는 포트를 자동 탐지 · 또는 직접 지정")
     p.add_argument("--baud", type=int, default=DUE_BAUD_RATE)
-    p.add_argument("--base-sec", type=float, default=BASE_SEC, help="앞뒤 baseline 길이(초)")
-    p.add_argument("--deform-sec", type=float, default=DEFORM_SEC, help="변형 구간 길이(초)")
+    p.add_argument("--base-sec", type=float, default=BASE_SEC, help="뒤 baseline 자동 종료 길이(초)")
     p.add_argument("--mock", action="store_true", help="하드웨어 없이 UI·경로 점검")
     args = p.parse_args()
+
+    if not args.mock and args.port == "auto":        # ★포트 자동 탐지
+        found = autodetect_port(args.baud)
+        if not found:
+            print("Error: DUE 포트를 찾지 못했습니다 — 연결·전원 확인 후 재시도하거나 "
+                  "--port /dev/ttyACM0 처럼 직접 지정하세요.")
+            return
+        args.port = found
 
     if not args.version:                             # 시작 시 버전 입력(v* 분리)
         v = input("버전 입력 (예: v7): ").strip()
@@ -463,10 +539,9 @@ def main() -> None:
     _, raw_data = repo_paths()
     session_dir = next_session_dir(raw_data, args.version)
     print(f"[deform] 세션 폴더: {session_dir}")
-    print(f"[deform] 프로토콜: baseline {args.base_sec:.0f}s → 변형 {args.deform_sec:.0f}s "
-          f"→ baseline {args.base_sec:.0f}s")
-    print("[deform] ★ 이 터미널에서 Enter 를 치면 구간 flag 가 기록됩니다"
-          " (변형 종류 바꿀 때마다 권장)")
+    print(f"[deform] 포트: {'mock' if args.mock else args.port}")
+    print(f"[deform] 프로토콜: ①baseline —Enter→ ②변형(자유) —Enter→ "
+          f"③baseline {args.base_sec:.0f}s → 자동 종료")
 
     target = mock_reader if args.mock else (lambda: due_reader(args.port, args.baud))
     threading.Thread(target=target, daemon=True).start()
@@ -475,7 +550,7 @@ def main() -> None:
     app = QtWidgets.QApplication(sys.argv)
     gui = DeformLoggerGUI(session_dir, args)
     gui.show()
-    sys.exit(app.exec())
+    sys.exit(getattr(app, "exec", app.exec_)())
 
 
 if __name__ == "__main__":

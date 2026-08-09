@@ -4,15 +4,26 @@
 
 ## 1. 실행
 
+**의존성**: Qt 바인딩(`PyQt5` 권장) + `pyserial` 뿐이다. pyqtgraph 는 쓰지 않는다.
+
 ```bash
-# 취득 PC(Windows). 경로는 이 파일 위치 기준 상대해석 → 어느 폴더에서 실행해도 동일.
-python deform_logger_gui.py                        # ★시작 시 터미널에서 버전 입력(예: v7)
-python deform_logger_gui.py --version v7           # 버전을 인자로 바로 지정
-python deform_logger_gui.py --version v7 --deform-sec 300 --port COM11
-python deform_logger_gui.py --mock                 # 하드웨어 없이 UI·경로 점검
+pip install PyQt5 pyserial        # 없을 때만
 ```
 
-`Space` 또는 **시작** 버튼 → 이후 **자동 진행**(단계 전환·카운트다운·저장 모두 자동).
+```bash
+# 경로는 이 파일 위치 기준 상대해석 → 어느 폴더에서 실행해도 동일.
+python3 deform_logger_gui.py                       # ★버전 입력 프롬프트 + 포트 자동 탐지
+python3 deform_logger_gui.py --version v7          # 버전을 인자로 바로 지정
+python3 deform_logger_gui.py --version v7 --port /dev/ttyACM0   # 자동 탐지 실패 시 수동
+python3 deform_logger_gui.py --mock                # 하드웨어 없이 UI·경로 점검
+```
+
+### 포트 자동 탐지
+`--port` 기본값이 `auto` 다. 보이는 시리얼 포트를 Arduino VID·설명으로 정렬한 뒤, **실제로
+`0xAA + 640B + 0x55` 프레임이 흐르는지 확인**하고 고른다(이름만 보고 엉뚱한 USB 장치를 잡는
+것을 막는다). 탐색 과정이 터미널에 출력되며, 실패하면 수동 지정을 안내하고 종료한다.
+
+`Space` 또는 **시작** 버튼으로 취득을 시작하고, 이후 **Enter 로 단계를 넘긴다**.
 
 ### ★ 터미널 입력 = 라벨 있는 구간(segment) 마커
 취득 중 **로거를 띄운 터미널에** 입력하면 **그 시각부터 그 라벨의 구간**이 시작된다:
@@ -34,11 +45,11 @@ python deform_logger_gui.py --mock                 # 하드웨어 없이 UI·경
 
 ## 2. 프로토콜 (GUI가 안내)
 
-| 단계 | 시간 | 할 일 |
-|---|---|---|
-| ① `BASE_HEAD` | 10초 | **손 떼고 평평** — 무접촉·무하중 |
-| ② `DEFORM` | 3~5분 | **손으로 순수 변형** (인덴터식 국소 압박 아님) |
-| ③ `BASE_TAIL` | 10초 | **다시 손 떼고 평평** |
+| 단계 | 시간 | 할 일 | 전환 |
+|---|---|---|---|
+| ① `BASE_HEAD` | ~10초 | **손 떼고 평평** — 무접촉·무하중 | **빈 Enter**(최소 5초 후) |
+| ② `DEFORM` | 3~5분 | **손으로 순수 변형** (인덴터식 국소 압박 아님) | **빈 Enter** |
+| ③ `BASE_TAIL` | 10초 | **다시 손 떼고 평평** | **자동 종료·저장** |
 
 앞뒤 baseline 두 점으로 **선형 드리프트 보정**(열·기압 표류 제거)이 이루어진다. ③을 빠뜨리면
 보정이 불가하므로 **끝까지 진행할 것**.
