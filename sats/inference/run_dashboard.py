@@ -183,7 +183,7 @@ class SensorChannel:
         self._quiet_t0: float | None = None
         self._last_win_mean: np.ndarray | None = None
         self._boost_until = 0.0                  # 접촉 해제 직후 빠른 흡수 구간
-        self._ghost_hist: collections.deque = collections.deque(maxlen=120)
+        self._ghost_hist: collections.deque = collections.deque(maxlen=260)
         # 접촉 필터(히스테리시스·디바운스·무접촉 리셋·스무딩) — heatmap 역할만
         self.cfilter = ContactFilter(FilterConfig(
             fz_on=args.fz_on, fz_off=args.fz_off, on_frames=args.on_frames,
@@ -415,9 +415,14 @@ class SensorChannel:
     _QUIET_SEC = 1.0          # 이 시간 무접촉이 지속돼야 재영점 시작
     _DRIFT_ALPHA = 0.02       # 느린 EMA(틱 ~20Hz → 시정수 약 2.5s)
     _BOOST_ALPHA = 0.15       # 접촉 해제 직후 2초는 빠르게(잔류가 가장 큰 순간)
-    _GHOST_SPAN_S = 3.0       # 유령 판정 관찰 시간
+    # ★관찰 5초인 이유: 3초 창에서는 힘이 출렁이는 실접촉(사람 손)의 하강 국면이
+    #   잔류 감쇠와 구분되지 않는다(실측 오탐). 5초 + "창 내 최대 fz 비증가" 조합이면
+    #   출렁임은 다시 올라간 흔적이 남아 걸러지고, 잔류는 단조 감쇠라 통과한다.
+    _GHOST_SPAN_S = 5.0       # 빠른 경로: 감쇠 관찰 시간
+    _GHOST_DECAY = 0.7        # 창 시작 대비 이만큼(30%+) 감쇠해야 잔류
     _GHOST_POS_MM = 1.5       # 이 이상 움직이면 유령 아님
-    _GHOST_FZ_MAX = 1.0       # 이보다 세면 실접촉으로 간주
+    _GHOST_FZ_MAX = 2.0       # 실측 잔류 최대 ~1N + 여유
+    _GHOST_LONG_S = 10.0      # 느린 경로: 감쇠가 미미한 고착 잔류
 
     def _update_drift_ref(self, has_contacts: bool, raw_mean: np.ndarray) -> None:
         if has_contacts:
@@ -451,13 +456,25 @@ class SensorChannel:
             return contacts
         t0, x0, y0, fz0 = old[-1]
         moved = max(abs(c.x_mm - x0), abs(c.y_mm - y0))
-        if moved < self._GHOST_POS_MM and c.fz_n < 0.8 * fz0:
+        fz_max_w = max(h[3] for h in self._ghost_hist)
+        # 빠른 경로: 5초에 30%+ 단조 감쇠(창 내 최대도 비증가 — 출렁임 배제)
+        fast = (moved < self._GHOST_POS_MM and c.fz_n < self._GHOST_DECAY * fz0
+                and fz_max_w <= fz0 * 1.05)
+        # 느린 경로: 감쇠가 미미한 고착 잔류 — 10초 이상 정지 + fz 비증가.
+        #   트레이드오프(명시): 사람이 10초 이상 완전히 정지한 채 누르고 있으면
+        #   잔류로 오판될 수 있다. 데모에서 드문 패턴이고, 다시 누르면 즉시 재검출.
+        oldest = self._ghost_hist[0]
+        slow = (now - oldest[0] >= self._GHOST_LONG_S
+                and max(abs(c.x_mm - oldest[1]), abs(c.y_mm - oldest[2])) < self._GHOST_POS_MM
+                and fz_max_w <= oldest[3] * 1.05)
+        if fast or slow:
             self.drift_ref = raw_mean.copy()         # 잔류 전체를 0 기준으로
             if self.cfilter is not None:
                 self.cfilter.reset()
             self._ghost_hist.clear()
-            print(f"[dashboard] {self.role} 유령 접촉 흡수 — 정지 {moved:.1f}mm·"
-                  f"fz {fz0:.2f}→{c.fz_n:.2f}N 감쇠(잔류로 판정)")
+            why = (f"fz {fz0:.2f}→{c.fz_n:.2f}N 감쇠" if fast
+                   else f"{self._GHOST_LONG_S:.0f}s 정지·비증가(고착 잔류)")
+            print(f"[dashboard] {self.role} 유령 접촉 흡수 — 정지 {moved:.1f}mm·{why}")
             return []
         return contacts
 
