@@ -81,7 +81,9 @@ class SensorSerialReader:
 
         # 진단용 카운터
         self.baseline_ready   = False
-        self.dead_channels    = np.empty(0, dtype=int)   # baseline≈0 인 파손 taxel
+        self.dead_channels    = np.empty(0, dtype=int)   # 자동 감지 ∪ 수동 지정
+        self._auto_dead       = np.empty(0, dtype=int)   # baseline≈0 자동 감지분
+        self._manual_dead     = np.empty(0, dtype=int)   # UI 에서 지정한 파손 taxel
         self.bursts_received  = 0
         self.raw_bytes_in     = 0    # read_until 이 반환한 누적 바이트 수
         self.footer_errors    = 0    # footer 불일치 횟수
@@ -275,6 +277,11 @@ class SensorSerialReader:
             if len(self._window) == self.window_size:
                 self._publish_latest_window()
 
+    def set_dead_channels(self, idx) -> None:
+        """UI 지정 파손 채널(0-based) — 자동 감지분과 합집합으로 유지."""
+        self._manual_dead = np.asarray(sorted(set(int(i) for i in idx)), dtype=int)
+        self.dead_channels = np.union1d(self._auto_dead, self._manual_dead)
+
     def _parse_csv_line(self, line: bytes) -> Optional[np.ndarray]:
         text = line.decode("ascii", errors="ignore").strip()
         if not text or "," not in text:
@@ -322,11 +329,12 @@ class SensorSerialReader:
             #   기록하고 pct 를 0(=변화 없음)으로 고정한다.
             med = float(np.median(self._baseline[self._baseline > 0])) \
                 if (self._baseline > 0).any() else 1.0
-            self.dead_channels = np.flatnonzero(self._baseline < 0.5 * med)
-            if len(self.dead_channels):
-                names = ",".join(f"S{i + 1:02d}" for i in self.dead_channels)
+            self._auto_dead = np.flatnonzero(self._baseline < 0.5 * med)
+            if len(self._auto_dead):
+                names = ",".join(f"S{i + 1:02d}" for i in self._auto_dead)
                 print(f"\n[SerialReader] ★파손 채널 감지: {names} — pct 0 고정")
                 self._baseline = np.where(self._baseline < 0.5 * med, 1.0, self._baseline)
+            self.dead_channels = np.union1d(self._auto_dead, self._manual_dead)
             self.baseline_ready = True
             print(f"[SerialReader] baseline 완료!")
             print(f"  raw ADC: min={self._baseline.min():.0f}  max={self._baseline.max():.0f}")

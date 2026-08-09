@@ -86,6 +86,13 @@ class PanelUI(ttk.Frame):
         sel = ttk.Frame(self); sel.pack(fill="x", pady=(3, 0))
         self.sensor_var = self.run_var = None
         self.run_box = None
+        # ★파손 채널 수동 지정(1-based, 예 7,11,15) — Enter 로 적용, 표시 통계에서 0 고정
+        ttk.Label(sel, text="dead").pack(side="left")
+        self.dead_var = tk.StringVar(value="")
+        dbox = ttk.Entry(sel, textvariable=self.dead_var, width=8)
+        dbox.pack(side="left", padx=(2, 8))
+        dbox.bind("<Return>", lambda e: self._apply_dead())
+        dbox.bind("<FocusOut>", lambda e: self._apply_dead())
         ttk.Label(row, text="port").pack(side="left")
         self.port_var = tk.StringVar(value="auto")
         self.port_box = ttk.Combobox(row, textvariable=self.port_var, width=16,
@@ -169,6 +176,14 @@ class PanelUI(ttk.Frame):
             self.banner.configure(fg="#c22")
         else:
             self.btn_conn.configure(text="끊기")
+
+    def _apply_dead(self) -> None:
+        spec = self.dead_var.get().strip()
+        err = self.channel.set_dead_channels(spec)
+        if err:
+            print(f"[dashboard] {self.channel.role} dead: {err}")
+        elif spec:
+            print(f"[dashboard] {self.channel.role} dead 채널 = {spec} (pct 0 고정)")
 
     def _set_theta_sensor(self) -> None:
         err = self.channel.apply_theta_sensor(self.sensor_var.get(), self.engines)

@@ -129,6 +129,8 @@ class UnitsInset:
         ax.set_ylim(13, -13) if flip_y else ax.set_ylim(-13, 13)
         ax.set_title(title, fontsize=8)
         ax.set_xticks([]); ax.set_yticks([])
+        self._ema = None          # 표시 평활(★수시로 색이 바뀌는 깜빡임 억제)
+        self._ema_vmax = 1e-6
 
     def update(self, pct_window, vmax: float | None = None) -> None:
         """vmax: 컬러 스케일 고정값. ★before/after 비교 시 두 미니맵이 같은 스케일을
@@ -142,7 +144,13 @@ class UnitsInset:
                          fontsize=7, color="#999999")
             return
         dp = np.asarray(pct_window, float).mean(0)      # [16] 윈도우 평균 Δp%
-        vmax = vmax if vmax else max(float(np.abs(dp).max()), 1e-6)
+        # EMA(α=0.25): 프레임 노이즈로 색·숫자가 수시로 바뀌지 않게. 스케일도 함께
+        # 평활 — 자동 스케일이 매 프레임 튀면 값이 같아도 색이 흔들린다.
+        self._ema = dp if self._ema is None else 0.75 * self._ema + 0.25 * dp
+        dp = self._ema
+        raw_vmax = vmax if vmax else max(float(np.abs(dp).max()), 1e-6)
+        self._ema_vmax = max(0.9 * self._ema_vmax, raw_vmax)   # 상승 즉시·하강 완만
+        vmax = self._ema_vmax
         self.im.set_data(taxel_grid(dp)); self.im.set_clim(-vmax, vmax)
         for i in range(16):
             x, y = TAXEL_XY_MM[i + 1]

@@ -189,6 +189,8 @@ class SensorChannel:
         if reader is None:
             return "포트 탐지 실패"
         self.reader, self.connected, self.last_seq = reader, True, 0
+        if getattr(self, "manual_dead", None) and hasattr(reader, "set_dead_channels"):
+            reader.set_dead_channels(self.manual_dead)     # 재연결에도 유지
         return None
 
     def disconnect(self) -> None:
@@ -204,6 +206,19 @@ class SensorChannel:
         self.hist.clear()
         if self.cfilter is not None:
             self.cfilter.reset()
+
+    def set_dead_channels(self, spec: str) -> str | None:
+        """UI 의 dead 입력('7,11,15' 1-based) 적용 — 리더 표시 통계에서 0 고정."""
+        try:
+            idx = sorted({int(x) - 1 for x in spec.replace(" ", "").split(",") if x})
+        except ValueError:
+            return f"형식 오류: {spec!r} (예: 7,11,15)"
+        if any(i < 0 or i > 15 for i in idx):
+            return "채널은 1~16 범위"
+        self.manual_dead = tuple(idx)
+        if self.reader is not None and hasattr(self.reader, "set_dead_channels"):
+            self.reader.set_dead_channels(idx)
+        return None
 
     def apply_theta_sensor(self, sensor: str, engines: "EngineCache") -> str | None:
         """S2: 센서 지정 + 그 센서의 SATS 엔진 로드(복원 결과를 SATS 맵으로 보이기 위함)."""
@@ -415,7 +430,12 @@ class SensorChannel:
             return {"kind": "theta", "banner": banner, "theta": None, "noise": None,
                     "units": None, "units_restored": None}
         theta_abs = self.bi.theta_from_pct(win, demo_baseline=self.baseline)
-        self.hist.append(theta_abs - self.theta0)
+        val = theta_abs - self.theta0
+        # ★유효밴드(20°) 미만은 노이즈 — 이력을 비워 미디언 지연 없이 즉시 0 으로 수렴.
+        #   유지하면 큰 각도에서 내려올 때 이력의 잔상이 수 초간 남는다(동기화 어긋난 느낌).
+        if abs(val) < a.theta_deadband:
+            self.hist.clear()
+        self.hist.append(val)
         sm = max(1, int(a.theta_smooth))
         recent = list(self.hist)[-sm:]
         smoothed = float(np.median(recent))
