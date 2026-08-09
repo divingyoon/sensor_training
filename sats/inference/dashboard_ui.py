@@ -57,16 +57,24 @@ class PanelUI(ttk.Frame):
         if role == "theta":
             self.p_theta = ThetaGaugePanel(self.fig.add_subplot(111), title)
             self.p_heat = self.p_units = None
+            self.p_units_restored = None
         elif role == "bending":
-            gs = self.fig.add_gridspec(2, 1, height_ratios=[3.2, 1], hspace=0.3)
-            self.p_heat = HeatmapPanel(self.fig.add_subplot(gs[0]), grid_min, grid_max, title,
+            # ★복원 데모의 핵심 뷰: 아래에 [변형된 raw | 복원 결과] 를 나란히.
+            #   SATS 맵의 유령 소멸은 간접 증거라, 16채널이 실제로 되돌아가는 것을
+            #   직접 보여줘야 "baseline 복원"이 전달된다.
+            gs = self.fig.add_gridspec(2, 2, height_ratios=[3.2, 1.15], hspace=0.3, wspace=0.15)
+            self.p_heat = HeatmapPanel(self.fig.add_subplot(gs[0, :]), grid_min, grid_max, title,
                                        flip_x=flip_x, flip_y=flip_y)
-            self.p_units = UnitsInset(self.fig.add_subplot(gs[1]), flip_x=flip_x, flip_y=flip_y)
+            self.p_units = UnitsInset(self.fig.add_subplot(gs[1, 0]),
+                                      title="raw (deformed)", flip_x=flip_x, flip_y=flip_y)
+            self.p_units_restored = UnitsInset(self.fig.add_subplot(gs[1, 1]),
+                                               title="restored", flip_x=flip_x, flip_y=flip_y)
             self.p_theta = None
         else:
             self.p_heat = HeatmapPanel(self.fig.add_subplot(111), grid_min, grid_max, title,
                                        flip_x=flip_x, flip_y=flip_y)
             self.p_units = self.p_theta = None
+            self.p_units_restored = None
         self.fig.tight_layout()
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -185,7 +193,12 @@ class PanelUI(ttk.Frame):
             self.p_heat.update(payload.get("pred_map"), payload.get("contacts", []), b,
                                theta_deg=theta, note=payload.get("note", ""))
             if self.p_units is not None:
-                self.p_units.update(payload.get("units"))
+                u = payload.get("units")
+                shared = (max(float(abs(__import__("numpy").asarray(u, float)).max()), 1e-6)
+                          if u is not None else None)   # raw 기준 공유 스케일
+                self.p_units.update(u, vmax=shared)
+                if getattr(self, "p_units_restored", None) is not None:
+                    self.p_units_restored.update(payload.get("units_restored"), vmax=shared)
             extra = (f"  armed θ={self.channel.theta_fixed:+.1f}°" if role == "bending"
                      and self.channel.armed and self.channel.restorer is None else "")
             self.info_var.set(f"contacts≤{args.contacts}  D{int(args.diameter)}"

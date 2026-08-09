@@ -125,13 +125,16 @@ class UnitsInset:
         ax.set_title(title, fontsize=8)
         ax.set_xticks([]); ax.set_yticks([])
 
-    def update(self, pct_window) -> None:
+    def update(self, pct_window, vmax: float | None = None) -> None:
+        """vmax: 컬러 스케일 고정값. ★before/after 비교 시 두 미니맵이 같은 스케일을
+        써야 한다 — 복원 결과(≈0)를 자체 스케일로 그리면 잔여 노이즈가 꽉 찬 것처럼
+        보여 복원이 안 된 것으로 오독된다."""
         _clear_dynamic(self.ax)
         if pct_window is None:
             self.im.set_data(np.zeros((4, 4)))
             return
         dp = np.asarray(pct_window, float).mean(0)      # [16] 윈도우 평균 Δp%
-        vmax = max(float(np.abs(dp).max()), 1e-6)
+        vmax = vmax if vmax else max(float(np.abs(dp).max()), 1e-6)
         self.im.set_data(taxel_grid(dp)); self.im.set_clim(-vmax, vmax)
         for i in range(16):
             x, y = TAXEL_XY_MM[i + 1]

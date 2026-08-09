@@ -326,8 +326,11 @@ class SensorChannel:
             return {"kind": "heatmap", "banner": banner, "pred_map": None,
                     "contacts": [], "theta": theta_deg, "units": None}
         # ★복원기 우선: 창마다 변형 오프셋을 추정해 뺀다(고정 스냅숏 방식보다 적응적).
-        if self.role == "bending" and self.restore_on and self.restorer is not None:
-            frame = self.restorer.restore(np.asarray(win, np.float32))
+        restored = None
+        if self.role == "bending" and self.restorer is not None:
+            restored = self.restorer.restore(np.asarray(win, np.float32))
+        if restored is not None and self.restore_on:
+            frame = restored
         else:
             frame = (win - self.bent_ref[None, :]).astype(np.float32) if bent else win
         pmap = self.engine.predict(frame)
@@ -343,6 +346,9 @@ class SensorChannel:
         return {"kind": "heatmap", "banner": banner, "pred_map": pmap,
                 "contacts": contacts, "theta": theta_deg,
                 "units": win if self.role == "bending" else None,
+                # ★복원 결과는 토글과 무관하게 항상 계산해 보여준다 — OFF 상태에서도
+                #   "켜면 이렇게 된다"가 보여야 before/after 데모가 성립한다.
+                "units_restored": restored,
                 "note": ("RESTORE ON" if self.restore_on else "RESTORE OFF")
                         if self.restorer is not None else ""}
 
