@@ -319,10 +319,13 @@ def main() -> None:
         args.contact_trial = found
         print(f"[센서 {sensor}] 접촉 trial 자동 선택: {_rel(found)}")
     if args.sats_run is None:
-        cand = [_REPO / f"sats/training/runs/ecomesh_{sensor}_deploy_g025",
-                _REPO / f"sats/training/runs/ecomesh_{sensor}_deploy_all4",
-                _REPO / f"sats/training/runs/ecomesh_{sensor}_deploy_g01"]
-        args.sats_run = next((c for c in cand if (c / "best_model.pt").exists()), cand[0])
+        cand = [_REPO / f"sats/training/runs/{pre}{sensor}_deploy_{t}"
+                for t in ("g025", "all4", "g01") for pre in ("ecomesh_", "")]
+        args.sats_run = next((c for c in cand if (c / "best_model.pt").exists()), None)
+        if args.sats_run is None:
+            raise SystemExit(f"[{sensor}] SATS run 없음. 확인한 경로:\n  "
+                             + "\n  ".join(str(c) for c in cand)
+                             + "\n  → --sats-run 으로 직접 지정")
     for label, path in (("contact-trial", args.contact_trial), ("sats-run", args.sats_run)):
         if not Path(path).exists():
             raise SystemExit(f"[{sensor}] {label} 없음: {path}\n"

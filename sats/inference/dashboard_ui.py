@@ -212,7 +212,10 @@ class PanelUI(ttk.Frame):
     @staticmethod
     def _short_run(full: str, sensor: str) -> str:
         """표시용 축약 — v* 를 이미 골랐으므로 접두사(ecomesh_v8_deploy_)는 중복."""
-        return full.replace(f"ecomesh_{sensor}_deploy_", "") or full
+        for pre in (f"ecomesh_{sensor}_deploy_", f"{sensor}_deploy_"):
+            if full.startswith(pre):
+                return full[len(pre):]
+        return full
 
     def _on_sensor_selected(self) -> None:
         """v* 선택 → 그 센서의 추론 run 목록을 채운다(첫 항목 자동 선택).

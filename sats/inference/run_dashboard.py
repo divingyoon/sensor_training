@@ -58,8 +58,8 @@ def resolve_sats_run(sensor: str | None, explicit: str | None) -> Path:
         return Path(explicit)
     if not sensor:
         return _ROOT / "sats/training/runs/ecomesh_v6_deploy_all4"
-    cands = [_ROOT / f"sats/training/runs/ecomesh_{sensor}_deploy_{t}"
-             for t in ("g025", "all4", "g01")]
+    cands = [_ROOT / f"sats/training/runs/{pre}{sensor}_deploy_{t}"
+             for t in ("g025", "all4", "g01") for pre in ("ecomesh_", "")]
     found = next((c for c in cands if (c / "best_model.pt").exists()), None)
     if found is None:
         raise SystemExit(f"[{sensor}] SATS run 을 찾지 못했습니다. 확인한 경로:\n  "
@@ -69,11 +69,16 @@ def resolve_sats_run(sensor: str | None, explicit: str | None) -> Path:
 
 
 def available_runs(sensor: str) -> list[str]:
-    """그 센서의 배포 run 이름 목록(추론 파일 선택용). g025 를 앞에."""
-    runs = [r.name for r in (_ROOT / "sats/training/runs").glob(f"ecomesh_{sensor}_deploy_*")
-            if (r / "best_model.pt").exists()]
+    """그 센서의 배포 run 이름 목록(추론 파일 선택용). g025 를 앞에.
+
+    ★이름 패턴은 ecomesh_v5_deploy_* 와 v5_deploy_* 둘 다 허용 — 사용자가 콤보 잘림
+    때문에 접두사를 줄여 rename 한 폴더도 그대로 인식한다.
+    """
+    runs = {r.name for pat in (f"ecomesh_{sensor}_deploy_*", f"{sensor}_deploy_*")
+            for r in (_ROOT / "sats/training/runs").glob(pat)
+            if (r / "best_model.pt").exists()}
     order = {"g025": 0, "all4": 1, "g01": 2}
-    return sorted(runs, key=lambda n: order.get(n.rsplit("_", 1)[-1], 9))
+    return sorted(runs, key=lambda n: (order.get(n.rsplit("_", 1)[-1], 9), n))
 
 
 def available_estimators() -> list[str]:
@@ -96,9 +101,9 @@ def available_restorers() -> list[str]:
 def available_sensors() -> list[str]:
     """배포 run 이 존재하는 센서 버전 목록 — UI 드롭다운용."""
     import re as _re
-    runs = (_ROOT / "sats/training/runs").glob("ecomesh_*_deploy_*")
+    runs = (_ROOT / "sats/training/runs").glob("*_deploy_*")
     found = {m.group(1) for r in runs if (r / "best_model.pt").exists()
-             for m in [_re.match(r"ecomesh_(v\d+)_deploy_", r.name)] if m}
+             for m in [_re.match(r"(?:ecomesh_)?(v\d+)_deploy_", r.name)] if m}
     return sorted(found, key=lambda v: int(v[1:]))
 
 
