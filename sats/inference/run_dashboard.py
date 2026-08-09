@@ -182,6 +182,8 @@ class SensorChannel:
         self.drift_ref = np.zeros(16, np.float32)
         self._quiet_t0: float | None = None
         self._last_win_mean: np.ndarray | None = None
+        self._boost_until = 0.0                  # 접촉 해제 직후 빠른 흡수 구간
+        self._ghost_hist: collections.deque = collections.deque(maxlen=120)
         # 접촉 필터(히스테리시스·디바운스·무접촉 리셋·스무딩) — heatmap 역할만
         self.cfilter = ContactFilter(FilterConfig(
             fz_on=args.fz_on, fz_off=args.fz_off, on_frames=args.on_frames,
@@ -412,6 +414,10 @@ class SensorChannel:
 
     _QUIET_SEC = 1.0          # 이 시간 무접촉이 지속돼야 재영점 시작
     _DRIFT_ALPHA = 0.02       # 느린 EMA(틱 ~20Hz → 시정수 약 2.5s)
+    _BOOST_ALPHA = 0.15       # 접촉 해제 직후 2초는 빠르게(잔류가 가장 큰 순간)
+    _GHOST_SPAN_S = 3.0       # 유령 판정 관찰 시간
+    _GHOST_POS_MM = 1.5       # 이 이상 움직이면 유령 아님
+    _GHOST_FZ_MAX = 1.0       # 이보다 세면 실접촉으로 간주
 
     def _update_drift_ref(self, has_contacts: bool, raw_mean: np.ndarray) -> None:
         if has_contacts:
@@ -421,8 +427,39 @@ class SensorChannel:
         if self._quiet_t0 is None:
             self._quiet_t0 = now
         elif now - self._quiet_t0 > self._QUIET_SEC:
-            self.drift_ref = ((1.0 - self._DRIFT_ALPHA) * self.drift_ref
-                              + self._DRIFT_ALPHA * raw_mean).astype(np.float32)
+            a = self._BOOST_ALPHA if now < self._boost_until else self._DRIFT_ALPHA
+            self.drift_ref = ((1.0 - a) * self.drift_ref
+                              + a * raw_mean).astype(np.float32)
+
+    def _maybe_absorb_ghost(self, contacts, raw_mean: np.ndarray) -> list:
+        """★교착 해소 — 히스테리시스 잔류가 만든 유령 접촉을 감지해 즉시 흡수한다.
+
+        구멍: 잔류 fz 가 fz_off(0.15N)를 넘는 동안 필터는 '접촉 중'이고, 접촉 중에는
+        재영점이 갱신되지 않는다 → 잔류가 유령을 만들고 유령이 흡수를 막는 순환.
+        유령의 물리적 시그니처로 끊는다: **제자리에 멈춘 채(1.5mm 미만) fz 가
+        단조 감쇠**(점탄성 회복). 실접촉은 유지 시 fz 가 감쇠하지 않고, 움직이면
+        위치가 변하므로 걸리지 않는다. 판정되면 잔류를 통째로 재영점하고 필터를 리셋.
+        """
+        now = time.perf_counter()
+        if len(contacts) != 1 or contacts[0].fz_n > self._GHOST_FZ_MAX:
+            self._ghost_hist.clear()
+            return contacts
+        c = contacts[0]
+        self._ghost_hist.append((now, c.x_mm, c.y_mm, c.fz_n))
+        old = [h for h in self._ghost_hist if now - h[0] >= self._GHOST_SPAN_S]
+        if not old:
+            return contacts
+        t0, x0, y0, fz0 = old[-1]
+        moved = max(abs(c.x_mm - x0), abs(c.y_mm - y0))
+        if moved < self._GHOST_POS_MM and c.fz_n < 0.8 * fz0:
+            self.drift_ref = raw_mean.copy()         # 잔류 전체를 0 기준으로
+            if self.cfilter is not None:
+                self.cfilter.reset()
+            self._ghost_hist.clear()
+            print(f"[dashboard] {self.role} 유령 접촉 흡수 — 정지 {moved:.1f}mm·"
+                  f"fz {fz0:.2f}→{c.fz_n:.2f}N 감쇠(잔류로 판정)")
+            return []
+        return contacts
 
     def _poll_heatmap(self, win, *, theta_deg, bent: bool) -> dict:
         a = self.args
@@ -449,7 +486,13 @@ class SensorChannel:
             rel_threshold=a.rel_threshold, min_fz=a.min_fz,
             position_gain=getattr(a, "position_gain", 1.0), z_calib=self.z_calib)
         # 히스테리시스·디바운스·무접촉 리셋·스무딩(released 시 빈 리스트 → blank)
-        contacts = self.cfilter.update(raw)[0] if self.cfilter is not None else raw
+        if self.cfilter is not None:
+            contacts, released = self.cfilter.update(raw)
+            if released and not contacts:            # 해제 직후 = 잔류 최대 → 빠른 흡수
+                self._boost_until = time.perf_counter() + 2.0
+        else:
+            contacts = raw
+        contacts = self._maybe_absorb_ghost(contacts, raw_mean)
         self._update_drift_ref(bool(contacts), raw_mean)
         banner = state_banner(contacts, theta_deg=theta_deg, theta_band_deg=a.theta_deadband)
         return {"kind": "heatmap", "banner": banner, "pred_map": pmap,
