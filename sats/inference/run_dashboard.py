@@ -68,6 +68,50 @@ def resolve_sats_run(sensor: str | None, explicit: str | None) -> Path:
     return found
 
 
+def available_runs(sensor: str) -> list[str]:
+    """그 센서의 배포 run 이름 목록(추론 파일 선택용). g025 를 앞에."""
+    runs = [r.name for r in (_ROOT / "sats/training/runs").glob(f"ecomesh_{sensor}_deploy_*")
+            if (r / "best_model.pt").exists()]
+    order = {"g025": 0, "all4": 1, "g01": 2}
+    return sorted(runs, key=lambda n: order.get(n.rsplit("_", 1)[-1], 9))
+
+
+def available_sensors() -> list[str]:
+    """배포 run 이 존재하는 센서 버전 목록 — UI 드롭다운용."""
+    import re as _re
+    runs = (_ROOT / "sats/training/runs").glob("ecomesh_*_deploy_*")
+    found = {m.group(1) for r in runs if (r / "best_model.pt").exists()
+             for m in [_re.match(r"ecomesh_(v\d+)_deploy_", r.name)] if m}
+    return sorted(found, key=lambda v: int(v[1:]))
+
+
+class EngineCache:
+    """센서별 SATS 엔진을 만들어 재사용한다.
+
+    ★패널마다 다른 센서를 쓰려면 엔진도 패널별이어야 한다. 하나를 공유하면 v7 센서를
+    v6 SATS 로 추론하게 되고, 캘리브레이션이 달라 조용히 틀린 맵이 나온다.
+    같은 센서를 두 패널이 쓰는 경우가 흔하므로 캐시해 중복 로드를 막는다.
+    """
+
+    def __init__(self, args) -> None:
+        self.args = args
+        self._cache: dict[str, object] = {}
+
+    def get(self, sensor: str | None, run_dir: str | None = None):
+        key = run_dir or sensor or "_default"
+        if key not in self._cache:
+            from sats.inference.inference_engine import SATSInferenceEngine
+            run = resolve_sats_run(sensor, run_dir)
+            self._cache[key] = SATSInferenceEngine(
+                run, device=self.args.device, indenter_diameter_mm=self.args.diameter)
+            print(f"[dashboard] SATS 로드: {Path(run).name}")
+        return self._cache[key]
+
+    def get_run(self, run_name: str):
+        """runs/ 하위 run 이름으로 엔진 로드(UI 의 '추론 파일' 선택)."""
+        return self.get(None, str(_ROOT / "sats/training/runs" / run_name))
+
+
 def _estimator_ckpt() -> Path:
     """v6_2(clean) 우선 → v6new → v6 폴백."""
     return next((p for p in [
@@ -83,10 +127,12 @@ class SensorChannel:
     role: contacts | theta | bending. reader None 이면 OFFLINE.
     """
 
-    def __init__(self, role: str, reader, engine, bi, z_calib, args, restorer=None) -> None:
+    def __init__(self, role: str, reader, engine, bi, z_calib, args, restorer=None,
+                 sensor: str | None = None) -> None:
         self.role = role
         self.reader = reader
         self.engine = engine
+        self.sensor = sensor
         self.bi = bi
         self.z_calib = z_calib
         self.args = args
@@ -96,7 +142,11 @@ class SensorChannel:
         self.theta0 = 0.0
         self.hist: collections.deque = collections.deque(maxlen=max(20, args.theta_smooth))
         # bending 상태 — ★변형 복원기(각도-프리). 있으면 재장착 없이 매 창 보정한다.
-        self.restorer = restorer if role == "bending" else None
+        self._restorer_all = restorer if role == "bending" else None
+        self.restorer = self._restorer_all
+        if self.restorer is not None and sensor is not None \
+                and getattr(self.restorer, "sensor", None) not in (None, sensor):
+            self.restorer = None                  # 다른 센서 전용 복원기는 붙이지 않는다
         self.restore_on = self.restorer is not None
         self.armed = False
         self.theta_fixed = 0.0
@@ -113,7 +163,10 @@ class SensorChannel:
         """포트에 리더 연결(기존 연결은 해제). 성공 None, 실패 사유 문자열."""
         self.disconnect()
         try:
-            reader = _build_reader(port, self.args, self.engine.window_size)
+            if self.engine is None and self.role in ("contacts", "bending"):
+                return "먼저 v* 와 run 을 선택하세요"
+            wsize = self.engine.window_size if self.engine is not None else 10
+            reader = _build_reader(port, self.args, wsize)
         except Exception as e:                     # 포트 열기 실패 등 — UI에 사유 표시
             return f"연결 실패: {e}"
         if reader is None:
@@ -134,6 +187,25 @@ class SensorChannel:
         self.hist.clear()
         if self.cfilter is not None:
             self.cfilter.reset()
+
+    def apply_run(self, sensor: str, run_name: str, engines: "EngineCache") -> str | None:
+        """이 패널의 (센서, 추론 run) 확정 — UI 의 port→v*→추론파일 흐름 마지막 단계.
+
+        ★복원기는 학습에 쓴 센서에서만 유효하다(채널 마스킹·캘리브레이션이 다름).
+        다른 센서면 붙이지 않고 알린다 — 조용히 잘못된 보정을 하는 것보다 낫다.
+        """
+        try:
+            self.engine = engines.get_run(run_name)
+        except Exception as e:
+            return f"run 로드 실패: {e}"
+        self.sensor = sensor
+        if self.role == "bending" and self._restorer_all is not None:
+            match = getattr(self._restorer_all, "sensor", None)
+            self.restorer = self._restorer_all if match in (None, sensor) else None
+            self.restore_on = self.restorer is not None
+            if self.restorer is None:
+                return f"복원기는 {match} 전용 — {sensor} 에는 적용하지 않음"
+        return None
 
     def toggle_restore(self) -> bool:
         """변형 복원 ON/OFF. 데모의 '변형 → 정지 → 복원' 구분 동작에 쓴다."""
@@ -235,6 +307,9 @@ class SensorChannel:
             prog = float(getattr(self.reader, "baseline_progress", 0.0)) * 100
             return self._idle_payload(StateBanner(ContactState.OFFLINE,
                                                   f"BASELINE {prog:.0f}% — hands off", "#c8a200"))
+        if self.engine is None and self.role in ("contacts", "bending"):
+            return self._idle_payload(StateBanner(ContactState.OFFLINE,
+                                                  "SELECT SENSOR + RUN", "#c8a200"))
         win = self._latest()
         if self.role == "contacts":
             return self._poll_heatmap(win, theta_deg=None, bent=False)
@@ -387,10 +462,12 @@ def main() -> None:
         args.min_distance_mm = args.diameter        # 단일접촉 peak-split 방지
     ports = {"contacts": args.contacts_port, "theta": args.theta_port, "bending": args.bending_port}
 
-    args.run_dir = str(resolve_sats_run(args.sensor, args.run_dir))
-    print(f"[1/3] SATS 엔진 로드(공유): {Path(args.run_dir).name}"
-          + (f"  (센서 {args.sensor})" if args.sensor else ""))
-    engine = SATSInferenceEngine(args.run_dir, device=args.device, indenter_diameter_mm=args.diameter)
+    engines = EngineCache(args)
+    engine = None
+    if args.ui != "tk":                      # mpl 뷰는 기존대로 즉시 로드
+        print("[1/3] SATS 엔진 로드")
+        engine = engines.get(args.sensor, args.run_dir)
+        args.run_dir = str(resolve_sats_run(args.sensor, args.run_dir))
     z_path = args.z_calib or (Path(__file__).resolve().parent / "z_calibration_v6.json")
     z_calib = ZCalibration.load(z_path) if Path(z_path).exists() else None
 
@@ -411,25 +488,12 @@ def main() -> None:
 
     if args.ui == "tk":
         # UI에서 패널별 연결 — CLI 포트 지정이 있으면 초기 연결로 반영
-        channels = [SensorChannel(role, None, engine, bi, z_calib, args, restorer)
+        channels = [SensorChannel(role, None, engine, bi, z_calib, args, restorer, args.sensor)
                     for role in _ROLES]
-        # auto 가 여러 역할에 걸리면 같은 포트를 서로 뺏으므로 하나만 초기 연결한다.
-        # ★단, auto 가 하나뿐이면 그 역할을 연결해야 한다 — 예전에는 contacts 만 연결해서
-        #   `--bending-port auto` 를 줘도 S3 가 비어 있었다.
-        autos = [r for r in _ROLES if ports[r] == "auto"]
-        auto_owner = ("contacts" if "contacts" in autos else autos[0]) if autos else None
-        for c in channels:
-            if ports[c.role] == "none" or args.no_autoconnect:
-                continue
-            if ports[c.role] == "auto" and c.role != auto_owner:
-                print(f"[dashboard] {c.role}=auto 는 초기 연결 생략(포트 쟁탈 방지) — "
-                      f"UI 에서 포트를 골라 연결하세요")
-                continue
-            err = c.connect(ports[c.role])
-            if err:
-                print(f"[dashboard] {c.role} 초기 연결 실패: {err}")
+        # ★UI-only 시작: 연결·엔진 로드는 UI 에서 port → v* → 추론 run 순으로 고른다.
+        print("[dashboard] UI 시작 — 각 패널에서 port → sensor → run 선택 후 연결하세요")
         from sats.inference.dashboard_ui import DashboardApp
-        app = DashboardApp(channels, engine, args)
+        app = DashboardApp(channels, engine, args, engines)
         try:
             app.run()
         finally:
@@ -443,7 +507,8 @@ def main() -> None:
         print("[dashboard] 포트 미지정 → contacts=auto 로 진행")
     print("[3/3] 리더 시작")
     channels = [SensorChannel(role, _build_reader(ports[role], args, engine.window_size),
-                              engine, bi, z_calib, args, restorer) for role in _ROLES]
+                              engine, bi, z_calib, args, restorer, args.sensor)
+                for role in _ROLES]
     _wait_baselines(channels)
     from sats.inference.dashboard import Dashboard
     dash = Dashboard(channels, engine, args)

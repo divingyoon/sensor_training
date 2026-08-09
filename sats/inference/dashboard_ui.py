@@ -39,10 +39,11 @@ class PanelUI(ttk.Frame):
     """패널 1개 = 배너 + 캔버스 + 컨트롤(포트·연결·리셋) + 설정 요약."""
 
     def __init__(self, master, channel, title: str, flip_x: bool, flip_y: bool,
-                 grid_min: float, grid_max: float) -> None:
+                 grid_min: float, grid_max: float, engines=None, sensors=None) -> None:
         super().__init__(master, padding=6)
         self.channel = channel
         self.title = title
+        self.engines = engines                      # EngineCache — 센서 교체용
 
         # 상태 배너
         self.banner_var = tk.StringVar(value="SENSOR OFFLINE")
@@ -70,14 +71,32 @@ class PanelUI(ttk.Frame):
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
 
-        # 컨트롤 행: 포트 ▾ · 연결/끊기 · 리셋
+        # ★컨트롤 행: port ▾ → sensor(v*) ▾ → run(추론 파일) ▾ → 연결.
+        #   한 창에서 패널마다 서로 다른 센서·추론 파일을 배정한다.
         row = ttk.Frame(self); row.pack(fill="x", pady=(6, 0))
+        self.sensor_var = self.run_var = None
+        self.run_box = None
         ttk.Label(row, text="port").pack(side="left")
         self.port_var = tk.StringVar(value="auto")
         self.port_box = ttk.Combobox(row, textvariable=self.port_var, width=16,
                                      values=list_port_choices(), state="readonly")
         self.port_box.pack(side="left", padx=4)
         self.port_box.bind("<Button-1>", lambda e: self.port_box.configure(values=list_port_choices()))
+        if engines is not None and sensors and role in ("contacts", "bending"):
+            from sats.inference.run_dashboard import available_runs
+            self._available_runs = available_runs
+            ttk.Label(row, text="v*").pack(side="left", padx=(6, 0))
+            self.sensor_var = tk.StringVar(value="")
+            sbox = ttk.Combobox(row, textvariable=self.sensor_var, width=3,
+                                values=list(sensors), state="readonly")
+            sbox.pack(side="left", padx=2)
+            sbox.bind("<<ComboboxSelected>>", lambda e: self._on_sensor_selected())
+            ttk.Label(row, text="run").pack(side="left", padx=(6, 0))
+            self.run_var = tk.StringVar(value="")
+            self.run_box = ttk.Combobox(row, textvariable=self.run_var, width=20,
+                                        values=[], state="readonly")
+            self.run_box.pack(side="left", padx=2)
+            self.run_box.bind("<<ComboboxSelected>>", lambda e: self._apply_run())
         self.btn_conn = ttk.Button(row, text="연결", width=6, command=self._toggle_connect)
         self.btn_conn.pack(side="left", padx=2)
         reset_label = {"contacts": "리셋", "theta": "재영점", "bending": "재장착"}[role]
@@ -96,6 +115,10 @@ class PanelUI(ttk.Frame):
 
     # ── 컨트롤 동작 ──────────────────────────────────────────────────────────
     def _toggle_connect(self) -> None:
+        if (not self.channel.connected and self.channel.role in ("contacts", "bending")
+                and self.channel.engine is None):
+            print(f"[dashboard] {self.channel.role}: 먼저 v* 와 run 을 선택하세요")
+            return
         ch = self.channel
         if ch.connected:
             ch.disconnect()
@@ -107,6 +130,31 @@ class PanelUI(ttk.Frame):
             self.banner.configure(fg="#c22")
         else:
             self.btn_conn.configure(text="끊기")
+
+    def _on_sensor_selected(self) -> None:
+        """v* 선택 → 그 센서의 추론 run 목록을 채운다(첫 항목 자동 선택)."""
+        sensor = self.sensor_var.get()
+        runs = self._available_runs(sensor)
+        self.run_box.configure(values=runs)
+        if runs:
+            self.run_var.set(runs[0])
+            self._apply_run()
+        else:
+            self.run_var.set("")
+            print(f"[dashboard] {sensor}: 배포 run 없음 — 학습이 되어 있는지 확인")
+
+    def _apply_run(self) -> None:
+        """run(추론 파일) 확정 — 엔진 로드(캐시) + 복원기 유효성 갱신."""
+        sensor, run = self.sensor_var.get(), self.run_var.get()
+        if not sensor or not run:
+            return
+        err = self.channel.apply_run(sensor, run, self.engines)
+        print(f"[dashboard] {self.channel.role}: {sensor}/{run}"
+              + (f" — {err}" if err else " 적용"))
+        if self.btn_restore is not None:
+            state = "normal" if self.channel.restorer is not None else "disabled"
+            self.btn_restore.configure(state=state)
+            self._sync_restore_label()
 
     def _sync_restore_label(self) -> None:
         if self.btn_restore is not None:
@@ -152,7 +200,10 @@ class PanelUI(ttk.Frame):
 class DashboardApp:
     """Tk 루트 — 3 PanelUI + 전역 설정(접촉 수·인덴터) + 폴링 루프."""
 
-    def __init__(self, channels, engine, args) -> None:
+    def __init__(self, channels, engine, args, engines=None) -> None:
+        from sats.inference.run_dashboard import available_sensors
+        self.engines = engines
+        self.sensors = available_sensors() if engines is not None else []
         self.args = args
         self.engine = engine
         self.channels = {c.role: c for c in channels}
@@ -187,20 +238,23 @@ class DashboardApp:
 
         # 3패널
         mid = ttk.Frame(self.root, padding=(6, 0)); mid.pack(fill="both", expand=True)
-        gmin, gmax = engine.grid_min_mm, engine.grid_max_mm
+        gmin, gmax = ((engine.grid_min_mm, engine.grid_max_mm) if engine is not None
+                      else (-10.0, 10.0))          # 물리 범위는 모든 run 동일
         fx, fy = getattr(args, "flip_x", False), getattr(args, "flip_y", True)
         titles = {"contacts": "S1  SATS contacts", "theta": "S2  bending theta (live)",
                   "bending": "S3  bending(jig) + SATS"}
         self.panels: dict[str, PanelUI] = {}
         for i, role in enumerate(("contacts", "theta", "bending")):
-            p = PanelUI(mid, self.channels[role], titles[role], fx, fy, gmin, gmax)
+            p = PanelUI(mid, self.channels[role], titles[role], fx, fy, gmin, gmax,
+                        engines=self.engines, sensors=self.sensors)
             p.grid(row=0, column=i, sticky="nsew", padx=4)
             mid.columnconfigure(i, weight=1)
             self.panels[role] = p
         mid.rowconfigure(0, weight=1)
 
         # 하단 스펙바
-        grid_txt = f"{engine.grid_size}x{engine.grid_size}@{engine.grid_step_mm:g}mm"
+        grid_txt = (f"{engine.grid_size}x{engine.grid_size}@{engine.grid_step_mm:g}mm"
+                    if engine is not None else "run 선택 대기")
         spec = (f"SATS {grid_txt} (20x20mm) · raw 16-taxel 200Hz/250k · infer 129Hz"
                 f" · Fz 0-3.9N (D10) · theta 20-150° (MAE 1.78°)")
         ttk.Label(self.root, text=spec, font=("TkDefaultFont", 8), padding=(10, 4)).pack(fill="x")
@@ -215,9 +269,12 @@ class DashboardApp:
         d = 5.0 if self.dia_var.get() == "D5" else 10.0
         self.args.diameter = d
         self.args.min_distance_mm = d
-        setf = getattr(self.engine, "set_diameter", None)
-        if setf is not None:
-            setf(d)
+        engines = ({self.engine} if self.engine is not None else set()) \
+            | {c.engine for c in self.channels.values() if c.engine is not None}
+        for e in engines:                            # ★패널별 엔진 전부에 적용
+            setf = getattr(e, "set_diameter", None)
+            if setf is not None:
+                setf(d)
 
     # ── 루프 ─────────────────────────────────────────────────────────────────
     def _tick(self) -> None:
