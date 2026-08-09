@@ -110,8 +110,9 @@ class PanelUI(ttk.Frame):
             sbox.bind("<<ComboboxSelected>>", lambda e: self._set_theta_sensor())
             ttk.Label(sel, text="est").pack(side="left", padx=(6, 0))
             self.est_var = tk.StringVar(value="")
-            ebox = ttk.Combobox(sel, textvariable=self.est_var, width=13,
-                                values=available_estimators(), state="readonly")
+            self._est_map = {n.replace("estimator_", ""): n for n in available_estimators()}
+            ebox = ttk.Combobox(sel, textvariable=self.est_var, width=8,
+                                values=list(self._est_map), state="readonly")
             ebox.pack(side="left", padx=2)
             ebox.bind("<<ComboboxSelected>>", lambda e: self._apply_estimator())
             ttk.Label(sel, text="restore").pack(side="left", padx=(6, 0))
@@ -139,8 +140,10 @@ class PanelUI(ttk.Frame):
                 from sats.inference.run_dashboard import available_restorers
                 ttk.Label(sel, text="restore").pack(side="left", padx=(6, 0))
                 self.restore_var = tk.StringVar(value="")
-                rbox = ttk.Combobox(sel, textvariable=self.restore_var, width=14,
-                                    values=available_restorers(), state="readonly")
+                self._restore_map = {n.replace("deform_restorer_", "").replace(
+                    "deform_restorer", "(기본)"): n for n in available_restorers()}
+                rbox = ttk.Combobox(sel, textvariable=self.restore_var, width=7,
+                                    values=list(self._restore_map), state="readonly")
                 rbox.pack(side="left", padx=2)
                 rbox.bind("<<ComboboxSelected>>", lambda e: self._apply_restorer())
         self.btn_conn = ttk.Button(row, text="연결", width=6, command=self._toggle_connect)
@@ -191,25 +194,38 @@ class PanelUI(ttk.Frame):
               + (f" — {err}" if err else " (복원 SATS 맵 활성)"))
 
     def _apply_estimator(self) -> None:
-        err = self.channel.apply_estimator(self.est_var.get())
+        name = getattr(self, "_est_map", {}).get(self.est_var.get(), self.est_var.get())
+        err = self.channel.apply_estimator(name)
         print(f"[dashboard] {self.channel.role}: estimator {self.est_var.get()}"
               + (f" — {err}" if err else " 적용"))
 
     def _apply_restorer(self) -> None:
-        err = self.channel.apply_restorer(self.restore_var.get())
+        name = getattr(self, "_restore_map", {}).get(self.restore_var.get(),
+                                                     self.restore_var.get())
+        err = self.channel.apply_restorer(name)
         if err:
             print(f"[dashboard] {self.channel.role}: {err}")
         if self.btn_restore is not None:
             self.btn_restore.configure(state="normal" if self.channel.restorer else "disabled")
             self._sync_restore_label()
 
+    @staticmethod
+    def _short_run(full: str, sensor: str) -> str:
+        """표시용 축약 — v* 를 이미 골랐으므로 접두사(ecomesh_v8_deploy_)는 중복."""
+        return full.replace(f"ecomesh_{sensor}_deploy_", "") or full
+
     def _on_sensor_selected(self) -> None:
-        """v* 선택 → 그 센서의 추론 run 목록을 채운다(첫 항목 자동 선택)."""
+        """v* 선택 → 그 센서의 추론 run 목록을 채운다(첫 항목 자동 선택).
+
+        ★콤보에는 축약명(g025 등)만 보여준다 — 전체 run 이름은 콤보 폭을 넘겨 잘리고,
+        폴더명을 실제로 줄이면 자동 탐색 패턴(ecomesh_<v*>_deploy_*)이 깨진다.
+        """
         sensor = self.sensor_var.get()
         runs = self._available_runs(sensor)
-        self.run_box.configure(values=runs)
+        self._run_map = {self._short_run(r, sensor): r for r in runs}
+        self.run_box.configure(values=list(self._run_map))
         if runs:
-            self.run_var.set(runs[0])
+            self.run_var.set(next(iter(self._run_map)))
             self._apply_run()
         else:
             self.run_var.set("")
@@ -218,6 +234,7 @@ class PanelUI(ttk.Frame):
     def _apply_run(self) -> None:
         """run(추론 파일) 확정 — 엔진 로드(캐시) + 복원기 유효성 갱신."""
         sensor, run = self.sensor_var.get(), self.run_var.get()
+        run = getattr(self, "_run_map", {}).get(run, run)   # 축약명 → 전체 run 이름
         if not sensor or not run:
             return
         err = self.channel.apply_run(sensor, run, self.engines)
