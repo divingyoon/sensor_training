@@ -16,6 +16,9 @@
   z = theta 채널 flat 재영점
   q = 종료
 
+★센서 선택: --sensor v7 을 주면 그 센서의 SATS run(g025>all4>g01)을 쓴다.
+  미지정 시 v6 기본값이라, v7 센서를 꽂고도 v6 SATS 로 추론하게 되니 반드시 지정할 것.
+
 예(4090, 1센서를 bending 패널로 테스트):
   .venv/bin/python -m sats.inference.run_dashboard --contacts-port none --bending-port auto
 예(3센서 전시):
@@ -42,6 +45,27 @@ from sats.inference.z_calibration import ZCalibration
 
 _ROOT = Path(__file__).resolve().parents[2]
 _ROLES = ("contacts", "theta", "bending")
+
+
+def resolve_sats_run(sensor: str | None, explicit: str | None) -> Path:
+    """센서 버전 → SATS run 경로. --run-dir 을 직접 준 경우 그것을 우선한다.
+
+    ★기본값을 특정 센서(v6)로 박아두면, 다른 센서를 연결하고도 **엉뚱한 센서의 SATS**로
+    추론하게 된다. 캘리브레이션이 달라 조용히 틀린 맵이 나오므로 지정 수단이 필요하다.
+    해상도는 g025(0.25mm) 우선 — 실측에서 σ가 가장 작았다.
+    """
+    if explicit:
+        return Path(explicit)
+    if not sensor:
+        return _ROOT / "sats/training/runs/ecomesh_v6_deploy_all4"
+    cands = [_ROOT / f"sats/training/runs/ecomesh_{sensor}_deploy_{t}"
+             for t in ("g025", "all4", "g01")]
+    found = next((c for c in cands if (c / "best_model.pt").exists()), None)
+    if found is None:
+        raise SystemExit(f"[{sensor}] SATS run 을 찾지 못했습니다. 확인한 경로:\n  "
+                         + "\n  ".join(str(c) for c in cands)
+                         + "\n  → --run-dir 로 직접 지정하세요.")
+    return found
 
 
 def _estimator_ckpt() -> Path:
@@ -314,7 +338,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--contacts-port", default="auto", help="contacts 센서 포트('none'=비활성)")
     p.add_argument("--theta-port", default="none", help="theta 센서 포트")
     p.add_argument("--bending-port", default="none", help="bending 센서 포트")
-    p.add_argument("--run-dir", default=str(_ROOT / "sats/training/runs/ecomesh_v6_deploy_all4"))
+    p.add_argument("--sensor", default=None,
+                   help="★센서 버전(예: v7) — SATS run 을 그 센서 것으로 자동 지정"
+                        "(g025 > all4 > g01 순). 미지정 시 v6 기본값")
+    p.add_argument("--run-dir", default=None,
+                   help="SATS run 직접 지정(--sensor 보다 우선)")
     p.add_argument("--diameter", type=float, default=10.0, help="D10 기준(고정)")
     p.add_argument("--contacts", type=int, default=1,
                    help="최대 접촉 수(기본 1, 창에서 [c]로 1→2→3 토글)")
@@ -359,7 +387,9 @@ def main() -> None:
         args.min_distance_mm = args.diameter        # 단일접촉 peak-split 방지
     ports = {"contacts": args.contacts_port, "theta": args.theta_port, "bending": args.bending_port}
 
-    print(f"[1/3] SATS 엔진 로드(공유): {args.run_dir}")
+    args.run_dir = str(resolve_sats_run(args.sensor, args.run_dir))
+    print(f"[1/3] SATS 엔진 로드(공유): {Path(args.run_dir).name}"
+          + (f"  (센서 {args.sensor})" if args.sensor else ""))
     engine = SATSInferenceEngine(args.run_dir, device=args.device, indenter_diameter_mm=args.diameter)
     z_path = args.z_calib or (Path(__file__).resolve().parent / "z_calibration_v6.json")
     z_calib = ZCalibration.load(z_path) if Path(z_path).exists() else None
@@ -383,12 +413,21 @@ def main() -> None:
         # UI에서 패널별 연결 — CLI 포트 지정이 있으면 초기 연결로 반영
         channels = [SensorChannel(role, None, engine, bi, z_calib, args, restorer)
                     for role in _ROLES]
+        # auto 가 여러 역할에 걸리면 같은 포트를 서로 뺏으므로 하나만 초기 연결한다.
+        # ★단, auto 가 하나뿐이면 그 역할을 연결해야 한다 — 예전에는 contacts 만 연결해서
+        #   `--bending-port auto` 를 줘도 S3 가 비어 있었다.
+        autos = [r for r in _ROLES if ports[r] == "auto"]
+        auto_owner = ("contacts" if "contacts" in autos else autos[0]) if autos else None
         for c in channels:
-            if ports[c.role] != "none" and not args.no_autoconnect:
-                err = c.connect(ports[c.role]) if ports[c.role] != "auto" or c.role == "contacts" \
-                    else None                       # auto는 contacts만 초기 연결(포트 쟁탈 방지)
-                if err:
-                    print(f"[dashboard] {c.role} 초기 연결 실패: {err}")
+            if ports[c.role] == "none" or args.no_autoconnect:
+                continue
+            if ports[c.role] == "auto" and c.role != auto_owner:
+                print(f"[dashboard] {c.role}=auto 는 초기 연결 생략(포트 쟁탈 방지) — "
+                      f"UI 에서 포트를 골라 연결하세요")
+                continue
+            err = c.connect(ports[c.role])
+            if err:
+                print(f"[dashboard] {c.role} 초기 연결 실패: {err}")
         from sats.inference.dashboard_ui import DashboardApp
         app = DashboardApp(channels, engine, args)
         try:
