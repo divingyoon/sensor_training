@@ -460,6 +460,9 @@ def main() -> None:
     args = _build_parser().parse_args()
     if args.min_distance_mm is None:
         args.min_distance_mm = args.diameter        # 단일접촉 peak-split 방지
+    if args.device == "auto":                    # ★engine 이전에 해석 — tk 모드는 engine 이 없다
+        import torch as _torch
+        args.device = "cuda" if _torch.cuda.is_available() else "cpu"
     ports = {"contacts": args.contacts_port, "theta": args.theta_port, "bending": args.bending_port}
 
     engines = EngineCache(args)
@@ -479,11 +482,11 @@ def main() -> None:
         from sats.inference.bending_infer import BendingInference
         est = _estimator_ckpt()
         print(f"[2/3] bending estimator 로드: {est.parent.name if est.name=='best.pt' else est.name}")
-        bi = BendingInference(est, device=engine.device, restorer=None, cfg=BendingConfig())
+        bi = BendingInference(est, device=args.device, restorer=None, cfg=BendingConfig())
 
     # ★변형 복원기(각도-프리) — 있으면 S3 패널이 재장착 없이 매 창 baseline 을 되돌린다.
     from sats.inference.deform_restore import try_load as _load_restorer
-    restorer, msg = _load_restorer(args.deform_restorer, device=engine.device)
+    restorer, msg = _load_restorer(args.deform_restorer, device=args.device)
     print(f"[2/3] {msg}")
 
     if args.ui == "tk":
