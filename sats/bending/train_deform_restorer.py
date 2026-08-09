@@ -105,19 +105,29 @@ def evaluate(model: BaselineRestorer, val_win: np.ndarray, contact_pool: np.ndar
     }
 
 
+def _contact_search_roots(sensor: str) -> list[Path]:
+    """접촉 trial 이 있을 수 있는 두 레이아웃 — PC 마다 어느 쪽만 있을 수 있다."""
+    return [_REPO / f"learning_data/sensor_raw_bin/ecomesh_{sensor}_xy1",   # 정리된 학습 데이터
+            _REPO / f"skin_ws/raw_data/sats/ecomesh/{sensor}"]              # 원시 취득(병합 후)
+
+
 def _find_contact_trial(sensor: str) -> Path | None:
     """센서의 xy 접촉 trial 을 **실제로 존재하는 것 중에서** 고른다.
 
     d5/z_2.5mm/test1 처럼 조합을 하드코딩하면 PC 마다 취득 조합이 달라 실패한다.
+    contact_windows 는 `*_merged.bin` 과 `*_baseline.json` 을 함께 요구하므로 둘 다 있는
+    폴더만 후보로 본다(원시 bin 만 있는 미병합 폴더를 잘못 고르지 않도록).
     d5(작은 인덴터)를 우선 — 접촉이 국소적이라 L_contact 의 보존 판정이 더 엄격하다.
     """
-    root = _REPO / f"learning_data/sensor_raw_bin/ecomesh_{sensor}_xy1"
-    if not root.exists():
-        return None
-    trials = sorted({b.parent for b in root.rglob("*_merged.bin")})
+    trials: set[Path] = set()
+    for root in _contact_search_roots(sensor):
+        if not root.exists():
+            continue
+        trials |= {b.parent for b in root.rglob("*_merged.bin")
+                   if any(b.parent.glob("*_baseline.json"))}
     if not trials:
         return None
-    return min(trials, key=lambda p: (0 if "/d5/" in f"{p}/" else 1, str(p)))
+    return min(trials, key=lambda p: (0 if "/d5" in f"{p}/" else 1, str(p)))
 
 
 def _resolve_dead_channels(spec: str, deform_root) -> tuple[int, ...]:
@@ -194,13 +204,22 @@ def main() -> None:
     if args.contact_trial is None:
         found = _find_contact_trial(sensor)
         if found is None:
-            root = _REPO / f"learning_data/sensor_raw_bin/ecomesh_{sensor}_xy1"
-            have = sorted(p.name for p in root.glob("*")) if root.exists() else []
-            raise SystemExit(
-                f"[{sensor}] xy 접촉 trial 을 찾지 못했습니다: {root}\n"
-                f"  이 PC 에 있는 것: {have or '(폴더 자체가 없음)'}\n"
-                f"  → --contact-trial 로 직접 지정하거나 해당 센서 xy 데이터를 가져오세요.\n"
-                f"  ★다른 센서의 접촉 trial 로 대체하면 캘리브레이션이 어긋나므로 금지.")
+            roots = _contact_search_roots(sensor)
+            lines = [f"[{sensor}] xy 접촉 trial(merged.bin + baseline.json)을 찾지 못했습니다."]
+            raw_root = roots[1]
+            for r in roots:
+                lines.append(f"  탐색: {r}  →  {'있음' if r.exists() else '없음'}")
+            if raw_root.exists():
+                lines += [
+                    "  ★원시 데이터는 있으나 **병합 전** 입니다. 병합부터 하세요:",
+                    f"    .venv/bin/python -m sats.preprocessing.bin_merge \\",
+                    f"      --raw-root {raw_root.relative_to(_REPO)}/xy_1mm/d5",
+                    "    (d10 도 쓰려면 마지막을 d10 으로 바꿔 한 번 더)",
+                ]
+            else:
+                lines.append("  → --contact-trial 로 직접 지정하거나 해당 센서 xy 데이터를 가져오세요.")
+            lines.append("  ★다른 센서의 접촉 trial 로 대체하면 캘리브레이션이 어긋나므로 금지.")
+            raise SystemExit("\n".join(lines))
         args.contact_trial = found
         print(f"[센서 {sensor}] 접촉 trial 자동 선택: "
               f"{found.relative_to(_REPO / 'learning_data/sensor_raw_bin')}")
