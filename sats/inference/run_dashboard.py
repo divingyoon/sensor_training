@@ -121,6 +121,12 @@ class SensorChannel:
         self._quiet_t0: float | None = None
         self._drift_t: float | None = None       # 시간 기반 EMA 용 직전 갱신 시각
         self._last_win_mean: np.ndarray | None = None
+        # ★진단 로그(--diag-log) — 잔상(유령) 원인 판정용 per-tick NDJSON.
+        #   raw/drift/필터 전후 접촉/흡수기 판정 근거를 그대로 남긴다.
+        self._absorb_info: dict = {}
+        self._diag = None
+        if getattr(args, "diag_log", None) and role in ("contacts", "bending"):
+            self._diag = open(args.diag_log, "a", buffering=1)
         self._boost_until = 0.0                  # 접촉 해제 직후 빠른 흡수 구간
         self._ghost_hist: collections.deque = collections.deque(maxlen=260)
         # 접촉 필터(히스테리시스·디바운스·무접촉 리셋·스무딩) — heatmap 역할만
@@ -393,11 +399,13 @@ class SensorChannel:
         now = time.perf_counter()
         if len(contacts) != 1 or contacts[0].fz_n > self._GHOST_FZ_MAX:
             self._ghost_hist.clear()
+            self._absorb_info = {"why": "n!=1" if len(contacts) != 1 else "fz>cap"}
             return contacts
         c = contacts[0]
         self._ghost_hist.append((now, c.x_mm, c.y_mm, c.fz_n))
         old = [h for h in self._ghost_hist if now - h[0] >= self._GHOST_SPAN_S]
         if not old:
+            self._absorb_info = {"why": "span<5s"}
             return contacts
         t0, x0, y0, fz0 = old[-1]
         moved = max(abs(c.x_mm - x0), abs(c.y_mm - y0))
@@ -412,6 +420,12 @@ class SensorChannel:
         slow = (now - oldest[0] >= self._GHOST_LONG_S
                 and max(abs(c.x_mm - oldest[1]), abs(c.y_mm - oldest[2])) < self._GHOST_POS_MM
                 and fz_max_w <= oldest[3] * 1.05)
+        # 진단 로그용 — 어떤 조건이 흡수를 막았는지 그대로 기록(추정 아님)
+        self._absorb_info = {
+            "why": "absorb_fast" if fast else "absorb_slow" if slow else "blocked",
+            "moved": round(moved, 2), "fz0": round(fz0, 3), "fz": round(c.fz_n, 3),
+            "fzmax_ratio": round(fz_max_w / max(fz0, 1e-6), 3),
+            "span": round(now - oldest[0], 1)}
         if fast or slow:
             self.drift_ref = raw_mean.copy()         # 잔류 전체를 0 기준으로
             if self.cfilter is not None:
@@ -422,6 +436,20 @@ class SensorChannel:
             print(f"[dashboard] {self.role} 유령 접촉 흡수 — 정지 {moved:.1f}mm·{why}")
             return []
         return contacts
+
+    def _diag_write(self, raw_mean: np.ndarray, pre, post) -> None:
+        """per-tick 진단 한 줄(NDJSON) — sats/tools/ghost_log_analysis.py 로 분석."""
+        import json as _json
+        try:
+            self._diag.write(_json.dumps({
+                "t": round(time.time(), 3), "role": self.role,
+                "raw": [round(float(v), 3) for v in raw_mean],
+                "drift": [round(float(v), 3) for v in self.drift_ref],
+                "pre": [[round(c.x_mm, 2), round(c.y_mm, 2), round(c.fz_n, 3)] for c in pre],
+                "post": [[round(c.x_mm, 2), round(c.y_mm, 2), round(c.fz_n, 3)] for c in post],
+                "ghost": self._absorb_info}) + "\n")
+        except Exception:
+            pass                                    # 진단이 데모를 죽여선 안 된다
 
     def _poll_heatmap(self, win, *, theta_deg, bent: bool) -> dict:
         a = self.args
@@ -456,6 +484,8 @@ class SensorChannel:
             contacts = raw
         contacts = self._maybe_absorb_ghost(contacts, raw_mean)
         self._update_drift_ref(bool(contacts), raw_mean)
+        if self._diag is not None:
+            self._diag_write(raw_mean, raw, contacts)
         banner = state_banner(contacts, theta_deg=theta_deg, theta_band_deg=a.theta_deadband)
         return {"kind": "heatmap", "banner": banner, "pred_map": pmap,
                 "contacts": contacts, "theta": theta_deg,
@@ -545,6 +575,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="[tk] 시작 시 자동 연결 안 함(UI에서 수동 연결)")
     p.add_argument("--fullscreen", action="store_true",
                    help="[tk] 전체화면으로 시작(전시용 1920x1080). F11 토글·Esc 해제")
+    p.add_argument("--diag-log", default=None,
+                   help="잔상(유령) 진단 NDJSON 경로 — per-tick raw/drift/접촉/흡수기 "
+                        "판정 기록. 분석: python -m sats.tools.ghost_log_analysis <파일>")
     p.add_argument("--contacts-port", default="auto", help="contacts 센서 포트('none'=비활성)")
     p.add_argument("--theta-port", default="none", help="theta 센서 포트")
     p.add_argument("--bending-port", default="none", help="bending 센서 포트")
