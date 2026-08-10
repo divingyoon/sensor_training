@@ -126,6 +126,9 @@ class SensorChannel:
         self._absorb_info: dict = {}
         self._dropout_seen = False               # 이번 에피소드에 채널 포화(-60%↓) 발생
         self._frame_hist: collections.deque = collections.deque(maxlen=200)  # (t, raw16)
+        self._quar = np.zeros(16, bool)          # 채널 격리(드롭아웃 회복 대기)
+        self._quar_t0 = np.zeros(16)             # 격리 시작 시각
+        self._quar_ok_t = np.zeros(16)           # 회복 관찰 시작 시각(0=미관찰)
         self._diag = None
         if getattr(args, "diag_log", None) and role in ("contacts", "bending"):
             self._diag = open(args.diag_log, "a", buffering=1)
@@ -392,6 +395,20 @@ class SensorChannel:
     #   (재누름 즉시 재검출) — "무접촉 잔상 금지" 우선의 의도적 편향.
     _FREEZE_SPAN_S = 6.0
     _FREEZE_PCT = 0.6         # 6s 창에서 채널별 (max-min) 이 전부 이 미만이면 동결
+    # ★채널 격리(원천 차단) — 드롭아웃(-60%↓)을 겪은 채널은 회복 완료까지 수십 초간
+    #   +5~85% 잔차를 뿜으며 유령을 반복 생성한다(3센서 실로그: 동결 흡수 후에도
+    #   몇 초짜리 유령 재발). 그 채널은 물리적으로 신뢰 불가 → SATS 입력에서 잔차를
+    #   0 으로 마스킹하고, raw 가 기준선 ±1.5% 로 2s 안정 복귀하면 해제.
+    #   30s 넘게 안 돌아오면 새 기준선으로 수용(영구 마스킹 방지).
+    _QUAR_OK_PCT = 1.5
+    _QUAR_OK_SEC = 2.0
+    _QUAR_MAX_S = 30.0
+    # ★부호 게이트(즉시·최우선) — 이 센서는 누르면 raw 가 **음(-)** 으로 간다
+    #   (드롭아웃 -100% 방향). 실로그 46개 에피소드 전수: 실접촉 33개는 전 틱에서
+    #   min(resid) ≤ -8.8%, 유령들은 틱의 69~100% 에서 min > -3%(눌림 증거 없음,
+    #   +5~25% 오버슈트만 존재 — 학습 분포 밖이라 SATS 가 접촉으로 오인).
+    #   → 눌림 증거(-3% 이하 채널) 없는 접촉 표시는 틱 단위로 즉시 억제.
+    _PRESS_MIN_PCT = -3.0
 
     def _update_drift_ref(self, has_contacts: bool, raw_mean: np.ndarray) -> None:
         now = time.perf_counter()
@@ -488,6 +505,37 @@ class SensorChannel:
             return []
         return contacts
 
+    def _update_quarantine(self, raw_mean: np.ndarray) -> np.ndarray:
+        """드롭아웃 채널 격리 갱신 — 격리 마스크(bool[16]) 반환."""
+        now = time.perf_counter()
+        resid = raw_mean - self.drift_ref
+        newly = (resid <= self._DROPOUT_PCT) & ~self._quar
+        if newly.any():
+            self._quar |= newly
+            self._quar_t0[newly] = now
+            self._quar_ok_t[newly] = 0.0
+            chs = ",".join(f"S{i + 1:02d}" for i in np.flatnonzero(newly))
+            print(f"[dashboard] {self.role} 채널 격리(드롭아웃): {chs} — 회복까지 마스킹")
+        if self._quar.any():
+            q = self._quar
+            ok = q & (np.abs(resid) < self._QUAR_OK_PCT)
+            self._quar_ok_t[q & ~ok] = 0.0                      # 회복 관찰 리셋
+            start = q & ok & (self._quar_ok_t == 0.0)
+            self._quar_ok_t[start] = now
+            done = q & ok & (self._quar_ok_t > 0.0) \
+                & (now - self._quar_ok_t >= self._QUAR_OK_SEC)
+            # 장기 미복귀 → 새 기준선 수용(영구 마스킹 방지)
+            stale = q & (now - self._quar_t0 >= self._QUAR_MAX_S)
+            if stale.any():
+                self.drift_ref = self.drift_ref.copy()
+                self.drift_ref[stale] = raw_mean[stale]
+                done = done | stale
+            if done.any():
+                self._quar &= ~done
+                chs = ",".join(f"S{i + 1:02d}" for i in np.flatnonzero(done))
+                print(f"[dashboard] {self.role} 채널 격리 해제: {chs}")
+        return self._quar.copy()
+
     def _diag_write(self, raw_mean: np.ndarray, pre, post) -> None:
         """per-tick 진단 한 줄(NDJSON) — sats/tools/ghost_log_analysis.py 로 분석."""
         import json as _json
@@ -513,7 +561,10 @@ class SensorChannel:
         # 강압 포화/드롭아웃 감지(-60%↓) — 해제 후 리바운드 유령 예고 신호(실로그 근거)
         if float((raw_mean - self.drift_ref).min()) <= self._DROPOUT_PCT:
             self._dropout_seen = True
+        quar_mask = self._update_quarantine(raw_mean)
         win = (np.asarray(win, np.float32) - self.drift_ref[None, :])   # 드리프트 보정
+        if quar_mask.any():
+            win[:, quar_mask] = 0.0              # 회복 중 채널 잔차 원천 차단
         # ★복원기 우선: 창마다 변형 오프셋을 추정해 뺀다(고정 스냅숏 방식보다 적응적).
         restored = None
         if self.role == "bending" and self.restorer is not None:
@@ -537,6 +588,17 @@ class SensorChannel:
         else:
             contacts = raw
         contacts = self._maybe_absorb_ghost(contacts, raw_mean)
+        # 부호 게이트: 눌림 증거 없는 표시는 유령 — 억제하고 드리프트 흡수에 맡긴다
+        if contacts and float((raw_mean - self.drift_ref).min()) > self._PRESS_MIN_PCT:
+            if self.cfilter is not None:
+                self.cfilter.reset()
+            self._absorb_info = {"why": "sign_gate",
+                                 "resid_min": round(float((raw_mean - self.drift_ref).min()), 2)}
+            if time.perf_counter() - getattr(self, "_sign_gate_last", 0.0) > 3.0:
+                self._sign_gate_last = time.perf_counter()
+                print(f"[dashboard] {self.role} 유령 억제(부호 게이트) — 눌림 증거 없음"
+                      f"(min resid {self._absorb_info['resid_min']}% > {self._PRESS_MIN_PCT}%)")
+            contacts = []
         self._update_drift_ref(bool(contacts), raw_mean)
         if self._diag is not None:
             self._diag_write(raw_mean, raw, contacts)

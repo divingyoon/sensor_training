@@ -28,7 +28,7 @@ complete() {                          # 완주한 run 만 동기화(학습 중 �
 }
 
 echo "== SATS 배포 run =="
-for v in v5 v6 v7 v8 v9; do
+for v in v4 v5 v6 v7 v8 v9; do
   for t in g05nsc g05ns g025 g01 all4; do
     tail="${v}_deploy_${t}"
     local_dir=""
