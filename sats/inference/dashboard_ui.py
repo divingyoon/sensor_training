@@ -66,7 +66,7 @@ class PanelUI(ttk.Frame):
             self.p_restored_map = HeatmapPanel(self.fig.add_subplot(gs[1, 1]),
                                                grid_min, grid_max, "restored -> SATS",
                                                draw_without_contacts=True,
-                                               flip_x=flip_x, flip_y=flip_y)
+                                               flip_x=flip_x, flip_y=flip_y, compact=True)
             self.p_units_restored = None
             self.p_heat = None
         else:
@@ -324,8 +324,14 @@ class DashboardApp:
         self.engine = engine
         self.channels = {c.role: c for c in channels}
         self.root = tk.Tk()
-        self.root.title("SATS v6 — unified demo dashboard")
+        self.root.title("SATS — unified demo dashboard")
         self.root.configure(bg=_BG)
+        # 전시용 전체화면(1920x1080) — F11 토글, Esc 해제(콤보 조작 등은 창 모드가 편함)
+        if getattr(args, "fullscreen", False):
+            self.root.attributes("-fullscreen", True)
+        self.root.bind("<F11>", lambda e: self.root.attributes(
+            "-fullscreen", not self.root.attributes("-fullscreen")))
+        self.root.bind("<Escape>", lambda e: self.root.attributes("-fullscreen", False))
         style = ttk.Style(self.root)
         try:
             style.theme_use("clam")

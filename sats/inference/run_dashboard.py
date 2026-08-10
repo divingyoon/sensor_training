@@ -533,6 +533,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="tk=컨트롤 UI(포트·연결·리셋 버튼) / mpl=구 matplotlib 뷰")
     p.add_argument("--no-autoconnect", action="store_true",
                    help="[tk] 시작 시 자동 연결 안 함(UI에서 수동 연결)")
+    p.add_argument("--fullscreen", action="store_true",
+                   help="[tk] 전체화면으로 시작(전시용 1920x1080). F11 토글·Esc 해제")
     p.add_argument("--contacts-port", default="auto", help="contacts 센서 포트('none'=비활성)")
     p.add_argument("--theta-port", default="none", help="theta 센서 포트")
     p.add_argument("--bending-port", default="none", help="bending 센서 포트")

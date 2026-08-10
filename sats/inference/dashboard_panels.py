@@ -43,7 +43,7 @@ class HeatmapPanel:
 
     def __init__(self, ax, grid_min_mm: float, grid_max_mm: float, prefix: str = "SATS",
                  draw_without_contacts: bool = False,
-                 flip_x: bool = False, flip_y: bool = True) -> None:
+                 flip_x: bool = False, flip_y: bool = True, compact: bool = False) -> None:
         self.ax = ax
         self.prefix = prefix
         self.draw_without_contacts = draw_without_contacts
@@ -55,7 +55,13 @@ class HeatmapPanel:
         # 물리 마운팅 방향에 맞춰 축 반전(이미지+마커 함께 반전 → 방향 일치)
         ax.set_xlim(grid_max_mm, grid_min_mm) if flip_x else ax.set_xlim(grid_min_mm, grid_max_mm)
         ax.set_ylim(grid_max_mm, grid_min_mm) if flip_y else ax.set_ylim(grid_min_mm, grid_max_mm)
-        ax.set_xlabel("x (mm)"); ax.set_ylabel("y (mm)  (down = +)" if flip_y else "y (mm)")
+        if compact:
+            # ★S2 미니맵용 — 전체 크기 패널의 축 라벨("y (mm) (down = +)")이
+            #   옆의 raw 미니맵을 침범한다(실측). 미니맵은 라벨·눈금 없이 그린다.
+            ax.set_xticks([]); ax.set_yticks([])
+        else:
+            ax.set_xlabel("x (mm)")
+            ax.set_ylabel("y (mm)  (down = +)" if flip_y else "y (mm)")
         _banner_title(ax, StateBanner(ContactState.OFFLINE, "SENSOR OFFLINE",
                                       "#bbbbbb"), prefix)
 
@@ -96,7 +102,7 @@ class ThetaGaugePanel:
         self.prefix = prefix
         ax.set_xlim(*_THETA_FULL); ax.set_ylim(0, 1)
         ax.set_yticks([])
-        ax.set_xlabel("theta (deg)")
+        # xlabel 없음 — 제목에 단위가 있고, 라벨이 아래 행(restored 맵 제목)과 겹친다(실측)
         ax.axvspan(*_THETA_VALID, color="#0033cc", alpha=0.10, zorder=0)  # 유효 관측 밴드
         ax.axvline(_THETA_VALID[0], color="#0033cc", lw=1, ls="--", alpha=0.5)
         ax.axvline(_THETA_VALID[1], color="#0033cc", lw=1, ls="--", alpha=0.5)
