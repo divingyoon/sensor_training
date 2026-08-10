@@ -438,12 +438,19 @@ class DashboardApp:
         # ── 푸터(순흑): 스펙 요약 ──
         grid_txt = (f"{engine.grid_size}x{engine.grid_size}@{engine.grid_step_mm:g}mm"
                     if engine is not None else "run 선택 대기")
-        spec = (f"SATS {grid_txt} (20x20mm)   ·   raw 16-taxel 200 Hz / 250 kbaud   ·   "
-                f"infer 129 Hz   ·   Fz 0–3.9 N (D10)   ·   theta 20–150° (MAE 1.78°)")
-        tk.Label(self.root, text=spec, font=("TkDefaultFont", 9), fg=_C["header_dim"],
-                 bg=_C["header"], padx=16, pady=6, anchor="w").pack(fill="x")
+        self._spec = (f"SATS {grid_txt} (20x20mm)   ·   raw 16-taxel 200 Hz / 250 kbaud   ·   "
+                      f"Fz 0–3.9 N (D10)   ·   theta 20–150° (MAE 1.78°)")
+        self.spec_var = tk.StringVar(value=self._spec)
+        tk.Label(self.root, textvariable=self.spec_var, font=("TkDefaultFont", 9),
+                 fg=_C["header_dim"], bg=_C["header"], padx=16, pady=6, anchor="w"
+                 ).pack(fill="x")
 
         self._tick_ms = max(30, int(1000 / max(args.viz_fps, 1)))
+        # ★성능 계측 — 느린 PC 에서 "무엇이" 느린지(추론 poll vs 캔버스 draw) 푸터에
+        #   보여준다. 틱이 목표 주기를 넘으면 재영점·게이지 반응까지 굼떠 보이므로
+        #   원인 분리는 현장에서 즉시 필요하다.
+        self._perf = {"poll": 0.0, "draw": 0.0, "n": 0, "t_last": 0.0}
+        self._idle_drawn: set = set()          # 미연결 패널 재렌더 생략용
 
     # ── 전역 설정 ────────────────────────────────────────────────────────────
     def _set_contacts(self) -> None:
@@ -462,6 +469,8 @@ class DashboardApp:
 
     # ── 루프 ─────────────────────────────────────────────────────────────────
     def _tick(self) -> None:
+        import time as _time
+        t0 = _time.perf_counter()
         for role, ch in self.channels.items():
             try:
                 payload = ch.poll()
@@ -472,7 +481,29 @@ class DashboardApp:
                            "pred_map": None, "contacts": [], "theta": None,
                            "noise": None, "units": None}
                 print(f"[ui] {role} 리더 오류 → 연결 해제: {e}")
-            self.panels[role].render(payload, self.args)
+            t1 = _time.perf_counter()
+            # 미연결 패널은 첫 OFFLINE 렌더 후 생략 — 약한 PC 에서 draw 비용 절약
+            if ch.connected:
+                self._idle_drawn.discard(role)
+                self.panels[role].render(payload, self.args)
+            elif role not in self._idle_drawn:
+                self.panels[role].render(payload, self.args)
+                self._idle_drawn.add(role)
+            t2 = _time.perf_counter()
+            self._perf["poll"] += t1 - t0
+            self._perf["draw"] += t2 - t1
+            t0 = t2
+        self._perf["n"] += 1
+        now = _time.perf_counter()
+        if now - self._perf["t_last"] > 2.0 and self._perf["n"]:
+            n = self._perf["n"]
+            poll_ms = self._perf["poll"] / n * 1000
+            draw_ms = self._perf["draw"] / n * 1000
+            fps = n / max(now - self._perf["t_last"], 1e-6) \
+                if self._perf["t_last"] else 1000 / self._tick_ms
+            self.spec_var.set(f"{self._spec}   ·   tick {poll_ms + draw_ms:.0f}ms "
+                              f"(infer {poll_ms:.0f} + draw {draw_ms:.0f}) {fps:.1f}fps")
+            self._perf.update(poll=0.0, draw=0.0, n=0, t_last=now)
         self.root.after(self._tick_ms, self._tick)
 
     def run(self) -> None:
