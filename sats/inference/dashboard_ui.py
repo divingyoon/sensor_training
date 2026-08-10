@@ -314,7 +314,8 @@ class PanelUI(ttk.Frame):
         else:
             theta = payload.get("theta") if role == "bending" else None
             self.p_heat.update(payload.get("pred_map"), payload.get("contacts", []), b,
-                               theta_deg=theta, note=payload.get("note", ""))
+                               theta_deg=theta, note=payload.get("note", ""),
+                               show_markers=getattr(args, "show_markers", True))
             if self.p_units is not None:
                 u = payload.get("units")
                 shared = (max(float(abs(__import__("numpy").asarray(u, float)).max()), 1e-6)
@@ -413,6 +414,15 @@ class DashboardApp:
             _hdr_radio(str(n), n, self.n_var, self._set_contacts).pack(side="right", padx=1)
         tk.Label(top, text="contacts", fg=_C["header_dim"], bg=_C["header"]
                  ).pack(side="right", padx=(18, 4))
+        # 마커(+ 좌표·힘 주석) 표시 토글 — 깨끗한 압력맵만 보여주는 데모 모드
+        args.show_markers = True
+        self.marker_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(top, text="markers", variable=self.marker_var,
+                       command=lambda: setattr(self.args, "show_markers",
+                                               bool(self.marker_var.get())),
+                       bg=_C["header"], fg=_C["header_fg"], selectcolor=_C["header"],
+                       activebackground=_C["header"], activeforeground="#ffffff",
+                       relief="flat", highlightthickness=0).pack(side="right", padx=(18, 4))
 
         tk.Frame(self.root, bg=_C["accent"], height=2).pack(fill="x")  # 골드 구분선
 
