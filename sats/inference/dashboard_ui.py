@@ -341,27 +341,6 @@ class PanelUI(ttk.Frame):
 class DashboardApp:
     """Tk 루트 — 3 PanelUI + 전역 설정(접촉 수·인덴터) + 폴링 루프."""
 
-    def _pack_logos(self, top) -> None:
-        """assets/logo_*.png 를 헤더 왼쪽에 흰 칩으로 배치(연구실·학교·연구소).
-
-        원본 로고에 흰 배경·검정 글자가 있어 순흑 헤더에 바로 얹으면 소실된다 —
-        흰 배경 칩으로 통일해 어떤 로고든 안전하게 보이게 한다. 파일이 없으면 생략.
-        """
-        from pathlib import Path
-        adir = Path(__file__).resolve().parent / "assets"
-        for p in sorted(adir.glob("logo_*.png")) if adir.is_dir() else []:
-            try:
-                img = tk.PhotoImage(file=str(p))
-                for f in range(2, 6):                    # 표시 높이 ~36px 로 정수 축소
-                    if img.height() // f <= 38:
-                        img = img.subsample(f)
-                        break
-            except tk.TclError:
-                continue
-            self._logo_imgs.append(img)
-            tk.Label(top, image=img, bg="#ffffff", bd=0, padx=6, pady=3
-                     ).pack(side="left", padx=(0, 8))
-
     def __init__(self, channels, engine, args, engines=None) -> None:
         from sats.inference.dashboard_panels import apply_dark_gold_theme
         apply_dark_gold_theme()                  # ★패널 생성 전에 — cmap·축색 전환
@@ -405,15 +384,11 @@ class DashboardApp:
         self.root.option_add("*TCombobox*Listbox*selectBackground", _C["accent"])
         self.root.option_add("*TCombobox*Listbox*selectForeground", "#000000")
 
-        # ── 헤더(순흑): 로고 스트립 + 제품명(골드) + 전역 토글 ──
+        # ── 헤더(순흑): 제목(골드) + 전역 토글 ──
         top = tk.Frame(self.root, bg=_C["header"], padx=16, pady=10)
         top.pack(fill="x")
-        self._logo_imgs: list = []           # PhotoImage GC 방지
-        self._pack_logos(top)
-        tk.Label(top, text="SATS", font=("TkDefaultFont", 16, "bold"),
-                 fg=_C["accent"], bg=_C["header"]).pack(side="left")
-        tk.Label(top, text="  Tactile Super-Resolution — Live Demo",
-                 font=("TkDefaultFont", 12), fg=_C["header_dim"],
+        tk.Label(top, text="Tactile Super-Resolution — Live",
+                 font=("TkDefaultFont", 15, "bold"), fg=_C["accent"],
                  bg=_C["header"]).pack(side="left")
         tk.Button(top, text="종료", command=self.root.destroy, bg=_C["header"],
                   fg=_C["header_fg"], activebackground="#1d3a5c",
