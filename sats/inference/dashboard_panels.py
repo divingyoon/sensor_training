@@ -19,6 +19,59 @@ from sats.inference.demo_viz import _MARKER_COLORS, _green_cmap, taxel_grid
 _THETA_FULL = (0.0, 160.0)     # 게이지 전체 범위
 _THETA_VALID = (20.0, 150.0)   # 유효 관측 밴드
 
+# ── 패널 테마 ── 기본 = 라이트(구 데모·mpl 뷰 호환). tk 대시보드는 시작 시
+#   apply_dark_gold_theme() 를 호출해 블랙+골드 전시 테마로 전환한다.
+#   ★색 정의(demo_contacts·demo_viz)는 그대로 두고 표시 직전에만 매핑 —
+#   run_demo 등 라이트 배경 화면들이 영향받지 않는다.
+_T = {
+    "dark": False,
+    "axes_bg": "#ffffff",
+    "muted": "#5a6b80",
+    "gauge_band": "#0033cc",
+    "banner_map": {},              # 라이트용 색 → 다크 배경 가시성 색
+    "marker_map": {},
+}
+
+
+def apply_dark_gold_theme() -> None:
+    """블랙+골드 전시 테마. 다크 배경에서 안 보이는 색만 명도 보정한다."""
+    _T.update(
+        dark=True, axes_bg="#0d0d10", muted="#9a958a", gauge_band="#d4af37",
+        banner_map={
+            "#bbbbbb": "#8f8f96",   # OFFLINE
+            "#888888": "#a8a29a",   # NO_CONTACT
+            "#d81e00": "#ff5c33",   # CONTACT(적) — 다크에서 채도 유지·명도 업
+            "#0033cc": "#6fa0ff",   # BENDING(청)
+            "#c8a200": "#e6c34d",   # 진행(황)
+        },
+        marker_map={
+            "#d81e00": "#ff5c33",
+            "#0033cc": "#6fa0ff",
+            "#111111": "#ffffff",   # 검정 마커는 다크 맵에서 소실 → 흰색
+        },
+    )
+
+
+def theme_color(color: str) -> str:
+    """라이트 기준 상태색 → 현재 테마 가시성 색(라이트면 그대로)."""
+    return _T["banner_map"].get(color, color)
+
+
+def _gold_cmap():
+    """0=근흑 → 최고=밝은 골드. 블랙+골드 테마의 압력 램프(무압=배경과 융화)."""
+    from matplotlib.colors import LinearSegmentedColormap
+    return LinearSegmentedColormap.from_list(
+        "sats_gold", ["#0d0d10", "#4a3a12", "#a8842a", "#d4af37", "#ffe9a8"])
+
+
+def _dark_diverging_cmap():
+    """raw Δp% 미니맵용 발산 램프 — 0=근흑(다크 카드와 융화), −=청, +=골드.
+
+    RdBu 는 중심이 흰색이라 다크 테마에서 값 0 의 미니맵이 흰 판으로 떠 보인다(실측)."""
+    from matplotlib.colors import LinearSegmentedColormap
+    return LinearSegmentedColormap.from_list(
+        "sats_div_dark", ["#7fb3ff", "#3d5f9e", "#15151a", "#9e7d24", "#ffd75e"])
+
 
 def _clear_dynamic(ax) -> None:
     """동적 아티스트(마커·라벨) 제거 — imshow(image)는 유지."""
@@ -29,9 +82,9 @@ def _clear_dynamic(ax) -> None:
 
 
 def _banner_title(ax, banner: StateBanner, prefix: str) -> None:
-    """상태 배너를 색 있는 제목으로."""
-    ax.set_title(f"{prefix}\n{banner.label}", fontsize=10, color=banner.color,
-                 fontweight="bold")
+    """상태 배너를 색 있는 제목으로(테마 가시성 매핑 적용)."""
+    ax.set_title(f"{prefix}\n{banner.label}", fontsize=10,
+                 color=theme_color(banner.color), fontweight="bold")
 
 
 class HeatmapPanel:
@@ -49,7 +102,8 @@ class HeatmapPanel:
         self.draw_without_contacts = draw_without_contacts
         self.gmin, self.gmax = grid_min_mm, grid_max_mm
         self.ext = [grid_min_mm, grid_max_mm, grid_min_mm, grid_max_mm]
-        self.cmap = _green_cmap()
+        self.cmap = _gold_cmap() if _T["dark"] else _green_cmap()
+        ax.set_facecolor(_T["axes_bg"])
         self.im = ax.imshow(np.zeros((2, 2)), origin="lower", extent=self.ext, cmap=self.cmap,
                             vmin=0, vmax=1.0, aspect="equal", interpolation="bicubic")
         # 물리 마운팅 방향에 맞춰 축 반전(이미지+마커 함께 반전 → 방향 일치)
@@ -67,7 +121,7 @@ class HeatmapPanel:
 
     def _draw_contacts(self, contacts: list[Contact]) -> None:
         for i, c in enumerate(contacts[:3]):
-            col = _MARKER_COLORS[i]
+            col = _T["marker_map"].get(_MARKER_COLORS[i], _MARKER_COLORS[i])
             self.ax.plot([c.x_mm], [c.y_mm], marker="+", color=col, markersize=15,
                          markeredgewidth=2.4, lw=0)
             z = "n/a" if np.isnan(c.z_mm) else f"{c.z_mm:.2f}"
@@ -102,10 +156,12 @@ class ThetaGaugePanel:
         self.prefix = prefix
         ax.set_xlim(*_THETA_FULL); ax.set_ylim(0, 1)
         ax.set_yticks([])
+        ax.set_facecolor(_T["axes_bg"])
         # xlabel 없음 — 제목에 단위가 있고, 라벨이 아래 행(restored 맵 제목)과 겹친다(실측)
-        ax.axvspan(*_THETA_VALID, color="#0033cc", alpha=0.10, zorder=0)  # 유효 관측 밴드
-        ax.axvline(_THETA_VALID[0], color="#0033cc", lw=1, ls="--", alpha=0.5)
-        ax.axvline(_THETA_VALID[1], color="#0033cc", lw=1, ls="--", alpha=0.5)
+        band = _T["gauge_band"]
+        ax.axvspan(*_THETA_VALID, color=band, alpha=0.12, zorder=0)  # 유효 관측 밴드
+        ax.axvline(_THETA_VALID[0], color=band, lw=1, ls="--", alpha=0.5)
+        ax.axvline(_THETA_VALID[1], color=band, lw=1, ls="--", alpha=0.5)
         _banner_title(ax, StateBanner(ContactState.OFFLINE, "SENSOR OFFLINE", "#bbbbbb"), prefix)
 
     def update(self, theta_deg: float | None, noise: float | None, banner: StateBanner) -> None:
@@ -114,7 +170,7 @@ class ThetaGaugePanel:
             _banner_title(self.ax, banner, self.prefix)
             return
         th = float(np.clip(theta_deg, *_THETA_FULL))
-        col = banner.color
+        col = theme_color(banner.color)
         self.ax.plot([th, th], [0, 1], color=col, lw=4, solid_capstyle="round")  # 현재각 바
         self.ax.plot([th], [1.02], marker="v", color=col, markersize=12, clip_on=False)
         ntxt = "" if noise is None else f"  (±{noise:.1f})"
@@ -129,11 +185,12 @@ class UnitsInset:
     def __init__(self, ax, title: str = "16-taxel (raw)",
                  flip_x: bool = False, flip_y: bool = True) -> None:
         self.ax = ax
-        self.im = ax.imshow(np.zeros((4, 4)), origin="lower", cmap="RdBu_r",
+        cmap = _dark_diverging_cmap() if _T["dark"] else "RdBu_r"
+        self.im = ax.imshow(np.zeros((4, 4)), origin="lower", cmap=cmap,
                             vmin=-1, vmax=1, extent=[-13, 13, -13, 13], interpolation="nearest")
         ax.set_xlim(13, -13) if flip_x else ax.set_xlim(-13, 13)   # heatmap 과 방향 일치
         ax.set_ylim(13, -13) if flip_y else ax.set_ylim(-13, 13)
-        ax.set_title(title, fontsize=8)
+        ax.set_title(title, fontsize=8, color=_T["muted"])
         ax.set_xticks([]); ax.set_yticks([])
         self._ema = None          # 표시 평활(★수시로 색이 바뀌는 깜빡임 억제)
         self._ema_vmax = 1e-6
@@ -160,5 +217,9 @@ class UnitsInset:
         self.im.set_data(taxel_grid(dp)); self.im.set_clim(-vmax, vmax)
         for i in range(16):
             x, y = TAXEL_XY_MM[i + 1]
+            if _T["dark"]:   # 중심=근흑 램프 → 작은 값엔 밝은 글자, 극값(밝은 셀)엔 어두운 글자
+                col = "#e8e6e0" if abs(dp[i]) < vmax * 0.6 else "#111111"
+            else:            # RdBu(중심 흰색) → 반대
+                col = "k" if abs(dp[i]) < vmax * 0.6 else "w"
             self.ax.text(x, y, f"{dp[i]:+.1f}", ha="center", va="center", fontsize=6,
-                         color="k" if abs(dp[i]) < vmax * 0.6 else "w")
+                         color=col)
