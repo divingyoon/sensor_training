@@ -121,6 +121,14 @@ class HeatmapPanel:
         else:
             ax.set_xlabel("x (mm)")
             ax.set_ylabel("y (mm)  (down = +)" if flip_y else "y (mm)")
+            # 색 범례 — 관람자가 색=압력 세기임을 알 수 있게(절대 스케일: 세션 최대 기준)
+            cb = ax.figure.colorbar(self.im, ax=ax, fraction=0.046, pad=0.03,
+                                    ticks=[0.0, 1.0])
+            cb.ax.set_yticklabels(["0", "max"])
+            cb.set_label("pressure (norm. to session max)", fontsize=7,
+                         color=_T["muted"])
+            cb.ax.tick_params(colors=_T["muted"], labelsize=7)
+            cb.outline.set_edgecolor(_T.get("axes_bg", "#ffffff"))
         _banner_title(ax, StateBanner(ContactState.OFFLINE, "SENSOR OFFLINE",
                                       "#bbbbbb"), prefix)
 
@@ -135,7 +143,8 @@ class HeatmapPanel:
                              xytext=(3, 3), textcoords="offset points")
 
     def update(self, pred_map, contacts: list[Contact], banner: StateBanner,
-               theta_deg: float | None = None, note: str = "") -> None:
+               theta_deg: float | None = None, note: str = "",
+               show_markers: bool = True) -> None:
         _clear_dynamic(self.ax)
         prefix = self.prefix if theta_deg is None else f"{self.prefix}   θ={theta_deg:+.0f}°"
         if note:
@@ -159,7 +168,7 @@ class HeatmapPanel:
             # 감마 0.7 — blob 스커트(저값)의 색 변화를 키워 픽셀 그라데이션이 보이게.
             # 절대 스케일(ref)은 유지되므로 힘 크기 구분은 그대로다.
             self.im.set_data(np.clip(pm / ref, 0, 1) ** 0.7)
-            if contacts:
+            if contacts and show_markers:
                 self._draw_contacts(contacts)
         _banner_title(self.ax, banner, prefix)
 
