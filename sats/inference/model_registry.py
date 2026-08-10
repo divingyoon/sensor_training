@@ -36,11 +36,12 @@ def _label(ver_dir: Path, path: Path) -> str:
     return "/".join(parts) or rel.parts[-1]
 
 
-def _sig(path: Path) -> tuple[int, int]:
-    """중복 판정 시그니처(크기, mtime). stage 스크립트가 copy2(메타 보존)로 복사하므로
-    신 규약에 이미 올라온 가중치의 구 위치 사본을 콤보에 두 번 띄우지 않는다."""
-    st = path.stat()
-    return (st.st_size, st.st_mtime_ns)
+def _sig(path: Path) -> str:
+    """중복 판정 시그니처 = 내용 md5 — 같은 가중치의 구 위치 사본을 콤보에 두 번
+    띄우지 않는다. (mtime 기반은 git checkout 이 파일을 새로 쓰면 깨진다 — 실측.
+    대상은 복원기·estimator 수백 KB 수준이라 해시 비용은 무시 가능.)"""
+    import hashlib
+    return hashlib.md5(path.read_bytes()).hexdigest()
 
 
 def _version_dirs(category: str) -> list[Path]:
