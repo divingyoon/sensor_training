@@ -20,19 +20,21 @@ from matplotlib.figure import Figure
 
 from sats.inference.dashboard_panels import HeatmapPanel, ThetaGaugePanel, UnitsInset
 
-# ── 디자인 토큰(전시용) ── 다크 네이비 헤더/푸터 + 흰 카드 패널 + 녹색 액센트.
-#    회색 단색 배경에 기본 tk 위젯을 그대로 두면 시제품처럼 보인다 — 계기판 스타일로
-#    역할(크롬/카드/상태)을 색으로 분리한다.
+# ── 디자인 토큰(전시용) ── 블랙+골드 계기판 테마(연구실 CI).
+#    단색 배경에 기본 tk 위젯을 그대로 두면 시제품처럼 보인다 — 크롬(흑)/카드(암회)/
+#    상태·압력(골드) 역할로 색을 분리한다. 압력맵·게이지 색은 dashboard_panels 의
+#    apply_dark_gold_theme() 가 함께 전환한다.
 _C = {
-    "win":       "#dde3eb",   # 창 배경(카드 사이 여백으로 보임)
-    "card":      "#ffffff",   # 패널 카드
-    "border":    "#c9d2de",   # 축 스파인
-    "header":    "#122a44",   # 헤더/푸터(딥 네이비)
-    "header_fg": "#eef3fa",
-    "header_dim": "#8ea4c0",
-    "accent":    "#0a7a4f",   # 브랜드 그린(히트맵과 동일 계열)
-    "text":      "#1c2733",
-    "muted":     "#5a6b80",
+    "win":       "#000000",   # 창 배경(카드 사이 여백으로 보임)
+    "card":      "#141418",   # 패널 카드(암회 — 순흑 위에서 한 단 떠 보임)
+    "field":     "#1d1d23",   # 입력창/콤보 내부
+    "border":    "#33333c",   # 축 스파인·경계
+    "header":    "#000000",   # 헤더/푸터(순흑)
+    "header_fg": "#f2efe6",
+    "header_dim": "#9a958a",
+    "accent":    "#d4af37",   # 골드
+    "text":      "#e8e6e0",
+    "muted":     "#9a958a",
 }
 _BG = _C["card"]              # 패널 내부(캔버스·컨트롤) 배경
 _ACCENT = _C["accent"]
@@ -296,9 +298,10 @@ class PanelUI(ttk.Frame):
 
     # ── 렌더 ─────────────────────────────────────────────────────────────────
     def render(self, payload: dict, args) -> None:
+        from sats.inference.dashboard_panels import theme_color
         b = payload["banner"]
         self.banner_var.set(b.label)
-        self.banner.configure(fg=b.color)
+        self.banner.configure(fg=theme_color(b.color))
         role = self.channel.role
         if role == "theta":
             self.p_theta.update(payload.get("theta"), payload.get("noise"), b)
@@ -338,7 +341,30 @@ class PanelUI(ttk.Frame):
 class DashboardApp:
     """Tk 루트 — 3 PanelUI + 전역 설정(접촉 수·인덴터) + 폴링 루프."""
 
+    def _pack_logos(self, top) -> None:
+        """assets/logo_*.png 를 헤더 왼쪽에 흰 칩으로 배치(연구실·학교·연구소).
+
+        원본 로고에 흰 배경·검정 글자가 있어 순흑 헤더에 바로 얹으면 소실된다 —
+        흰 배경 칩으로 통일해 어떤 로고든 안전하게 보이게 한다. 파일이 없으면 생략.
+        """
+        from pathlib import Path
+        adir = Path(__file__).resolve().parent / "assets"
+        for p in sorted(adir.glob("logo_*.png")) if adir.is_dir() else []:
+            try:
+                img = tk.PhotoImage(file=str(p))
+                for f in range(2, 6):                    # 표시 높이 ~36px 로 정수 축소
+                    if img.height() // f <= 38:
+                        img = img.subsample(f)
+                        break
+            except tk.TclError:
+                continue
+            self._logo_imgs.append(img)
+            tk.Label(top, image=img, bg="#ffffff", bd=0, padx=6, pady=3
+                     ).pack(side="left", padx=(0, 8))
+
     def __init__(self, channels, engine, args, engines=None) -> None:
+        from sats.inference.dashboard_panels import apply_dark_gold_theme
+        apply_dark_gold_theme()                  # ★패널 생성 전에 — cmap·축색 전환
         from sats.inference.model_registry import list_sensors
         self.engines = engines
         self.sensors = list_sensors() if engines is not None else []
@@ -359,20 +385,33 @@ class DashboardApp:
             style.theme_use("clam")
         except tk.TclError:
             pass
-        # ttk 기본 배경 = 카드(흰색) — 패널 내부 위젯이 전부 카드 위에 얹힌다
+        # ttk 기본 배경 = 카드 — 패널 내부 위젯이 전부 카드 위에 얹힌다(다크)
         style.configure(".", background=_C["card"], foreground=_C["text"])
         style.configure("TButton", padding=(10, 4), relief="flat",
-                        background="#eef1f5", bordercolor=_C["border"])
-        style.map("TButton", background=[("active", "#e2e8f0")])
-        style.configure("TCombobox", fieldbackground="#ffffff", bordercolor=_C["border"],
-                        arrowcolor=_C["muted"])
+                        background="#26262e", foreground=_C["text"],
+                        bordercolor=_C["border"])
+        style.map("TButton", background=[("active", "#32323c")],
+                  foreground=[("disabled", "#5c5c64")])
+        for w in ("TCombobox", "TEntry"):
+            style.configure(w, fieldbackground=_C["field"], foreground=_C["text"],
+                            background=_C["card"], bordercolor=_C["border"],
+                            arrowcolor=_C["muted"], insertcolor=_C["text"])
+        style.map("TCombobox", fieldbackground=[("readonly", _C["field"])],
+                  foreground=[("readonly", _C["text"])])
         style.configure("Muted.TLabel", foreground=_C["muted"])
+        # 콤보 펼침 목록(tk Listbox)도 다크로
+        self.root.option_add("*TCombobox*Listbox*Background", _C["field"])
+        self.root.option_add("*TCombobox*Listbox*Foreground", _C["text"])
+        self.root.option_add("*TCombobox*Listbox*selectBackground", _C["accent"])
+        self.root.option_add("*TCombobox*Listbox*selectForeground", "#000000")
 
-        # ── 헤더(딥 네이비): 제품명 + 전역 토글 ──
+        # ── 헤더(순흑): 로고 스트립 + 제품명(골드) + 전역 토글 ──
         top = tk.Frame(self.root, bg=_C["header"], padx=16, pady=10)
         top.pack(fill="x")
+        self._logo_imgs: list = []           # PhotoImage GC 방지
+        self._pack_logos(top)
         tk.Label(top, text="SATS", font=("TkDefaultFont", 16, "bold"),
-                 fg="#ffffff", bg=_C["header"]).pack(side="left")
+                 fg=_C["accent"], bg=_C["header"]).pack(side="left")
         tk.Label(top, text="  Tactile Super-Resolution — Live Demo",
                  font=("TkDefaultFont", 12), fg=_C["header_dim"],
                  bg=_C["header"]).pack(side="left")
@@ -400,7 +439,9 @@ class DashboardApp:
         tk.Label(top, text="contacts", fg=_C["header_dim"], bg=_C["header"]
                  ).pack(side="right", padx=(18, 4))
 
-        # ── 3패널(흰 카드, 창 배경이 카드 사이 여백으로 보임) ──
+        tk.Frame(self.root, bg=_C["accent"], height=2).pack(fill="x")  # 골드 구분선
+
+        # ── 3패널(암회 카드, 순흑 창 배경이 카드 사이 여백으로 보임) ──
         mid = tk.Frame(self.root, bg=_C["win"], padx=10, pady=10)
         mid.pack(fill="both", expand=True)
         gmin, gmax = ((engine.grid_min_mm, engine.grid_max_mm) if engine is not None
@@ -417,7 +458,9 @@ class DashboardApp:
             self.panels[role] = p
         mid.rowconfigure(0, weight=1)
 
-        # ── 푸터(딥 네이비): 스펙 요약 ──
+        tk.Frame(self.root, bg=_C["accent"], height=2).pack(fill="x")  # 골드 구분선
+
+        # ── 푸터(순흑): 스펙 요약 ──
         grid_txt = (f"{engine.grid_size}x{engine.grid_size}@{engine.grid_step_mm:g}mm"
                     if engine is not None else "run 선택 대기")
         spec = (f"SATS {grid_txt} (20x20mm)   ·   raw 16-taxel 200 Hz / 250 kbaud   ·   "
