@@ -47,64 +47,11 @@ _ROOT = Path(__file__).resolve().parents[2]
 _ROLES = ("contacts", "theta", "bending")
 
 
-def resolve_sats_run(sensor: str | None, explicit: str | None) -> Path:
-    """센서 버전 → SATS run 경로. --run-dir 을 직접 준 경우 그것을 우선한다.
-
-    ★기본값을 특정 센서(v6)로 박아두면, 다른 센서를 연결하고도 **엉뚱한 센서의 SATS**로
-    추론하게 된다. 캘리브레이션이 달라 조용히 틀린 맵이 나오므로 지정 수단이 필요하다.
-    해상도는 g025(0.25mm) 우선 — 실측에서 σ가 가장 작았다.
-    """
-    if explicit:
-        return Path(explicit)
-    if not sensor:
-        return _ROOT / "sats/training/runs/ecomesh_v6_deploy_all4"
-    cands = [_ROOT / f"sats/training/runs/{pre}{sensor}_deploy_{t}"
-             for t in ("g025", "all4", "g01") for pre in ("ecomesh_", "")]
-    found = next((c for c in cands if (c / "best_model.pt").exists()), None)
-    if found is None:
-        raise SystemExit(f"[{sensor}] SATS run 을 찾지 못했습니다. 확인한 경로:\n  "
-                         + "\n  ".join(str(c) for c in cands)
-                         + "\n  → --run-dir 로 직접 지정하세요.")
-    return found
-
-
-def available_runs(sensor: str) -> list[str]:
-    """그 센서의 배포 run 이름 목록(추론 파일 선택용). g025 를 앞에.
-
-    ★이름 패턴은 ecomesh_v5_deploy_* 와 v5_deploy_* 둘 다 허용 — 사용자가 콤보 잘림
-    때문에 접두사를 줄여 rename 한 폴더도 그대로 인식한다.
-    """
-    runs = {r.name for pat in (f"ecomesh_{sensor}_deploy_*", f"{sensor}_deploy_*")
-            for r in (_ROOT / "sats/training/runs").glob(pat)
-            if (r / "best_model.pt").exists()}
-    order = {"g025": 0, "all4": 1, "g01": 2}
-    return sorted(runs, key=lambda n: (order.get(n.rsplit("_", 1)[-1], 9), n))
-
-
-def available_estimators() -> list[str]:
-    """theta estimator 후보(best.pt 보유) — S2 의 '다른 센서' 선택용."""
-    out = []
-    for r in sorted((_ROOT / "sats/bending/runs").glob("estimator_*")):
-        if r.is_dir() and (r / "best.pt").exists():
-            out.append(r.name)
-        elif r.is_file() and r.suffix == "":         # 구 포맷(단일 파일)
-            out.append(r.name)
-    return out
-
-
-def available_restorers() -> list[str]:
-    """deform 복원기 후보 — 여러 취득 버전을 UI 에서 골라 쓴다."""
-    return sorted(r.name for r in (_ROOT / "sats/bending/runs").glob("deform_restorer*")
-                  if (r / "best.pt").exists())
-
-
-def available_sensors() -> list[str]:
-    """배포 run 이 존재하는 센서 버전 목록 — UI 드롭다운용."""
-    import re as _re
-    runs = (_ROOT / "sats/training/runs").glob("*_deploy_*")
-    found = {m.group(1) for r in runs if (r / "best_model.pt").exists()
-             for m in [_re.match(r"(?:ecomesh_)?(v\d+)_deploy_", r.name)] if m}
-    return sorted(found, key=lambda v: int(v[1:]))
+# 모델 탐색은 폴더 규약(runs/{sats,deform,theta}/<v*>/)으로 통일 — model_registry 참조.
+from sats.inference.model_registry import (
+    default_estimator, deform_restorers, estimators, list_sensors, resolve_sats_run,
+    sats_runs,
+)
 
 
 class EngineCache:
@@ -129,18 +76,9 @@ class EngineCache:
             print(f"[dashboard] SATS 로드: {Path(run).name}")
         return self._cache[key]
 
-    def get_run(self, run_name: str):
-        """runs/ 하위 run 이름으로 엔진 로드(UI 의 '추론 파일' 선택)."""
-        return self.get(None, str(_ROOT / "sats/training/runs" / run_name))
-
-
-def _estimator_ckpt() -> Path:
-    """v6_2(clean) 우선 → v6new → v6 폴백."""
-    return next((p for p in [
-        _ROOT / "sats/bending/runs/estimator_v6_2/best.pt",
-        _ROOT / "sats/bending/runs/estimator_v6new/best.pt",
-        _ROOT / "sats/bending/runs/estimator_v6",
-    ] if p.exists()), _ROOT / "sats/bending/runs/estimator_v6")
+    def get_run(self, ckpt_path: str):
+        """체크포인트 경로로 엔진 로드(UI 의 '추론 파일' 선택 — registry 가 준 경로)."""
+        return self.get(None, str(ckpt_path))
 
 
 class SensorChannel:
@@ -247,12 +185,10 @@ class SensorChannel:
             return str(e).splitlines()[0] + " — 복원 SATS 맵 없이 진행"
         return None
 
-    def apply_estimator(self, name: str) -> str | None:
-        """S2: theta estimator 교체(패널별 — 다른 센서의 각도 추정)."""
+    def apply_estimator(self, ckpt: str) -> str | None:
+        """S2: theta estimator 교체(패널별 — 다른 센서의 각도 추정). ckpt=파일 경로."""
         from sats.bending.config import BendingConfig
         from sats.inference.bending_infer import BendingInference
-        path = _ROOT / "sats/bending/runs" / name
-        ckpt = path / "best.pt" if (path / "best.pt").exists() else path
         try:
             self.bi = BendingInference(ckpt, device=self.args.device,
                                        restorer=None, cfg=BendingConfig())
@@ -262,12 +198,11 @@ class SensorChannel:
         self.hist.clear()
         return None
 
-    def apply_restorer(self, name: str) -> str | None:
-        """deform 복원기 교체(UI 선택). 센서 불일치는 막지 않고 경고만 —
+    def apply_restorer(self, ckpt: str) -> str | None:
+        """deform 복원기 교체(UI 선택, ckpt=파일 경로). 센서 불일치는 막지 않고 경고만 —
         사용자가 명시적으로 골랐다면 그 판단을 따른다."""
         from sats.inference.deform_restore import try_load
-        r, msg = try_load(_ROOT / "sats/bending/runs" / name / "best.pt",
-                          device=self.args.device)
+        r, msg = try_load(ckpt, device=self.args.device)
         if r is None:
             return msg
         self._restorer_all = self.restorer = r
@@ -277,14 +212,14 @@ class SensorChannel:
             return f"주의 — 복원기는 {r.sensor} 학습본(현재 패널 {self.sensor})"
         return None
 
-    def apply_run(self, sensor: str, run_name: str, engines: "EngineCache") -> str | None:
-        """이 패널의 (센서, 추론 run) 확정 — UI 의 port→v*→추론파일 흐름 마지막 단계.
+    def apply_run(self, sensor: str, ckpt_path: str, engines: "EngineCache") -> str | None:
+        """이 패널의 (센서, 추론 체크포인트) 확정 — port→v*→추론파일 흐름 마지막 단계.
 
         ★복원기는 학습에 쓴 센서에서만 유효하다(채널 마스킹·캘리브레이션이 다름).
         다른 센서면 붙이지 않고 알린다 — 조용히 잘못된 보정을 하는 것보다 낫다.
         """
         try:
-            self.engine = engines.get_run(run_name)
+            self.engine = engines.get_run(ckpt_path)
         except Exception as e:
             return f"run 로드 실패: {e}"
         self.sensor = sensor
@@ -662,24 +597,32 @@ def main() -> None:
     z_path = args.z_calib or (Path(__file__).resolve().parent / "z_calibration_v6.json")
     z_calib = ZCalibration.load(z_path) if Path(z_path).exists() else None
 
-    # tk UI는 theta/bending 패널을 언제든 연결할 수 있으므로 estimator 항상 로드
+    # tk UI는 theta/bending 패널을 언제든 연결할 수 있으므로 estimator 를 미리 로드하되,
+    # ★가중치가 없어도 기동은 막지 않는다(fresh clone) — S2 의 est 콤보에서 나중에 선택.
     bi = None
     need_bi = args.ui == "tk" or ports["theta"] != "none" or ports["bending"] != "none"
     if need_bi:
-        from sats.bending.config import BendingConfig
-        from sats.inference.bending_infer import BendingInference
-        est = _estimator_ckpt()
-        print(f"[2/3] bending estimator 로드: {est.parent.name if est.name=='best.pt' else est.name}")
-        bi = BendingInference(est, device=args.device, restorer=None, cfg=BendingConfig())
+        est = default_estimator()
+        if est is None:
+            print("[2/3] bending estimator 없음 — S2 est 콤보에서 선택하면 활성화됩니다"
+                  f" (배치 위치: {_ROOT / 'runs/theta/<v*>/'})")
+        else:
+            try:
+                from sats.bending.config import BendingConfig
+                from sats.inference.bending_infer import BendingInference
+                bi = BendingInference(est, device=args.device, restorer=None,
+                                      cfg=BendingConfig())
+                print(f"[2/3] bending estimator 로드: {est}")
+            except Exception as e:
+                print(f"[2/3] bending estimator 로드 실패({e}) — S2 에서 다시 선택 가능")
 
     # ★변형 복원기(각도-프리) — 있으면 S3 패널이 재장착 없이 매 창 baseline 을 되돌린다.
+    #   없어도 기동은 계속된다(UI restore 콤보에서 선택).
     from sats.inference.deform_restore import try_load as _load_restorer
     restorer, msg = _load_restorer(args.deform_restorer, device=args.device)
     if restorer is None:
-        # 기본 경로가 비어도(예: 폴더가 deform_restorer_v7 로 rename) 있는 것을 찾아 장착.
-        for name in available_restorers():
-            restorer, msg = _load_restorer(
-                _ROOT / "sats/bending/runs" / name / "best.pt", device=args.device)
+        for path in deform_restorers().values():     # 폴더 규약 + 구 위치 전부 순회
+            restorer, msg = _load_restorer(path, device=args.device)
             if restorer is not None:
                 break
     print(f"[2/3] {msg}")

@@ -64,6 +64,13 @@ class SATSInferenceEngine:
         indenter_diameter_mm: float = 5.0,
     ) -> None:
         self.run_dir = Path(run_dir)
+        # ★체크포인트 **파일**을 직접 받을 수도 있다(runs/sats/<v*>/ 폴더 규약 —
+        #   epoch_*.pt 등 best_model.pt 가 아닌 파일도 선택 가능). config.json 은
+        #   같은 폴더에서 읽는다.
+        ckpt_override: Path | None = None
+        if self.run_dir.is_file():
+            ckpt_override = self.run_dir
+            self.run_dir = self.run_dir.parent
         self.indenter_diameter_mm = float(indenter_diameter_mm)
 
         # ── config 로드 ────────────────────────────────────────────────────
@@ -83,9 +90,9 @@ class SATSInferenceEngine:
             self.device = device
 
         # ── 모델 로드 ──────────────────────────────────────────────────────
-        ckpt_path = self.run_dir / "best_model.pt"
+        ckpt_path = ckpt_override or self.run_dir / "best_model.pt"
         if not ckpt_path.exists():
-            raise FileNotFoundError(f"best_model.pt 없음: {ckpt_path}")
+            raise FileNotFoundError(f"체크포인트 없음: {ckpt_path}")
 
         self.model, self.ckpt_info = self._load_model(ckpt_path)
         self.window_size = self.cfg.window_size
