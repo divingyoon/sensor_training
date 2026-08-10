@@ -106,6 +106,7 @@ class HeatmapPanel:
         ax.set_facecolor(_T["axes_bg"])
         self.im = ax.imshow(np.zeros((2, 2)), origin="lower", extent=self.ext, cmap=self.cmap,
                             vmin=0, vmax=1.0, aspect="equal", interpolation="bicubic")
+        self._vmax_ref: float | None = None      # 절대 스케일 기준(세션 러닝-맥스)
         # 물리 마운팅 방향에 맞춰 축 반전(이미지+마커 함께 반전 → 방향 일치)
         ax.set_xlim(grid_max_mm, grid_min_mm) if flip_x else ax.set_xlim(grid_min_mm, grid_max_mm)
         ax.set_ylim(grid_max_mm, grid_min_mm) if flip_y else ax.set_ylim(grid_min_mm, grid_max_mm)
@@ -138,11 +139,20 @@ class HeatmapPanel:
         blank = (banner.state is ContactState.OFFLINE or pred_map is None
                  or (not contacts and not self.draw_without_contacts))
         if blank:
-            self.im.set_data(np.zeros((2, 2)))     # OFFLINE·무접촉 → blank(연한 초록)
+            self.im.set_data(np.zeros((2, 2)))     # OFFLINE·무접촉 → blank
         else:
             pm = np.clip(pred_map, 0, None)
-            denom = max(float(pm.max()), 1e-6)     # 프레임 peak 상대 정규화(약접촉도 또렷)
-            self.im.set_data(np.clip(pm / denom, 0, 1))
+            peak = float(pm.max())
+            # ★절대 스케일(세션 러닝-맥스) — 프레임 peak 상대 정규화는 0.3N 이든 3N
+            #   이든 항상 풀 스케일로 그려 힘 차이가 색으로 안 보인다(실기 피드백).
+            #   세션 최대 peak 을 기준으로 나누면 약접촉=어둡게·강접촉=밝게.
+            #   기준은 즉시 상승·완만 감쇠(0.998/frame, 10fps 기준 반감 ~35s) —
+            #   센서를 바꿔 약한 세션이 되면 서서히 재적응한다.
+            if peak > 1e-6:
+                self._vmax_ref = peak if self._vmax_ref is None \
+                    else max(peak, self._vmax_ref * 0.998)
+            ref = max(self._vmax_ref or peak, 1e-6)
+            self.im.set_data(np.clip(pm / ref, 0, 1))
             if contacts:
                 self._draw_contacts(contacts)
         _banner_title(self.ax, banner, prefix)
