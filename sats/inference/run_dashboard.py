@@ -124,6 +124,7 @@ class SensorChannel:
         # ★진단 로그(--diag-log) — 잔상(유령) 원인 판정용 per-tick NDJSON.
         #   raw/drift/필터 전후 접촉/흡수기 판정 근거를 그대로 남긴다.
         self._absorb_info: dict = {}
+        self._dropout_seen = False               # 이번 에피소드에 채널 포화(-60%↓) 발생
         self._diag = None
         if getattr(args, "diag_log", None) and role in ("contacts", "bending"):
             self._diag = open(args.diag_log, "a", buffering=1)
@@ -370,6 +371,16 @@ class SensorChannel:
     _GHOST_POS_MM = 1.5       # 이 이상 움직이면 유령 아님
     _GHOST_FZ_MAX = 2.0       # 실측 잔류 최대 ~1N + 여유
     _GHOST_LONG_S = 10.0      # 느린 경로: 감쇠가 미미한 고착 잔류
+    # ★비증가 허용치 — 저력 유령은 fz 0.34↔0.39N(±15%) 수준으로 출렁인다(실로그).
+    #   고정 5% 는 이 노이즈에 계속 걸려 흡수를 영원히 막았다 → 절대 0.08N 바닥.
+    _GHOST_FZ_TOL_N = 0.08
+    # ★리바운드 경로 — 강압(>3.5N)으로 채널이 포화/드롭아웃(-60%↓)된 에피소드는
+    #   해제 후 그 채널이 +4~5% 오버슈트로 복귀해 고정점 유령을 만든다(실로그 20s+).
+    #   드롭아웃을 목격했다면 유령 확률이 압도적 → 3s 정지만으로 즉시 흡수.
+    #   트레이드오프: 강압 직후 가볍게 3s 이상 정지 유지하는 실접촉은 오흡수될 수
+    #   있다(다시 누르면 즉시 재검출).
+    _DROPOUT_PCT = -60.0
+    _REBOUND_SPAN_S = 3.0
 
     def _update_drift_ref(self, has_contacts: bool, raw_mean: np.ndarray) -> None:
         now = time.perf_counter()
@@ -381,6 +392,7 @@ class SensorChannel:
         if self._quiet_t0 is None:
             self._quiet_t0 = now
         elif now - self._quiet_t0 > self._QUIET_SEC:
+            self._dropout_seen = False           # 깨끗한 무접촉 복귀 → 에피소드 종료
             import math
             tau = self._BOOST_TAU_S if now < self._boost_until else self._DRIFT_TAU_S
             a = 1.0 - math.exp(-dt / tau)          # 틱 레이트 무관, 초 단위 시정수
@@ -410,28 +422,37 @@ class SensorChannel:
         t0, x0, y0, fz0 = old[-1]
         moved = max(abs(c.x_mm - x0), abs(c.y_mm - y0))
         fz_max_w = max(h[3] for h in self._ghost_hist)
-        # 빠른 경로: 5초에 30%+ 단조 감쇠(창 내 최대도 비증가 — 출렁임 배제)
+        tol = max(self._GHOST_FZ_TOL_N, 0.05 * fz0)   # 저력 유령의 노이즈 흡수(절대 바닥)
+        # 빠른 경로: 5초에 30%+ 감쇠(창 내 최대도 허용치 내 비증가 — 출렁임 배제)
         fast = (moved < self._GHOST_POS_MM and c.fz_n < self._GHOST_DECAY * fz0
-                and fz_max_w <= fz0 * 1.05)
+                and fz_max_w <= fz0 + tol)
         # 느린 경로: 감쇠가 미미한 고착 잔류 — 10초 이상 정지 + fz 비증가.
         #   트레이드오프(명시): 사람이 10초 이상 완전히 정지한 채 누르고 있으면
         #   잔류로 오판될 수 있다. 데모에서 드문 패턴이고, 다시 누르면 즉시 재검출.
         oldest = self._ghost_hist[0]
-        slow = (now - oldest[0] >= self._GHOST_LONG_S
-                and max(abs(c.x_mm - oldest[1]), abs(c.y_mm - oldest[2])) < self._GHOST_POS_MM
-                and fz_max_w <= oldest[3] * 1.05)
+        static_all = max(abs(c.x_mm - oldest[1]), abs(c.y_mm - oldest[2])) < self._GHOST_POS_MM
+        slow = (now - oldest[0] >= self._GHOST_LONG_S and static_all
+                and fz_max_w <= oldest[3] + max(self._GHOST_FZ_TOL_N, 0.05 * oldest[3]))
+        # 리바운드 경로: 이번 에피소드에서 드롭아웃(-60%↓)을 봤다면 3s 정지로 즉시 흡수
+        old3 = [h for h in self._ghost_hist if now - h[0] >= self._REBOUND_SPAN_S]
+        rebound = (self._dropout_seen and bool(old3) and c.fz_n <= 1.2
+                   and max(abs(c.x_mm - old3[-1][1]), abs(c.y_mm - old3[-1][2]))
+                   < self._GHOST_POS_MM)
         # 진단 로그용 — 어떤 조건이 흡수를 막았는지 그대로 기록(추정 아님)
         self._absorb_info = {
-            "why": "absorb_fast" if fast else "absorb_slow" if slow else "blocked",
+            "why": ("absorb_rebound" if rebound else "absorb_fast" if fast
+                    else "absorb_slow" if slow else "blocked"),
             "moved": round(moved, 2), "fz0": round(fz0, 3), "fz": round(c.fz_n, 3),
             "fzmax_ratio": round(fz_max_w / max(fz0, 1e-6), 3),
-            "span": round(now - oldest[0], 1)}
-        if fast or slow:
+            "span": round(now - oldest[0], 1), "dropout": self._dropout_seen}
+        if fast or slow or rebound:
+            self._dropout_seen = False
             self.drift_ref = raw_mean.copy()         # 잔류 전체를 0 기준으로
             if self.cfilter is not None:
                 self.cfilter.reset()
             self._ghost_hist.clear()
-            why = (f"fz {fz0:.2f}→{c.fz_n:.2f}N 감쇠" if fast
+            why = ("드롭아웃 리바운드(강압 후)" if rebound
+                   else f"fz {fz0:.2f}→{c.fz_n:.2f}N 감쇠" if fast
                    else f"{self._GHOST_LONG_S:.0f}s 정지·비증가(고착 잔류)")
             print(f"[dashboard] {self.role} 유령 접촉 흡수 — 정지 {moved:.1f}mm·{why}")
             return []
@@ -459,6 +480,9 @@ class SensorChannel:
                     "contacts": [], "theta": theta_deg, "units": None}
         raw_mean = np.asarray(win, np.float32).mean(0)
         self._last_win_mean = raw_mean
+        # 강압 포화/드롭아웃 감지(-60%↓) — 해제 후 리바운드 유령 예고 신호(실로그 근거)
+        if float((raw_mean - self.drift_ref).min()) <= self._DROPOUT_PCT:
+            self._dropout_seen = True
         win = (np.asarray(win, np.float32) - self.drift_ref[None, :])   # 드리프트 보정
         # ★복원기 우선: 창마다 변형 오프셋을 추정해 뺀다(고정 스냅숏 방식보다 적응적).
         restored = None
