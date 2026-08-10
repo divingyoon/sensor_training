@@ -25,11 +25,12 @@ _ACCENT = "#0a7a4f"
 
 
 def list_port_choices() -> list[str]:
-    """포트 드롭다운 후보 — auto + 현재 보이는 시리얼 포트."""
+    """포트 드롭다운 후보 — auto + 현재 보이는 시리얼 포트(Linux ttyACM/USB, Windows COM)."""
     try:
         from serial.tools import list_ports
         devs = [p.device for p in list_ports.comports()
-                if any(k in p.device for k in ("ttyACM", "ttyUSB"))]
+                if any(k in p.device for k in ("ttyACM", "ttyUSB"))
+                or p.device.upper().startswith("COM")]
     except ImportError:
         devs = []
     return ["auto"] + devs
@@ -100,8 +101,9 @@ class PanelUI(ttk.Frame):
         self.port_box.pack(side="left", padx=4)
         self.port_box.bind("<Button-1>", lambda e: self.port_box.configure(values=list_port_choices()))
         if engines is not None and sensors and role == "theta":
-            # ★S2: 다른 센서의 theta + deform 복원기 선택
-            from sats.inference.run_dashboard import available_estimators, available_restorers
+            # ★S2: 다른 센서의 theta(est) + deform 복원기 선택.
+            #   restore 콤보는 v* 선택 시 runs/deform/<v*>/ 스캔으로 갱신된다.
+            from sats.inference import model_registry as registry
             ttk.Label(sel, text="v*").pack(side="left")
             self.sensor_var = tk.StringVar(value="")
             sbox = ttk.Combobox(sel, textvariable=self.sensor_var, width=3,
@@ -110,20 +112,20 @@ class PanelUI(ttk.Frame):
             sbox.bind("<<ComboboxSelected>>", lambda e: self._set_theta_sensor())
             ttk.Label(sel, text="est").pack(side="left", padx=(6, 0))
             self.est_var = tk.StringVar(value="")
-            self._est_map = {n.replace("estimator_", ""): n for n in available_estimators()}
+            self._est_map = {lab: str(p) for lab, p in registry.estimators().items()}
             ebox = ttk.Combobox(sel, textvariable=self.est_var, width=8,
                                 values=list(self._est_map), state="readonly")
             ebox.pack(side="left", padx=2)
             ebox.bind("<<ComboboxSelected>>", lambda e: self._apply_estimator())
             ttk.Label(sel, text="restore").pack(side="left", padx=(6, 0))
             self.restore_var = tk.StringVar(value="")
-            rbox = ttk.Combobox(sel, textvariable=self.restore_var, width=14,
-                                values=available_restorers(), state="readonly")
-            rbox.pack(side="left", padx=2)
-            rbox.bind("<<ComboboxSelected>>", lambda e: self._apply_restorer())
+            self._restore_map = {lab: str(p)
+                                 for lab, p in registry.deform_restorers().items()}
+            self.restore_box = ttk.Combobox(sel, textvariable=self.restore_var, width=14,
+                                            values=list(self._restore_map), state="readonly")
+            self.restore_box.pack(side="left", padx=2)
+            self.restore_box.bind("<<ComboboxSelected>>", lambda e: self._apply_restorer())
         if engines is not None and sensors and role in ("contacts", "bending"):
-            from sats.inference.run_dashboard import available_runs
-            self._available_runs = available_runs
             ttk.Label(sel, text="v*").pack(side="left")
             self.sensor_var = tk.StringVar(value="")
             sbox = ttk.Combobox(sel, textvariable=self.sensor_var, width=3,
@@ -137,15 +139,14 @@ class PanelUI(ttk.Frame):
             self.run_box.pack(side="left", padx=2)
             self.run_box.bind("<<ComboboxSelected>>", lambda e: self._apply_run())
             if role == "bending":
-                from sats.inference.run_dashboard import available_restorers
                 ttk.Label(sel, text="restore").pack(side="left", padx=(6, 0))
                 self.restore_var = tk.StringVar(value="")
-                self._restore_map = {n.replace("deform_restorer_", "").replace(
-                    "deform_restorer", "(기본)"): n for n in available_restorers()}
-                rbox = ttk.Combobox(sel, textvariable=self.restore_var, width=7,
-                                    values=list(self._restore_map), state="readonly")
-                rbox.pack(side="left", padx=2)
-                rbox.bind("<<ComboboxSelected>>", lambda e: self._apply_restorer())
+                self._restore_map = {}
+                self.restore_box = ttk.Combobox(sel, textvariable=self.restore_var, width=7,
+                                                values=[], state="readonly")
+                self.restore_box.pack(side="left", padx=2)
+                self.restore_box.bind("<<ComboboxSelected>>", lambda e: self._apply_restorer())
+                self._refresh_restorers(None)        # v* 선택 전에는 전체 목록
         self.btn_conn = ttk.Button(row, text="연결", width=6, command=self._toggle_connect)
         self.btn_conn.pack(side="left", padx=2)
         reset_label = {"contacts": "리셋", "theta": "재영점", "bending": "재장착"}[role]
@@ -188,56 +189,65 @@ class PanelUI(ttk.Frame):
         elif spec:
             print(f"[dashboard] {self.channel.role} dead 채널 = {spec} (pct 0 고정)")
 
+    def _refresh_restorers(self, sensor: str | None) -> None:
+        """restore 콤보 갱신 — v* 선택 시 runs/deform/<v*>/ 의 pth 전부."""
+        from sats.inference import model_registry as registry
+        if getattr(self, "restore_box", None) is None:
+            return
+        self._restore_map = {lab: str(p)
+                             for lab, p in registry.deform_restorers(sensor).items()}
+        self.restore_box.configure(values=list(self._restore_map))
+        if self.restore_var.get() not in self._restore_map:
+            self.restore_var.set("")
+        if not self._restore_map and sensor:
+            print(f"[dashboard] {sensor}: 복원기 없음 — runs/deform/{sensor}/ 에 pth 배치")
+
     def _set_theta_sensor(self) -> None:
-        err = self.channel.apply_theta_sensor(self.sensor_var.get(), self.engines)
-        print(f"[dashboard] theta 센서 {self.sensor_var.get()}"
+        sensor = self.sensor_var.get()
+        err = self.channel.apply_theta_sensor(sensor, self.engines)
+        self._refresh_restorers(sensor)
+        print(f"[dashboard] theta 센서 {sensor}"
               + (f" — {err}" if err else " (복원 SATS 맵 활성)"))
 
     def _apply_estimator(self) -> None:
-        name = getattr(self, "_est_map", {}).get(self.est_var.get(), self.est_var.get())
-        err = self.channel.apply_estimator(name)
+        path = getattr(self, "_est_map", {}).get(self.est_var.get(), self.est_var.get())
+        err = self.channel.apply_estimator(path)
         print(f"[dashboard] {self.channel.role}: estimator {self.est_var.get()}"
               + (f" — {err}" if err else " 적용"))
 
     def _apply_restorer(self) -> None:
-        name = getattr(self, "_restore_map", {}).get(self.restore_var.get(),
+        path = getattr(self, "_restore_map", {}).get(self.restore_var.get(),
                                                      self.restore_var.get())
-        err = self.channel.apply_restorer(name)
+        err = self.channel.apply_restorer(path)
         if err:
             print(f"[dashboard] {self.channel.role}: {err}")
         if self.btn_restore is not None:
             self.btn_restore.configure(state="normal" if self.channel.restorer else "disabled")
             self._sync_restore_label()
 
-    @staticmethod
-    def _short_run(full: str, sensor: str) -> str:
-        """표시용 축약 — v* 를 이미 골랐으므로 접두사(ecomesh_v8_deploy_)는 중복."""
-        for pre in (f"ecomesh_{sensor}_deploy_", f"{sensor}_deploy_"):
-            if full.startswith(pre):
-                return full[len(pre):]
-        return full
-
     def _on_sensor_selected(self) -> None:
-        """v* 선택 → 그 센서의 추론 run 목록을 채운다(첫 항목 자동 선택).
+        """v* 선택 → runs/sats/<v*>/ 스캔으로 추론 파일 목록(첫 항목 자동 선택).
 
-        ★콤보에는 축약명(g025 등)만 보여준다 — 전체 run 이름은 콤보 폭을 넘겨 잘리고,
-        폴더명을 실제로 줄이면 자동 탐색 패턴(ecomesh_<v*>_deploy_*)이 깨진다.
+        ★콤보에는 축약 라벨(g05nsc 등)만 — 실제 경로는 _run_map 이 들고 있다.
         """
+        from sats.inference import model_registry as registry
         sensor = self.sensor_var.get()
-        runs = self._available_runs(sensor)
-        self._run_map = {self._short_run(r, sensor): r for r in runs}
+        self._run_map = {lab: str(p) for lab, p in registry.sats_runs(sensor).items()}
         self.run_box.configure(values=list(self._run_map))
-        if runs:
+        if self.channel.role == "bending":
+            self._refresh_restorers(sensor)
+        if self._run_map:
             self.run_var.set(next(iter(self._run_map)))
             self._apply_run()
         else:
             self.run_var.set("")
-            print(f"[dashboard] {sensor}: 배포 run 없음 — 학습이 되어 있는지 확인")
+            print(f"[dashboard] {sensor}: SATS 체크포인트 없음 — runs/sats/{sensor}/ 에"
+                  " (config.json 과 함께) 배치하거나 학습 여부 확인")
 
     def _apply_run(self) -> None:
         """run(추론 파일) 확정 — 엔진 로드(캐시) + 복원기 유효성 갱신."""
         sensor, run = self.sensor_var.get(), self.run_var.get()
-        run = getattr(self, "_run_map", {}).get(run, run)   # 축약명 → 전체 run 이름
+        run = getattr(self, "_run_map", {}).get(run, run)   # 축약 라벨 → 체크포인트 경로
         if not sensor or not run:
             return
         err = self.channel.apply_run(sensor, run, self.engines)
@@ -307,9 +317,9 @@ class DashboardApp:
     """Tk 루트 — 3 PanelUI + 전역 설정(접촉 수·인덴터) + 폴링 루프."""
 
     def __init__(self, channels, engine, args, engines=None) -> None:
-        from sats.inference.run_dashboard import available_sensors
+        from sats.inference.model_registry import list_sensors
         self.engines = engines
-        self.sensors = available_sensors() if engines is not None else []
+        self.sensors = list_sensors() if engines is not None else []
         self.args = args
         self.engine = engine
         self.channels = {c.role: c for c in channels}
