@@ -23,10 +23,14 @@ _EST_VER_RE = re.compile(r"^estimator_(v\d+)")
 
 
 def _copy(src: Path, dst: Path) -> bool:
-    """크기 같으면 스킵. 복사했으면 True."""
+    """내용이 같으면 스킵. 복사했으면 True.
+
+    ★크기 비교만으로는 부족 — 재학습본은 크기가 같고 내용만 다른 경우가 실재
+    (deform restorer 36053B 동일, md5 상이). filecmp 로 바이트 비교한다."""
+    import filecmp
     if not src.exists():
         return False
-    if dst.exists() and dst.stat().st_size == src.stat().st_size:
+    if dst.exists() and filecmp.cmp(src, dst, shallow=False):
         return False
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
