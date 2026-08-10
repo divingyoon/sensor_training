@@ -125,6 +125,7 @@ class SensorChannel:
         #   raw/drift/필터 전후 접촉/흡수기 판정 근거를 그대로 남긴다.
         self._absorb_info: dict = {}
         self._dropout_seen = False               # 이번 에피소드에 채널 포화(-60%↓) 발생
+        self._frame_hist: collections.deque = collections.deque(maxlen=200)  # (t, raw16)
         self._diag = None
         if getattr(args, "diag_log", None) and role in ("contacts", "bending"):
             self._diag = open(args.diag_log, "a", buffering=1)
@@ -169,6 +170,8 @@ class SensorChannel:
         self.drift_ref = np.zeros(16, np.float32)
         self._quiet_t0 = None
         self._drift_t = None
+        self._frame_hist.clear()
+        self._dropout_seen = False
         if self.cfilter is not None:
             self.cfilter.reset()
 
@@ -381,6 +384,14 @@ class SensorChannel:
     #   있다(다시 누르면 즉시 재검출).
     _DROPOUT_PCT = -60.0
     _REBOUND_SPAN_S = 3.0
+    # ★프레임 동결 경로(범용 최후 방어) — 3센서 실험 로그에서 45.6s(fz 2.79N)·18.7s
+    #   잔상이 생존: 다중 표시(n!=1)·fz>2N·대잔차(25~59%) 로 기존 경로 전제가 전부
+    #   깨졌다. 공통 물리는 하나 — **유령은 raw 가 얼어 있다**(실접촉은 힘 떨림으로
+    #   미세하게라도 움직임). raw 16채널이 노이즈 밴드 내 6s 정지 + 접촉 표시 지속
+    #   → 접촉 수·fz 무관 흡수. 트레이드오프: 6s+ 초정밀 정지 실접촉은 오흡수
+    #   (재누름 즉시 재검출) — "무접촉 잔상 금지" 우선의 의도적 편향.
+    _FREEZE_SPAN_S = 6.0
+    _FREEZE_PCT = 0.6         # 6s 창에서 채널별 (max-min) 이 전부 이 미만이면 동결
 
     def _update_drift_ref(self, has_contacts: bool, raw_mean: np.ndarray) -> None:
         now = time.perf_counter()
@@ -409,6 +420,25 @@ class SensorChannel:
         위치가 변하므로 걸리지 않는다. 판정되면 잔류를 통째로 재영점하고 필터를 리셋.
         """
         now = time.perf_counter()
+        # 프레임 동결 경로 — 접촉 수·fz 와 무관하게 raw 정지를 본다(최후 방어)
+        self._frame_hist.append((now, raw_mean.copy()))
+        if contacts and any(now - f[0] >= self._FREEZE_SPAN_S for f in self._frame_hist):
+            arr = np.stack([f[1] for f in self._frame_hist
+                            if now - f[0] <= self._FREEZE_SPAN_S])
+            spread = float((arr.max(axis=0) - arr.min(axis=0)).max())
+            if spread < self._FREEZE_PCT:
+                self.drift_ref = raw_mean.copy()
+                if self.cfilter is not None:
+                    self.cfilter.reset()
+                self._ghost_hist.clear()
+                self._frame_hist.clear()
+                self._dropout_seen = False
+                self._absorb_info = {"why": "absorb_freeze", "spread": round(spread, 2),
+                                     "n": len(contacts)}
+                print(f"[dashboard] {self.role} 유령 흡수 — raw 동결 "
+                      f"{self._FREEZE_SPAN_S:.0f}s(변화 {spread:.2f}%<{self._FREEZE_PCT}%)"
+                      f"·표시 {len(contacts)}점")
+                return []
         if len(contacts) != 1 or contacts[0].fz_n > self._GHOST_FZ_MAX:
             self._ghost_hist.clear()
             self._absorb_info = {"why": "n!=1" if len(contacts) != 1 else "fz>cap"}

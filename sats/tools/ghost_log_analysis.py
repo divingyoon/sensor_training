@@ -55,8 +55,15 @@ def summarize_blockers(rows: list[dict]) -> dict[str, int]:
 def ghost_episodes(rows: list[dict], t0: float) -> list[tuple[float, float, float, float]]:
     """접촉 표시가 이어진 구간 (시작, 끝, 최대 raw잔차%, 최대 fz)."""
     eps, start, rmax, fmax = [], None, 0.0, 0.0
+    prev_t = None
     for r in rows:
         t = r["t"] - t0
+        # ★기록 공백(>3s) = 세션 경계(append 재실행) — 구간을 끊는다. 안 끊으면
+        #   이전 세션 마지막 접촉이 다음 세션까지 이어진 것처럼 보인다(실측 9385s).
+        if prev_t is not None and t - prev_t > 3.0 and start is not None:
+            eps.append((start, prev_t, rmax, fmax))
+            start = None
+        prev_t = t
         has = bool(r["post"])
         resid = float(np.max(np.abs(np.asarray(r["raw"]) - np.asarray(r["drift"]))))
         fz = max((c[2] for c in r["post"]), default=0.0)
