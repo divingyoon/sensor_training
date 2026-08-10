@@ -119,6 +119,7 @@ class SensorChannel:
         #   트레이드오프). 접촉이 잡히는 동안에는 절대 갱신하지 않는다.
         self.drift_ref = np.zeros(16, np.float32)
         self._quiet_t0: float | None = None
+        self._drift_t: float | None = None       # 시간 기반 EMA 용 직전 갱신 시각
         self._last_win_mean: np.ndarray | None = None
         self._boost_until = 0.0                  # 접촉 해제 직후 빠른 흡수 구간
         self._ghost_hist: collections.deque = collections.deque(maxlen=260)
@@ -160,6 +161,7 @@ class SensorChannel:
         self.hist.clear()
         self.drift_ref = np.zeros(16, np.float32)
         self._quiet_t0 = None
+        self._drift_t = None
         if self.cfilter is not None:
             self.cfilter.reset()
 
@@ -348,8 +350,12 @@ class SensorChannel:
         return self._poll_theta(win)
 
     _QUIET_SEC = 1.0          # 이 시간 무접촉이 지속돼야 재영점 시작
-    _DRIFT_ALPHA = 0.02       # 느린 EMA(틱 ~20Hz → 시정수 약 2.5s)
-    _BOOST_ALPHA = 0.15       # 접촉 해제 직후 2초는 빠르게(잔류가 가장 큰 순간)
+    # ★시간 기반 시정수 — 틱당 α 방식은 틱 레이트에 종속된다(구현 버그였음):
+    #   느린 PC(i7, CPU 추론)에서 틱이 20→2Hz 로 떨어지면 같은 잔류 흡수에 10배
+    #   (25초+)가 걸려 "무접촉인데 히스테리시스가 남는" 증상이 됨. dt 로 환산해
+    #   어떤 머신에서도 같은 초 단위 거동을 보장한다.
+    _DRIFT_TAU_S = 2.5        # 느린 흡수 시정수(구 α=0.02@20Hz 와 동일 거동)
+    _BOOST_TAU_S = 0.33       # 접촉 해제 직후 2초(구 α=0.15@20Hz 와 동일 거동)
     # ★관찰 5초인 이유: 3초 창에서는 힘이 출렁이는 실접촉(사람 손)의 하강 국면이
     #   잔류 감쇠와 구분되지 않는다(실측 오탐). 5초 + "창 내 최대 fz 비증가" 조합이면
     #   출렁임은 다시 올라간 흔적이 남아 걸러지고, 잔류는 단조 감쇠라 통과한다.
@@ -360,14 +366,18 @@ class SensorChannel:
     _GHOST_LONG_S = 10.0      # 느린 경로: 감쇠가 미미한 고착 잔류
 
     def _update_drift_ref(self, has_contacts: bool, raw_mean: np.ndarray) -> None:
+        now = time.perf_counter()
+        dt = min(now - self._drift_t, 1.0) if self._drift_t is not None else 0.05
+        self._drift_t = now
         if has_contacts:
             self._quiet_t0 = None
             return
-        now = time.perf_counter()
         if self._quiet_t0 is None:
             self._quiet_t0 = now
         elif now - self._quiet_t0 > self._QUIET_SEC:
-            a = self._BOOST_ALPHA if now < self._boost_until else self._DRIFT_ALPHA
+            import math
+            tau = self._BOOST_TAU_S if now < self._boost_until else self._DRIFT_TAU_S
+            a = 1.0 - math.exp(-dt / tau)          # 틱 레이트 무관, 초 단위 시정수
             self.drift_ref = ((1.0 - a) * self.drift_ref
                               + a * raw_mean).astype(np.float32)
 
