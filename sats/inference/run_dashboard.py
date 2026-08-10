@@ -524,8 +524,10 @@ class SensorChannel:
             self._quar_ok_t[start] = now
             done = q & ok & (self._quar_ok_t > 0.0) \
                 & (now - self._quar_ok_t >= self._QUAR_OK_SEC)
-            # 장기 미복귀 → 새 기준선 수용(영구 마스킹 방지)
-            stale = q & (now - self._quar_t0 >= self._QUAR_MAX_S)
+            # 장기 미복귀 → 새 기준선 수용(영구 마스킹 방지). ★눌리는 중(-3% 이하)에는
+            #   수용 금지 — 눌린 값을 기준선으로 삼으면 이후 위치·힘이 통째로 틀어진다.
+            stale = q & (now - self._quar_t0 >= self._QUAR_MAX_S) \
+                & (resid > self._PRESS_MIN_PCT)
             if stale.any():
                 self.drift_ref = self.drift_ref.copy()
                 self.drift_ref[stale] = raw_mean[stale]
@@ -563,8 +565,13 @@ class SensorChannel:
             self._dropout_seen = True
         quar_mask = self._update_quarantine(raw_mean)
         win = (np.asarray(win, np.float32) - self.drift_ref[None, :])   # 드리프트 보정
-        if quar_mask.any():
-            win[:, quar_mask] = 0.0              # 회복 중 채널 잔차 원천 차단
+        # ★격리 채널이라도 지금 눌리고 있으면(-3% 이하) 실신호를 통과시킨다.
+        #   강한 실접촉 자체가 -60% 를 넘어 격리를 트리거하므로, 무조건 마스킹하면
+        #   눌린 채널이 빠진 패턴으로 위치를 추정해 출력 위치가 크게 끌려간다(실기
+        #   회귀 보고). 마스킹 대상은 해제 후 양(+)의 리바운드 꼬리뿐이다.
+        mask_now = quar_mask & ((raw_mean - self.drift_ref) > self._PRESS_MIN_PCT)
+        if mask_now.any():
+            win[:, mask_now] = 0.0               # 회복 꼬리 잔차만 원천 차단
         # ★복원기 우선: 창마다 변형 오프셋을 추정해 뺀다(고정 스냅숏 방식보다 적응적).
         restored = None
         if self.role == "bending" and self.restorer is not None:
