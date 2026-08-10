@@ -58,10 +58,14 @@ def theme_color(color: str) -> str:
 
 
 def _gold_cmap():
-    """0=근흑 → 최고=밝은 골드. 블랙+골드 테마의 압력 램프(무압=배경과 융화)."""
+    """0=근흑 → 최고=거의 흰 골드. 블랙+골드 압력 램프.
+
+    ★밝기(luminance)가 전 구간 단조·광대역이어야 41² 픽셀 값 차이가 그라데이션으로
+    보인다 — 구 램프는 중간(a8842a)~상단(d4af37) 밝기 차가 작아 blob 이 단색
+    덩어리로 뭉개졌다(실기 피드백)."""
     from matplotlib.colors import LinearSegmentedColormap
     return LinearSegmentedColormap.from_list(
-        "sats_gold", ["#0d0d10", "#4a3a12", "#a8842a", "#d4af37", "#ffe9a8"])
+        "sats_gold", ["#0d0d10", "#33230b", "#6b4c12", "#a8842a", "#e0b53f", "#ffefad"])
 
 
 def _dark_diverging_cmap():
@@ -152,7 +156,9 @@ class HeatmapPanel:
                 self._vmax_ref = peak if self._vmax_ref is None \
                     else max(peak, self._vmax_ref * 0.998)
             ref = max(self._vmax_ref or peak, 1e-6)
-            self.im.set_data(np.clip(pm / ref, 0, 1))
+            # 감마 0.7 — blob 스커트(저값)의 색 변화를 키워 픽셀 그라데이션이 보이게.
+            # 절대 스케일(ref)은 유지되므로 힘 크기 구분은 그대로다.
+            self.im.set_data(np.clip(pm / ref, 0, 1) ** 0.7)
             if contacts:
                 self._draw_contacts(contacts)
         _banner_title(self.ax, banner, prefix)
@@ -196,8 +202,10 @@ class UnitsInset:
                  flip_x: bool = False, flip_y: bool = True) -> None:
         self.ax = ax
         cmap = _dark_diverging_cmap() if _T["dark"] else "RdBu_r"
+        # ★bicubic 보간 — nearest 는 4×4 블록이 각져 보인다(taxel 사이 그라데이션 요청).
+        #   셀 중앙 숫자는 그대로 두므로 정량 판독은 유지된다.
         self.im = ax.imshow(np.zeros((4, 4)), origin="lower", cmap=cmap,
-                            vmin=-1, vmax=1, extent=[-13, 13, -13, 13], interpolation="nearest")
+                            vmin=-1, vmax=1, extent=[-13, 13, -13, 13], interpolation="bicubic")
         ax.set_xlim(13, -13) if flip_x else ax.set_xlim(-13, 13)   # heatmap 과 방향 일치
         ax.set_ylim(13, -13) if flip_y else ax.set_ylim(-13, 13)
         ax.set_title(title, fontsize=8, color=_T["muted"])
