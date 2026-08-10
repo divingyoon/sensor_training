@@ -20,8 +20,22 @@ from matplotlib.figure import Figure
 
 from sats.inference.dashboard_panels import HeatmapPanel, ThetaGaugePanel, UnitsInset
 
-_BG = "#f4f5f7"
-_ACCENT = "#0a7a4f"
+# ── 디자인 토큰(전시용) ── 다크 네이비 헤더/푸터 + 흰 카드 패널 + 녹색 액센트.
+#    회색 단색 배경에 기본 tk 위젯을 그대로 두면 시제품처럼 보인다 — 계기판 스타일로
+#    역할(크롬/카드/상태)을 색으로 분리한다.
+_C = {
+    "win":       "#dde3eb",   # 창 배경(카드 사이 여백으로 보임)
+    "card":      "#ffffff",   # 패널 카드
+    "border":    "#c9d2de",   # 축 스파인
+    "header":    "#122a44",   # 헤더/푸터(딥 네이비)
+    "header_fg": "#eef3fa",
+    "header_dim": "#8ea4c0",
+    "accent":    "#0a7a4f",   # 브랜드 그린(히트맵과 동일 계열)
+    "text":      "#1c2733",
+    "muted":     "#5a6b80",
+}
+_BG = _C["card"]              # 패널 내부(캔버스·컨트롤) 배경
+_ACCENT = _C["accent"]
 
 
 def list_port_choices() -> list[str]:
@@ -41,7 +55,7 @@ class PanelUI(ttk.Frame):
 
     def __init__(self, master, channel, title: str, flip_x: bool, flip_y: bool,
                  grid_min: float, grid_max: float, engines=None, sensors=None) -> None:
-        super().__init__(master, padding=6)
+        super().__init__(master, padding=10)
         self.channel = channel
         self.title = title
         self.engines = engines                      # EngineCache — 센서 교체용
@@ -53,7 +67,7 @@ class PanelUI(ttk.Frame):
         self.banner.pack(fill="x", pady=(0, 4))
 
         # matplotlib 캔버스(역할별 구성)
-        self.fig = Figure(figsize=(4.6, 4.8), dpi=90, facecolor=_BG)
+        self.fig = Figure(figsize=(4.6, 4.8), dpi=90, facecolor=_C["card"])
         role = channel.role
         if role == "theta":
             # ★S2 = theta 게이지(위) + [변형 raw %(4×4) | 복원 후 SATS 맵](아래).
@@ -76,6 +90,13 @@ class PanelUI(ttk.Frame):
             self.p_units = self.p_theta = None
             self.p_units_restored = None
             self.p_restored_map = None
+        # 축 타이포 통일 — 기본 검정 스파인/틱은 계기판 톤과 어긋난다
+        for ax in self.fig.axes:
+            for sp in ax.spines.values():
+                sp.set_color(_C["border"])
+            ax.tick_params(colors=_C["muted"], labelsize=8)
+            ax.xaxis.label.set_color(_C["muted"])
+            ax.yaxis.label.set_color(_C["muted"])
         self.fig.tight_layout()
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -161,7 +182,8 @@ class PanelUI(ttk.Frame):
 
         # 설정 요약(파트별 세팅 정리)
         self.info_var = tk.StringVar(value="")
-        ttk.Label(self, textvariable=self.info_var, font=("TkDefaultFont", 8)).pack(fill="x", pady=(3, 0))
+        ttk.Label(self, textvariable=self.info_var, font=("TkDefaultFont", 8),
+                  style="Muted.TLabel").pack(fill="x", pady=(4, 0))
 
     # ── 컨트롤 동작 ──────────────────────────────────────────────────────────
     def _toggle_connect(self) -> None:
@@ -325,7 +347,7 @@ class DashboardApp:
         self.channels = {c.role: c for c in channels}
         self.root = tk.Tk()
         self.root.title("SATS — unified demo dashboard")
-        self.root.configure(bg=_BG)
+        self.root.configure(bg=_C["win"])
         # 전시용 전체화면(1920x1080) — F11 토글, Esc 해제(콤보 조작 등은 창 모드가 편함)
         if getattr(args, "fullscreen", False):
             self.root.attributes("-fullscreen", True)
@@ -337,29 +359,50 @@ class DashboardApp:
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure(".", background=_BG)
-        style.configure("TButton", padding=4)
+        # ttk 기본 배경 = 카드(흰색) — 패널 내부 위젯이 전부 카드 위에 얹힌다
+        style.configure(".", background=_C["card"], foreground=_C["text"])
+        style.configure("TButton", padding=(10, 4), relief="flat",
+                        background="#eef1f5", bordercolor=_C["border"])
+        style.map("TButton", background=[("active", "#e2e8f0")])
+        style.configure("TCombobox", fieldbackground="#ffffff", bordercolor=_C["border"],
+                        arrowcolor=_C["muted"])
+        style.configure("Muted.TLabel", foreground=_C["muted"])
 
-        # 상단바
-        top = ttk.Frame(self.root, padding=(10, 8)); top.pack(fill="x")
-        ttk.Label(top, text="SATS realtime demo", font=("TkDefaultFont", 13, "bold"),
-                  foreground=_ACCENT).pack(side="left")
-        ttk.Button(top, text="종료", command=self.root.destroy).pack(side="right")
+        # ── 헤더(딥 네이비): 제품명 + 전역 토글 ──
+        top = tk.Frame(self.root, bg=_C["header"], padx=16, pady=10)
+        top.pack(fill="x")
+        tk.Label(top, text="SATS", font=("TkDefaultFont", 16, "bold"),
+                 fg="#ffffff", bg=_C["header"]).pack(side="left")
+        tk.Label(top, text="  Tactile Super-Resolution — Live Demo",
+                 font=("TkDefaultFont", 12), fg=_C["header_dim"],
+                 bg=_C["header"]).pack(side="left")
+        tk.Button(top, text="종료", command=self.root.destroy, bg=_C["header"],
+                  fg=_C["header_fg"], activebackground="#1d3a5c",
+                  activeforeground="#ffffff", relief="flat", bd=0, padx=12,
+                  highlightthickness=0).pack(side="right")
+
+        def _hdr_radio(text, value, variable, command):
+            return tk.Radiobutton(top, text=text, value=value, variable=variable,
+                                  command=command, bg=_C["header"], fg=_C["header_fg"],
+                                  selectcolor=_C["header"], activebackground=_C["header"],
+                                  activeforeground="#ffffff", relief="flat",
+                                  highlightthickness=0)
         # 인덴터 토글
         self.dia_var = tk.StringVar(value=f"D{int(args.diameter)}")
         for d in ("D10", "D5"):
-            ttk.Radiobutton(top, text=d, value=d, variable=self.dia_var,
-                            command=self._set_diameter).pack(side="right", padx=2)
-        ttk.Label(top, text="indenter:").pack(side="right", padx=(12, 2))
+            _hdr_radio(d, d, self.dia_var, self._set_diameter).pack(side="right", padx=1)
+        tk.Label(top, text="indenter", fg=_C["header_dim"], bg=_C["header"]
+                 ).pack(side="right", padx=(18, 4))
         # 접촉 수 토글
         self.n_var = tk.IntVar(value=args.contacts)
         for n in (3, 2, 1):
-            ttk.Radiobutton(top, text=str(n), value=n, variable=self.n_var,
-                            command=self._set_contacts).pack(side="right", padx=2)
-        ttk.Label(top, text="contacts:").pack(side="right", padx=(12, 2))
+            _hdr_radio(str(n), n, self.n_var, self._set_contacts).pack(side="right", padx=1)
+        tk.Label(top, text="contacts", fg=_C["header_dim"], bg=_C["header"]
+                 ).pack(side="right", padx=(18, 4))
 
-        # 3패널
-        mid = ttk.Frame(self.root, padding=(6, 0)); mid.pack(fill="both", expand=True)
+        # ── 3패널(흰 카드, 창 배경이 카드 사이 여백으로 보임) ──
+        mid = tk.Frame(self.root, bg=_C["win"], padx=10, pady=10)
+        mid.pack(fill="both", expand=True)
         gmin, gmax = ((engine.grid_min_mm, engine.grid_max_mm) if engine is not None
                       else (-10.0, 10.0))          # 물리 범위는 모든 run 동일
         fx, fy = getattr(args, "flip_x", False), getattr(args, "flip_y", True)
@@ -369,17 +412,18 @@ class DashboardApp:
         for i, role in enumerate(("contacts", "theta", "bending")):
             p = PanelUI(mid, self.channels[role], titles[role], fx, fy, gmin, gmax,
                         engines=self.engines, sensors=self.sensors)
-            p.grid(row=0, column=i, sticky="nsew", padx=4)
+            p.grid(row=0, column=i, sticky="nsew", padx=6)
             mid.columnconfigure(i, weight=1)
             self.panels[role] = p
         mid.rowconfigure(0, weight=1)
 
-        # 하단 스펙바
+        # ── 푸터(딥 네이비): 스펙 요약 ──
         grid_txt = (f"{engine.grid_size}x{engine.grid_size}@{engine.grid_step_mm:g}mm"
                     if engine is not None else "run 선택 대기")
-        spec = (f"SATS {grid_txt} (20x20mm) · raw 16-taxel 200Hz/250k · infer 129Hz"
-                f" · Fz 0-3.9N (D10) · theta 20-150° (MAE 1.78°)")
-        ttk.Label(self.root, text=spec, font=("TkDefaultFont", 8), padding=(10, 4)).pack(fill="x")
+        spec = (f"SATS {grid_txt} (20x20mm)   ·   raw 16-taxel 200 Hz / 250 kbaud   ·   "
+                f"infer 129 Hz   ·   Fz 0–3.9 N (D10)   ·   theta 20–150° (MAE 1.78°)")
+        tk.Label(self.root, text=spec, font=("TkDefaultFont", 9), fg=_C["header_dim"],
+                 bg=_C["header"], padx=16, pady=6, anchor="w").pack(fill="x")
 
         self._tick_ms = max(30, int(1000 / max(args.viz_fps, 1)))
 
