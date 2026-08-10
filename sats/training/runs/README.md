@@ -1,8 +1,38 @@
 # runs — SATS 학습 실행 기록 (폴더별 의미와 결과)
 
-> 2026-07-16 정리. 수치 = 각 run `history.json`의 **best val RMSE**(절대, a.u.).
-> 세부 진단(d5/d10 분리·상대오차)은 `history/fig_data/experiments_archive/` 각 폴더 참조.
-> 실험 서사 전체는 Notion 연구일지 / `PROJECT_STRUCTURE.md`.
+> 2026-07-16 정리, **2026-08-10 3-tier 분류 추가**. 수치 = 각 run `history.json`의
+> **best val RMSE**(절대, a.u.). 세부 진단(d5/d10 분리·상대오차)은
+> `history/fig_data/experiments_archive/` 각 폴더 참조. 실험 서사 전체는 Notion 연구일지.
+
+## ★ 3-tier 분류 (2026-08-10)
+
+| 티어 | 위치 | 내용 | 원칙 |
+|---|---|---|---|
+| **① 데모(deploy)** | 리포 루트 `runs/` (git 추적, `runs/README.md`) | 센서별 g05nsc SATS + deform 복원기 + estimator_v6_2 | `scripts/stage_deploy_runs.py`로 여기서 복사. 대시보드는 `runs/`를 1순위 스캔 |
+| **② 논문 평가/실험** | 여기(`sats/training/runs/`) **제자리 유지** | 아래 "실험별 run 그룹" + 배포 계열 전체 | ★피규어/평가 스크립트가 경로를 직접 참조 — **이동 금지**(재현성) |
+| **③ 잔재/중복** | — | arm4090 구 레이아웃 `sats/runs/`(로컬과 전수 해시 일치 확인) | 2026-08-10 `~/.trash_sats_runs_dup_20260810`로 격리(삭제 대기) |
+
+## 배포(deploy) 계열 — 센서별 실기 추론용 (② 원본, ①은 여기서 복사)
+
+| run | 의미 | 소재 |
+|---|---|---|
+| `ecomesh_v{5..9}_deploy_g05nsc` | ★현행 표준 — 클린 계보(v0 no-size 베이스 재학습 → warm), 41²@0.5mm, 크기입력 없음 | 양쪽 (v8/v9는 arm4090 학습 후 sync) |
+| `ecomesh_v{5..9}_deploy_g05ns` | no-size 1세대(혼합 계보) — g05nsc 비교군 | 양쪽 |
+| `(ecomesh_)v{5..9}_deploy_g025` | 81²@0.25mm 고해상(크기입력 있음, 십자 아티팩트 이슈) | 양쪽 (arm4090은 접두사 없음) |
+| `(ecomesh_)v{5..9}_deploy_g01` | 201²@0.1mm | 양쪽 |
+| `ecomesh_v{3,5,6}_deploy_all4` | 초기 배포(4-trial, 크기입력 있음) | 로컬(v6은 양쪽) |
+| `ecomesh_xy0p5_base_nosize` | ★클린 warm 베이스(v0 데이터, no-size, val 0.2906) | 양쪽 |
+| `ecomesh_v{1,3,5,6}_calibtransfer_*` | cross-sensor calibration transfer 실험(§전이) | 로컬 |
+
+## bending 계열 (`sats/bending/runs/`, 양쪽 동일화 2026-08-10)
+
+| 그룹 | 분류 | 내용 |
+|---|---|---|
+| `deform_restorer_v{5,7,8,9}` | ①데모 | 각도-프리 변형 복원기(z=32) — `runs/deform/<v*>/restorer.pt`로 복사됨 |
+| `estimator_v6_2` | ①데모 | 현행 theta estimator — `runs/theta/v6/`로 복사됨 |
+| `estimator_{v0,v5,v6,v6new,both}` | ②논문 | estimator 세대별 비교(G1 게이트 이력) |
+| `est_{lstm,cnn2d,cnn2d_shape,cnn_lstm,mlp_frame,v6_2}` | ②논문 | 밴딩 구조 실험(LSTM 최선 결론의 근거) |
+| `restorer_{v0,degonly}` | ②논문 | 구 restorer(deg_cnn 70.4% 비교군) |
 
 ## ★ 추론(infer)에 쓸 모델
 
